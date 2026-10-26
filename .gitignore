@@ -1,0 +1,38 @@
+# Dependencies / node_modules
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# Logs and local run state
+*.log
+logs/
+run/
+*.pid
+
+# User configuration and secrets (never publish)
+.env
+.env.*
+*.local.json
+config/local*.json
+
+# Personal / OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Installer build output
+installer/Output/
+dist/
+*.exe
+*.exe.*
+
+# Editor / tooling
+.vscode/
+.idea/
+.freebuff/
+
+# Models and weights (never commit)
+*.gguf
+*.bin
+*.safetensors
+models/

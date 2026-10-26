@@ -1,0 +1,114 @@
+# LiteMind Engine
+
+Лёгкий локальный движок управления ИИ-моделями для Windows 10/11 на слабых компьютерах
+(8–16 ГБ RAM, встроенная графика, без дискретной видеокарты).
+
+LiteMind **не считает нейросети сам** — он управляет ресурсами и подключается к существующему
+локальному backend'у (в первой версии — **Ollama** через её локальный HTTP API). Всё выполнение
+моделей остаётся на стороне backend'а, а вся политика безопасности (очередь, лимиты, прогноз
+памяти, отмена, выгрузка) — на стороне LiteMind.
+
+Проект бесплатный: ни платных API, ни обязательных облачных сервисов, ни телеметрии.
+**Модели никогда не скачиваются автоматически.**
+
+## Что умеет (v0.1)
+
+- Обнаружение установленной Ollama и списка локальных моделей.
+- Профиль **Low Resource** по умолчанию: один активный запрос, контекст 2048 токенов,
+  лимит длины ответа, ограничение потоков CPU, автовыгрузка неиспользуемой модели по таймеру.
+- Прогноз памяти **до** запуска модели: веса + KV-кэш + резерв под Windows.
+  Если модель не помещается — запрос блокируется с понятным объяснением.
+- Полная отмена запроса (кнопка «Остановить», `POST /api/cancel`, обрыв клиента) и
+  тайм-ауты (общий и на «зависший стрим»).
+- Локальный **OpenAI-совместимый API** для OpenCode и других инструментов:
+  `/v1/models`, `/v1/chat/completions` (в том числе потоковый SSE), `/health`.
+- Лёгкая панель управления (одна вкладка браузера, без Electron и фоновых процессов).
+- Диагностика: JSONL-журнал, метрики TTFT/скорости генерации, счётчики ошибок.
+
+## Быстрый старт
+
+```powershell
+# 1. Нужен Node.js 18.17+ (https://nodejs.org) — единственная зависимость,
+#    npm install не требуется. Python не нужен.
+node -v
+
+# 2. Проверка системы и Ollama (только чтение)
+.\scripts\doctor.ps1
+
+# 3. Запуск движка и панели -> http://127.0.0.1:8399
+.\scripts\start.ps1
+
+# 4. Остановка (в другом окне)
+.\scripts\stop.ps1
+
+# 5. Тесты (mock, без моделей, ~3 сек)
+.\scripts\test.ps1
+```
+
+Без PowerShell можно и напрямую: `node bin\litemind.js serve`, `npm test`, `npm run doctor`.
+Подробности установки на Windows: [docs/WINDOWS_INSTALL.md](docs/WINDOWS_INSTALL.md).
+
+## Структура
+
+```
+bin/litemind.js        CLI: serve | status | models | doctor | config
+src/config.js          конфигурация и профили (low / balanced)
+src/core/engine.js     LiteMind Core: очередь, отмена, тайм-ауты, выгрузка, бюджет памяти
+src/resource/          Resource Manager: метрики RAM/CPU/VRAM + предстартовая проверка
+src/backends/          Inference Backend: контракт, реестр, адаптер Ollama
+src/api/server.js      API Server: OpenAI-совместимый HTTP + статика панели
+src/ui/public/         Desktop UI: index.html / style.css / app.js
+src/diagnostics/       Diagnostics: журнал и метрики производительности
+test/                  автотесты (без реальных моделей, с mock-Ollama)
+docs/                  архитектура, режим экономии, установка, OpenCode, метрики, безопасность
+```
+
+## Тесты
+
+```bash
+npm test
+```
+
+Тесты используют **mock-сервер Ollama** (собственный, в `test/helpers/mock-ollama.js`):
+реальные модели и скачивание не нужны. Никаких «фиктивных» проверок — проверяются реальные
+сценарии: очередь, отмена, тайм-ауты, бюджет памяти, восстановление после сбоя backend'а,
+работа HTTP API и панели.
+
+## Документация
+
+| Документ | О чём |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | компоненты, поток запроса, почему Ollama |
+| [docs/INSTALLER_PLAN.md](docs/INSTALLER_PLAN.md) | аудит проекта и план установщика (NSIS) |
+| [docs/TESTED_CONFIGS.md](docs/TESTED_CONFIGS.md) | таблица реально проверенных конфигураций |
+| [docs/LOW_RESOURCE_MODE.md](docs/LOW_RESOURCE_MODE.md) | профиль Low Resource и защита слабых ПК |
+| [docs/WINDOWS_INSTALL.md](docs/WINDOWS_INSTALL.md) | установка и запуск на Windows 10/11 |
+| [docs/OPENCODE_SETUP.md](docs/OPENCODE_SETUP.md) | подключение OpenCode к LiteMind |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | произведённые измерения и как повторить их |
+| [docs/REAL_MODEL_TEST.md](docs/REAL_MODEL_TEST.md) | инструкция для минимального теста с реальной моделью (запуск по разрешению) |
+| [README.en.md](README.en.md) | English summary |
+| [CONTRIBUTING.md](CONTRIBUTING.md) / [SECURITY.md](SECURITY.md) | как участвовать / модель безопасности |
+| [docs/SECURITY.md](docs/SECURITY.md) | модель доступа, секреты, границы доверия |
+
+## Лицензии сторонних компонентов
+
+| Компонент | Лицензия | Как используется |
+|---|---|---|
+| Node.js runtime | MIT | среда выполнения |
+| Ollama (внешняя программа, не входит в репозиторий) | MIT | backend выполнения моделей |
+| llama.cpp (используется Ollama внутри) | MIT | вычисления (не наш код) |
+| Код LiteMind Engine | MIT | см. [LICENSE](LICENSE) |
+
+Сами модели распространяются по своим лицензиям (указываются производителем модели).
+LiteMind не включает и не распространяет веса моделей.
+
+## Статус v0.1
+
+Работает: обнаружение backend'а, список моделей, очередь, отмена, тайм-ауты, бюджет памяти,
+выгрузка, OpenAI-совместимый API, панель, автотесты (61), скрипты Windows.
+
+Установщик: скрипт `installer/litemind.nsi` собирается в `LiteMind-Setup-0.1.0.exe`,
+но **установка/удаление ещё не проверены** — см. [docs/INSTALLER_PLAN.md](docs/INSTALLER_PLAN.md).
+
+Не проверено и потому не заявляется: реальная генерация на целевом ПК, скорости,
+Windows 10, LAN-режим — честный список в [docs/TESTED_CONFIGS.md](docs/TESTED_CONFIGS.md).

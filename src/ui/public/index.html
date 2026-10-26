@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LiteMind Engine</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>LiteMind <span>Engine</span></h1>
+    <div class="hdr-right">
+      <label class="switch" title="Режим экономии ресурсов = профиль Low Resource">
+        <input type="checkbox" id="saver" checked />
+        <span>Экономия ресурсов</span>
+      </label>
+      <span id="backend-badge" class="badge">проверка…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="grid">
+      <div class="card">
+        <h2>Нагрузка</h2>
+        <div class="meter"><label>CPU <b id="cpu">—</b></label><div class="bar"><i id="cpu-bar"></i></div></div>
+        <div class="meter"><label>RAM <b id="ram">—</b></label><div class="bar"><i id="ram-bar"></i></div></div>
+        <div class="meter"><label>VRAM <b id="vram">—</b></label><div class="bar vram"><i id="vram-bar"></i></div></div>
+        <p class="muted" id="gpu-name">видеокарта не определена</p>
+      </div>
+
+      <div class="card">
+        <h2>Backend</h2>
+        <dl class="kv">
+          <dt>Тип</dt><dd id="backend-type">—</dd>
+          <dt>Состояние</dt><dd id="backend-state">—</dd>
+          <dt>Версия</dt><dd id="backend-version">—</dd>
+          <dt>Очередь</dt><dd id="queue">—</dd>
+          <dt>Профиль</dt><dd id="profile">—</dd>
+        </dl>
+      </div>
+
+      <div class="card">
+        <h2>Модель</h2>
+        <select id="model" aria-label="Выбор модели"></select>
+        <label class="field">Контекст (токены)
+          <select id="ctx">
+            <option value="1024">1024</option>
+            <option value="2048" selected>2048</option>
+            <option value="4096">4096</option>
+            <option value="8192">8192</option>
+          </select>
+        </label>
+        <label class="field">Лимит ответа (токены)
+          <input id="maxtok" type="number" min="16" max="8192" step="64" value="512" />
+        </label>
+        <div class="btns">
+          <button id="btn-run" class="primary">Запустить</button>
+          <button id="btn-stop" class="danger">Остановить</button>
+          <button id="btn-unload">Выгрузить модель</button>
+        </div>
+        <p id="error" class="error" hidden></p>
+      </div>
+    </section>
+
+    <section class="card chat">
+      <h2>Генерация</h2>
+      <textarea id="prompt" rows="3" placeholder="Введите запрос (например: Объясни разницу между массивом и связным списком)"></textarea>
+      <div class="chat-actions">
+        <span class="muted" id="run-state"></span>
+        <button id="btn-send" class="primary">Отправить</button>
+      </div>
+      <pre id="output"></pre>
+      <div class="muted" id="timings"></div>
+    </section>
+
+    <section class="card">
+      <h2>События</h2>
+      <ul id="events" class="events"></ul>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

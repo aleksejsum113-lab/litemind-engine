@@ -1,0 +1,40 @@
+{
+  "api": {
+    "host": "127.0.0.1",
+    "port": 8399,
+    "allowLan": false,
+    "auth": { "enabled": false, "token": null }
+  },
+  "backend": {
+    "type": "ollama",
+    "baseUrl": "http://127.0.0.1:11434",
+    "connectTimeoutMs": 2000,
+    "streamIdleTimeoutMs": 60000
+  },
+  "profile": "low",
+  "profiles": {
+    "low": {
+      "label": "Low Resource (Celeron N5095A / 16 ГБ)",
+      "maxConcurrentRequests": 1,
+      "queueLimit": 8,
+      "contextTokens": 2048,
+      "maxOutputTokens": 320,
+      "cpuThreads": 2,
+      "requestTimeoutMs": 180000,
+      "idleUnloadSeconds": 180,
+      "autoLoadAtStartup": false,
+      "allowAutoDownload": false,
+      "memoryReserveMb": 3072,
+      "kvOverheadKbPerToken": 64,
+      "blockOnUnknownEstimate": false
+    }
+  },
+  "resource": {
+    "pollIntervalMs": 3000,
+    "maxRamUsageFraction": 0.7
+  },
+  "diagnostics": {
+    "dir": null,
+    "level": "info"
+  }
+}

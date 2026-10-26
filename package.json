@@ -1,0 +1,19 @@
+{
+  "name": "litemind-engine",
+  "version": "0.1.0",
+  "description": "Lightweight local engine for managing AI models on low-spec Windows PCs (Ollama backend, OpenAI-compatible local API).",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "bin": {
+    "litemind": "bin/litemind.js"
+  },
+  "scripts": {
+    "start": "node bin/litemind.js serve",
+    "test": "node --test \"test/*.test.js\"",
+    "doctor": "node bin/litemind.js doctor"
+  },
+  "dependencies": {}
+}
