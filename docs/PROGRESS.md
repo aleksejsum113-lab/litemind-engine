@@ -85,24 +85,16 @@ Ollama деинсталлируется через «Приложения» (м�
 
 ## 4. Команды, которые нужно выполнить дальше
 
-### A. Авторизация GitHub и создание приватного репозитория
+### A. Авторизация GitHub — уже выполнена (см. раздел 0)
+
+Репозиторий создан и код опубликован. Дальше — обычный цикл:
 
 ```powershell
-# 1) Официальная авторизация GitHub через браузер (Git Credential Manager, уже установлен)
-cd "E:\проект малых весов моделей"
-git credential-manager github login
-
-# 2) Создать приватный репозиторий litemind-engine в вебе (одна кнопка):
-#    https://github.com/new?name=litemind-engine&private=true
-
-# 3) Подключить и опубликовать (я могу выполнить этот шаг сам после авторизации)
-git remote add origin git@github.com:ВАШ_ЛОГИН/litemind-engine.git
-git branch -M main
-git push -u origin main
+git pull              # обновиться
+git add -A
+git commit -m "описание"
+git push              # отправить
 ```
-
-(Альтернатива HTTPS: `git remote add origin https://github.com/ВАШ_ЛОГИН/litemind-engine.git` —
-GCM попросит авторизацию в браузере при первом push.)
 
 ### B. Когда дадите разрешение — реальный тест (по шагам)
 
