@@ -18,64 +18,148 @@
     </div>
   </header>
 
+  <nav class="tabs" id="tabs" role="tablist">
+    <button data-tab="status" class="tab active">Статус</button>
+    <button data-tab="models" class="tab">Мои модели</button>
+    <button data-tab="catalog" class="tab">Каталог</button>
+    <button data-tab="downloads" class="tab">Загрузки</button>
+    <button data-tab="hardware" class="tab">Железо</button>
+    <button data-tab="settings" class="tab">Настройки</button>
+  </nav>
+
   <main>
-    <section class="grid">
-      <div class="card">
-        <h2>Нагрузка</h2>
-        <div class="meter"><label>CPU <b id="cpu">—</b></label><div class="bar"><i id="cpu-bar"></i></div></div>
-        <div class="meter"><label>RAM <b id="ram">—</b></label><div class="bar"><i id="ram-bar"></i></div></div>
-        <div class="meter"><label>VRAM <b id="vram">—</b></label><div class="bar vram"><i id="vram-bar"></i></div></div>
-        <p class="muted" id="gpu-name">видеокарта не определена</p>
-      </div>
+    <!-- ======================= СТАТУС / МОНИТОРИНГ ======================= -->
+    <section id="tab-status" data-page class="active">
+      <section class="grid">
+        <div class="card">
+          <h2>Нагрузка</h2>
+          <div class="meter"><label>CPU <b id="cpu">—</b></label><div class="bar"><i id="cpu-bar"></i></div></div>
+          <div class="meter"><label>RAM <b id="ram">—</b></label><div class="bar"><i id="ram-bar"></i></div></div>
+          <div class="meter"><label>VRAM <b id="vram">—</b></label><div class="bar vram"><i id="vram-bar"></i></div></div>
+          <p class="muted" id="gpu-name">видеокарта не определена</p>
+        </div>
 
-      <div class="card">
-        <h2>Backend</h2>
-        <dl class="kv">
-          <dt>Тип</dt><dd id="backend-type">—</dd>
-          <dt>Состояние</dt><dd id="backend-state">—</dd>
-          <dt>Версия</dt><dd id="backend-version">—</dd>
-          <dt>Очередь</dt><dd id="queue">—</dd>
-          <dt>Профиль</dt><dd id="profile">—</dd>
-        </dl>
-      </div>
+        <div class="card">
+          <h2>Backend</h2>
+          <dl class="kv">
+            <dt>Тип</dt><dd id="backend-type">—</dd>
+            <dt>Состояние</dt><dd id="backend-state">—</dd>
+            <dt>Версия</dt><dd id="backend-version">—</dd>
+            <dt>Очередь</dt><dd id="queue">—</dd>
+            <dt>Профиль</dt><dd id="profile">—</dd>
+          </dl>
+        </div>
 
-      <div class="card">
-        <h2>Модель</h2>
-        <select id="model" aria-label="Выбор модели"></select>
-        <label class="field">Контекст (токены)
-          <select id="ctx">
-            <option value="1024">1024</option>
-            <option value="2048" selected>2048</option>
-            <option value="4096">4096</option>
-            <option value="8192">8192</option>
+        <div class="card">
+          <h2>Модель</h2>
+          <select id="model" aria-label="Выбор модели"></select>
+          <label class="field">Контекст (токены)
+            <select id="ctx">
+              <option value="1024">1024</option>
+              <option value="2048" selected>2048</option>
+              <option value="4096">4096</option>
+              <option value="8192">8192</option>
+            </select>
+          </label>
+          <label class="field">Лимит ответа (токены)
+            <input id="maxtok" type="number" min="16" max="8192" step="64" value="512" />
+          </label>
+          <div class="btns">
+            <button id="btn-run" class="primary">Запустить</button>
+            <button id="btn-stop" class="danger">Остановить</button>
+            <button id="btn-unload">Выгрузить модель</button>
+          </div>
+          <p id="error" class="error" hidden></p>
+        </div>
+      </section>
+
+      <section class="card chat">
+        <h2>Генерация</h2>
+        <textarea id="prompt" rows="3" placeholder="Введите запрос (например: Объясни разницу между массивом и связным списком)"></textarea>
+        <div class="chat-actions">
+          <span class="muted" id="run-state"></span>
+          <button id="btn-send" class="primary">Отправить</button>
+        </div>
+        <pre id="output"></pre>
+        <div class="muted" id="timings"></div>
+      </section>
+
+      <section class="card">
+        <h2>События</h2>
+        <ul id="events" class="events"></ul>
+      </section>
+    </section>
+
+    <!-- ======================= МОИ МОДЕЛИ ======================= -->
+    <section id="tab-models" data-page hidden>
+      <section class="card">
+        <h2>Установленные модели</h2>
+        <p class="muted">Модели в backend (Ollama). Все они видны в переключателе моделей LiteMind Desktop (OpenCode) — провайдер «LiteMind».</p>
+        <ul id="my-models" class="model-list"><li class="muted">загрузка…</li></ul>
+      </section>
+      <section class="card">
+        <h2>Скачанные GGUF</h2>
+        <p class="muted" id="guf-dir">—</p>
+        <ul id="gguf-files" class="model-list"><li class="muted">—</li></ul>
+        <div class="btns">
+          <button id="btn-install-gguf">Установить выбранный GGUF в backend</button>
+          <span class="muted" id="install-note"></span>
+        </div>
+      </section>
+    </section>
+
+    <!-- ======================= КАТАЛОГ ======================= -->
+    <section id="tab-catalog" data-page hidden>
+      <section class="card">
+        <h2>Каталог моделей</h2>
+        <div class="filters">
+          <label><input type="checkbox" id="f-uncensored" checked /> Uncensored / Abliterated</label>
+          <label><input type="checkbox" id="f-small" checked /> Small Coding</label>
+          <label><input type="checkbox" id="f-advanced" checked /> Advanced Coding</label>
+          <label>Диск: <select id="f-drive"></select></label>
+          <label>Папка: <input id="f-dir" type="text" class="dir-input" /></label>
+        </div>
+        <p class="muted" id="hw-hint">—</p>
+        <div id="catalog-list"></div>
+      </section>
+    </section>
+
+    <!-- ======================= ЗАГРУЗКИ ======================= -->
+    <section id="tab-downloads" data-page hidden>
+      <section class="card">
+        <h2>Загрузки</h2>
+        <p class="muted">Поддерживается докачка: пауза и обрыв сети сохраняют файл .part, «Продолжить» докачает с места остановки.</p>
+        <ul id="download-list" class="model-list"><li class="muted">нет активных загрузок</li></ul>
+      </section>
+    </section>
+
+    <!-- ======================= ЖЕЛЕЗО ======================= -->
+    <section id="tab-hardware" data-page hidden>
+      <section class="card">
+        <h2>Анализ компьютера</h2>
+        <dl class="kv" id="hw-report"><dt>Загрузка</dt><dd>…</dd></dl>
+      </section>
+    </section>
+
+    <!-- ======================= НАСТРОЙКИ ======================= -->
+    <section id="tab-settings" data-page hidden>
+      <section class="card">
+        <h2>Настройки движка</h2>
+        <label class="field">Папка для моделей (диск/путь)
+          <input id="set-rootdir" type="text" class="dir-input" />
+        </label>
+        <label class="field">Профиль
+          <select id="set-profile">
+            <option value="low">Умеренный (Low Resource)</option>
+            <option value="balanced">Сбалансированный</option>
           </select>
         </label>
-        <label class="field">Лимит ответа (токены)
-          <input id="maxtok" type="number" min="16" max="8192" step="64" value="512" />
-        </label>
         <div class="btns">
-          <button id="btn-run" class="primary">Запустить</button>
-          <button id="btn-stop" class="danger">Остановить</button>
-          <button id="btn-unload">Выгрузить модель</button>
+          <button id="btn-save-settings" class="primary">Сохранить настройки</button>
+          <span class="muted" id="settings-note"></span>
         </div>
-        <p id="error" class="error" hidden></p>
-      </div>
-    </section>
-
-    <section class="card chat">
-      <h2>Генерация</h2>
-      <textarea id="prompt" rows="3" placeholder="Введите запрос (например: Объясни разницу между массивом и связным списком)"></textarea>
-      <div class="chat-actions">
-        <span class="muted" id="run-state"></span>
-        <button id="btn-send" class="primary">Отправить</button>
-      </div>
-      <pre id="output"></pre>
-      <div class="muted" id="timings"></div>
-    </section>
-
-    <section class="card">
-      <h2>События</h2>
-      <ul id="events" class="events"></ul>
+        <p class="muted">Профиль управляет: числом одновременных запросов, контекстом, лимитом ответа, потоками CPU, резервом RAM и автовыгрузкой модели. Настройки хранятся локально (config.json), ничего не отправляется в сеть.</p>
+      </section>
     </section>
   </main>
 

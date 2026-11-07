@@ -1,5 +1,7 @@
 // Shared fixtures for engine/API tests.
 import { loadConfig } from '../../src/config.js';
+import os from 'node:os';
+import path from 'node:path';
 import { createBackend } from '../../src/backends/registry.js';
 import { Engine } from '../../src/core/engine.js';
 import { Logger, PerfRecorder } from '../../src/diagnostics/log.js';
@@ -28,13 +30,16 @@ export function fakeSampler(initial = fakeMetrics()) {
   };
 }
 
-export function makeEngine({ baseUrl, overrides = {}, sampler = fakeSampler(), configMutator = null, logLevel = 'error' } = {}) {
+export function makeEngine({ baseUrl, overrides = {}, sampler = fakeSampler(), configMutator = null, logLevel = 'error', backend: backendOverride = null } = {}) {
   const config = loadConfig('this-path-does-not-exist.json'); // pure defaults
   config.backend.baseUrl = baseUrl;
+  // Изолируем путь сохранения: persist движка (профиль производительности,
+  // автооптимизация) не должен писать мусор в CWD и между тестами.
+  config.paths = { configPath: path.join(os.tmpdir(), `litemind-test-${process.pid}-${Date.now()}.json`), existed: false };
   configMutator?.(config);
   const logger = new Logger({ console: false, level: logLevel });
   const perf = new PerfRecorder();
-  const backend = createBackend(config, overrides);
+  const backend = backendOverride ?? createBackend(config, overrides);
   const engine = new Engine({ config, backend, sampler, logger, perf });
   return { engine, config, logger, perf, backend, sampler };
 }

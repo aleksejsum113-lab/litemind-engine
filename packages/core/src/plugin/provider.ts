@@ -12,6 +12,7 @@ import { GitLabPlugin } from "./provider/gitlab.js"
 import { GoogleVertexPlugin } from "./provider/google-vertex.js"
 import { KiloPlugin } from "./provider/kilo.js"
 import { LLMGatewayPlugin } from "./provider/llmgateway.js"
+import { LiteMindPlugin } from "./provider/litemind.js"
 import { LMStudioPlugin } from "./provider/lmstudio.js"
 import { ModalPlugin } from "./provider/modal.js"
 import { NeonPlugin } from "./provider/neon.js"
@@ -45,6 +46,7 @@ export const ProviderPlugins: PluginInternal.InternalPlugin[] = [
   KiloPlugin,
   LLMGatewayPlugin,
   LMStudioPlugin,
+  LiteMindPlugin,
   ModalPlugin,
   NeonPlugin,
   NvidiaPlugin,

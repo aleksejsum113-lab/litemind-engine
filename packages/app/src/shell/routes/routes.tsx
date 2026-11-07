@@ -21,6 +21,8 @@ const DraftRoute = lazy(() => import("@/new-session/route").then((module) => ({ 
 
 const SettingsScreen = lazy(() => import("@/settings/shell").then((module) => ({ default: module.SettingsScreen })))
 
+const LiteMindScreen = lazy(() => import("@/litemind/litemind-screen"))
+
 const ConnectServerScreen = lazy(() =>
   import("@/servers/connect/screen").then((module) => ({ default: module.ConnectServerScreen })),
 )
@@ -54,6 +56,7 @@ export function AppRoutes() {
     <Route component={AppLayout}>
       <Route path="/" component={Home} />
       <Route path="/settings" component={SettingsScreen} />
+      <Route path="/litemind" component={LiteMindScreen} />
       <Route
         path="/server/:serverKey/session/:id"
         component={() => (

@@ -19,6 +19,7 @@ import type { HomeProjectSelection, LocalProject } from "@/shell/state/layout"
 import { ServerConnection } from "@/runtime/server/registry"
 import { useLanguage } from "@/runtime/i18n/language"
 import { ServerRowMenuView, serverMenuLabels } from "@/servers/registry/row-menu"
+import { useNavigate } from "@solidjs/router"
 import { ServerHealthIndicator } from "@/servers/registry/row"
 import {
   isServerFailed,
@@ -325,6 +326,7 @@ function HomeProjectsPanel(props: HomeProjectsViewProps) {
           </Show>
         </div>
       </div>
+      <LiteMindNav class="mb-4 mt-4 hidden shrink-0 lg:flex" />
       <HomeUtilityNav
         class="mb-8 mt-4 hidden shrink-0 lg:flex"
         onOpenSettings={props.onOpenSettings}
@@ -332,6 +334,73 @@ function HomeProjectsPanel(props: HomeProjectsViewProps) {
         language={props.language}
       />
     </aside>
+  )
+}
+
+/**
+ * LiteMind Engine section of the sidebar (ТЗ §2/§3).
+ * Все разделы открываются ВНУТРИ окна приложения (route /litemind?section=...),
+ * никаких переходов в браузер на 127.0.0.1:8399.
+ */
+export function LiteMindNav(props: { class?: string }) {
+  const navigate = useNavigate()
+  const open = (section: string) => navigate(`/litemind?section=${section}`)
+  return (
+    <div
+      class={`${props.class ?? ""} min-w-0 flex-row justify-between gap-1 lg:flex-col lg:justify-start lg:pr-3 [&>button]:w-auto lg:[&>button]:w-full`}
+    >
+      <div class="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-v2-text-text-faint">
+        LiteMind
+      </div>
+      <HomeProjectNavButton
+        type="button"
+        class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
+        onClick={() => open("models")}
+      >
+        <Icon name="outline-brain" size="small" />
+        <span class={HOME_PROJECT_NAV_LABEL}>Мои модели</span>
+      </HomeProjectNavButton>
+      <HomeProjectNavButton
+        type="button"
+        class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
+        onClick={() => open("catalog")}
+      >
+        <Icon name="code-slash" size="small" />
+        <span class={HOME_PROJECT_NAV_LABEL}>Каталог моделей</span>
+      </HomeProjectNavButton>
+      <HomeProjectNavButton
+        type="button"
+        class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
+        onClick={() => open("downloads")}
+      >
+        <Icon name="arrow-down-to-line" size="small" />
+        <span class={HOME_PROJECT_NAV_LABEL}>Загрузки</span>
+      </HomeProjectNavButton>
+      <HomeProjectNavButton
+        type="button"
+        class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
+        onClick={() => open("hardware")}
+      >
+        <Icon name="window-analytics" size="small" />
+        <span class={HOME_PROJECT_NAV_LABEL}>Железо</span>
+      </HomeProjectNavButton>
+      <HomeProjectNavButton
+        type="button"
+        class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
+        onClick={() => open("monitor")}
+      >
+        <Icon name="outline-console" size="small" />
+        <span class={HOME_PROJECT_NAV_LABEL}>Мониторинг</span>
+      </HomeProjectNavButton>
+      <HomeProjectNavButton
+        type="button"
+        class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
+        onClick={() => open("settings")}
+      >
+        <Icon name="settings-gear" size="small" />
+        <span class={HOME_PROJECT_NAV_LABEL}>Настройки LiteMind</span>
+      </HomeProjectNavButton>
+    </div>
   )
 }
 

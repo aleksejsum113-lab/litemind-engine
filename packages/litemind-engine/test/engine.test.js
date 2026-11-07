@@ -13,9 +13,9 @@ test('engine detects backend at start and reports status', async () => {
     assert.equal(health.ok, true);
     const s = await engine.status();
     assert.equal(s.backend.type, 'ollama');
-    assert.equal(s.queue.limit, 1, 'Low Resource allows one active request');
+    assert.equal(s.queue.limit, 2, 'Balanced (default) allows two active requests');
     assert.equal(s.models.length, 2);
-    assert.equal(s.engine.profile, 'low');
+    assert.equal(s.engine.profile, 'balanced');
     engine.shutdown();
   } finally { await mock.close(); }
 });
@@ -51,7 +51,7 @@ test('requests are serialised under the Low Resource concurrency limit', async (
 test('queue overflow is rejected with QUEUE_FULL (429) instead of piling up', async () => {
   const mock = await startMockOllama({ tokenDelayMs: 10, words: ['x', 'y', 'z', 'w', 'q', 'e'] });
   try {
-    const { engine, config } = makeEngine({ baseUrl: mock.url, configMutator: (c) => { c.profiles.low.queueLimit = 1; } });
+    const { engine, config } = makeEngine({ baseUrl: mock.url, configMutator: (c) => { c.profile = 'low'; c.profiles.low.queueLimit = 1; } });
     await engine.start();
     const p1 = engine.generate({ model: 'tinytest:1b', messages: MSG });
     const p2 = engine.generate({ model: 'tinytest:1b', messages: MSG }); // queues
@@ -71,7 +71,7 @@ test('queue overflow is rejected with QUEUE_FULL (429) instead of piling up', as
 test('a queued request can be cancelled before it runs', async () => {
   const mock = await startMockOllama({ tokenDelayMs: 20, words: ['a', 'b', 'c', 'd'] });
   try {
-    const { engine } = makeEngine({ baseUrl: mock.url });
+    const { engine } = makeEngine({ baseUrl: mock.url, configMutator: (c) => { c.profile = 'low'; } });
     await engine.start();
     const p1 = engine.generate({ model: 'tinytest:1b', messages: MSG });
     await new Promise((r) => setTimeout(r, 20));
@@ -215,7 +215,7 @@ test('recovery: backend coming back is detected again by ensureHealthy', async (
 test('idle models are unloaded automatically after the profile timer', async () => {
   const mock = await startMockOllama();
   try {
-    const { engine, config } = makeEngine({ baseUrl: mock.url, configMutator: (c) => { c.profiles.low.idleUnloadSeconds = 0.15; } });
+    const { engine, config } = makeEngine({ baseUrl: mock.url, configMutator: (c) => { c.profile = 'low'; c.profiles.low.idleUnloadSeconds = 0.15; } });
     await engine.start();
     await engine.generate({ model: 'tinytest:1b', messages: MSG });
     assert.equal(mock.state.unloads.length, 0, 'not unloaded while active');

@@ -46,7 +46,7 @@ test('/health reports ok with a healthy backend', async () => {
     const data = await res.json();
     assert.equal(data.status, 'ok');
     assert.equal(data.backend.healthy, true);
-    assert.equal(data.profile, 'low');
+    assert.equal(data.profile, 'balanced');
   } finally { await api.close(); await mock.close(); }
 });
 
@@ -70,7 +70,9 @@ test('/v1/models returns OpenAI list shape', async () => {
     const data = await res.json();
     assert.equal(data.object, 'list');
     assert.equal(data.data.length, 2);
-    assert.deepEqual(Object.keys(data.data[0]).sort(), ['created', 'id', 'object', 'owned_by', 'size']);
+    assert.deepEqual(Object.keys(data.data[0]).sort(), ['created', 'id', 'litemind', 'object', 'owned_by', 'size']);
+    assert.equal(data.data[0].litemind.backend, 'ollama');
+    assert.equal(typeof data.data[0].litemind.tools, 'boolean');
   } finally { await api.close(); await mock.close(); }
 });
 
@@ -199,7 +201,7 @@ test('POST /api/cancel is safe for unknown ids', async () => {
 
 test('queue overflow answers 429 instead of stacking requests', async () => {
   const mock = await startMockOllama({ tokenDelayMs: 40, words: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] });
-  const api = await startApi({ baseUrl: mock.url, configMutator: (c) => { c.profiles.low.queueLimit = 0; } });
+  const api = await startApi({ baseUrl: mock.url, configMutator: (c) => { c.profile = 'low'; c.profiles.low.queueLimit = 0; } });
   try {
     const first = fetch(`${api.url}/v1/chat/completions`, {
       method: 'POST', headers: { 'content-type': 'application/json' },

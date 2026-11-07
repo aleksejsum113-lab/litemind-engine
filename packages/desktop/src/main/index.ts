@@ -24,6 +24,9 @@ if (acquireApplicationLock()) {
     createEarlyWindow()
     marks.window = Date.now()
     startSidecarProbe()
+    // LiteMind Engine: локальный движок моделей поднимается внутри приложения
+    // (порт 8399). Fire-and-forget — окно не ждёт движок.
+    void import("./service/litemind-host").then((m) => m.startLiteMindEngineHost())
 
     // The window's renderer is already loading. Its HTML and preloaded chunks are served from this
     // thread, so the bundle waits for that burst to be answered (or a cap) before it evaluates.

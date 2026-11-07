@@ -64,7 +64,7 @@ const getBase = (appId: string): Configuration => {
   const desktopName = `${appId}.desktop`
 
   return {
-    artifactName: "opencode-desktop-${os}-${arch}.${ext}",
+    artifactName: "litemind-desktop-${os}-${arch}.${ext}",
     directories: {
       output: "dist",
       buildResources: "resources",
@@ -178,14 +178,21 @@ const getBase = (appId: string): Configuration => {
     },
     win: {
       icon: `resources/icons/icon.ico`,
-      target: ["nsis"],
+      // NSIS-установщик + portable-версия (ТЗ §7).
+      target: [{ target: "nsis", arch: ["x64"] }, { target: "portable", arch: ["x64"] }],
       verifyUpdateCodeSignature: false,
     },
     nsis: {
       include: path.join(packageDir, "resources", "windows", "installer.nsh"),
-      oneClick: true,
+      // Пошаговый установщик: пользователь выбирает папку, создаются ярлыки.
+      oneClick: false,
       perMachine: false,
+      allowToChangeInstallationDirectory: true,
+      createDesktopShortcut: true,
+      createStartMenuShortcut: true,
+      shortcutName: "LiteMind Engine",
       installerIcon: `resources/icons/icon.ico`,
+      uninstallerIcon: `resources/icons/icon.ico`,
       installerHeaderIcon: `resources/icons/icon.ico`,
     },
     linux: {
@@ -218,7 +225,7 @@ export function getConfig() {
       return {
         ...base,
         appId,
-        productName: "OpenCode Dev",
+        productName: "LiteMind Dev",
         publish: {
           provider: "generic",
           url: "https://opencode.ai/update/api/dev/desktop/opencode/",
@@ -236,8 +243,8 @@ export function getConfig() {
       return {
         ...base,
         appId,
-        productName: "OpenCode Beta",
-        protocols: { name: "OpenCode Beta", schemes: ["opencode"] },
+        productName: "LiteMind Beta",
+        protocols: { name: "LiteMind Beta", schemes: ["opencode"] },
         publish: {
           provider: "generic",
           url: "https://opencode.ai/update/api/beta/desktop/opencode/",
@@ -255,8 +262,8 @@ export function getConfig() {
       return {
         ...base,
         appId,
-        productName: "OpenCode",
-        protocols: { name: "OpenCode", schemes: ["opencode"] },
+        productName: "LiteMind",
+        protocols: { name: "LiteMind", schemes: ["opencode"] },
         // An Icon Composer package compiles to Assets.car, which macOS 26 and later draw the app icon from
         // (Dock, Finder, system dialogs and the system icon styles). Older macOS keeps using the ICNS.
         mac: { ...base.mac, icon: "resources/icons/icon.icon" },

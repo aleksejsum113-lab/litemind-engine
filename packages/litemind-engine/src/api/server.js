@@ -5,6 +5,15 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CATALOG, CATEGORIES, catalogEntry } from '../catalog/models.js';
+import * as hardware from '../diagnostics/hardware.js';
+import * as compat from '../compat.js';
+import { DownloadManager } from '../download/manager.js';
+import { OllamaInstaller } from '../install/ollama.js';
+import { optimizeModel, SLOW_TOKENS_PER_SEC } from '../optimize/optimizer.js';
+import { capabilitiesFor } from '../adaptive/capabilities.js';
+import * as projectIndex from '../adaptive/project-index.js';
+import { saveConfig } from '../config.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui', 'public');
 const MAX_BODY = 1024 * 1024; // 1 MiB
@@ -78,6 +87,45 @@ function readBody(req) {
 }
 
 export function createServer({ config, engine, logger }) {
+  // --- LiteMind v0.2 services -----------------------------------------
+  const downloads = new DownloadManager({
+    onEvent: (e) => logger?.info('download', { ...e })
+  });
+  const installer = new OllamaInstaller({ baseUrl: config.backend.baseUrl });
+  const disksCandidateRoots = () => {
+    const roots = process.platform === 'win32' ? ['C:\\', 'D:\\', 'E:\\', 'F:\\'] : ['/'];
+    const configuredRoot = path.parse(path.resolve(config.models.rootDir)).root;
+    return roots.includes(configuredRoot) ? roots : [configuredRoot, ...roots];
+  };
+  const installedNames = new Set();
+  let installedCacheAt = 0;
+  const refreshInstalled = async () => {
+    if (Date.now() - installedCacheAt < 5000) return;
+    try {
+      const models = await engine.listModels({ force: false });
+      for (const m of models) installedNames.add(m.id);
+      installedCacheAt = Date.now();
+    } catch {
+      /* backend может быть выключен — каталог всё равно работает */
+    }
+  };
+
+  /** Список скачанных GGUF (только верхний уровень папки моделей). */
+  async function listGgufFiles(rootDir) {
+    try {
+      const entries = await fs.promises.readdir(rootDir, { withFileTypes: true });
+      const out = [];
+      for (const e of entries) {
+        if (!e.isFile() || !/\.gguf$/i.test(e.name) || e.name.endsWith('.part')) continue;
+        const st = await fs.promises.stat(path.join(rootDir, e.name));
+        out.push({ name: e.name, path: path.join(rootDir, e.name), sizeBytes: st.size });
+      }
+      return out.sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      return [];
+    }
+  }
+
   const server = http.createServer(async (req, res) => {
     try {
       await route(req, res);
@@ -142,6 +190,88 @@ export function createServer({ config, engine, logger }) {
 
     if (req.method === 'POST' && p === '/api/stop') return json(res, 200, engine.cancelAll());
 
+    // --- Автооптимизация модели (замер скорости и подбор потоков) --------
+    if (req.method === 'GET' && p === '/api/optimize') {
+      return json(res, 200, {
+        optimizations: config.optimizations ?? {},
+        slowTokensPerSec: SLOW_TOKENS_PER_SEC,
+        activeProfile: config.profile
+      });
+    }
+    if (req.method === 'POST' && p === '/api/optimize') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (!body.model || typeof body.model !== 'string') {
+        return openaiError(res, 400, 'model is required', 'invalid_request_error');
+      }
+      if (!(await engine.ensureHealthy())) {
+        return openaiError(res, 503, engine.health.error || 'Backend is not reachable.', 'api_error', 'BACKEND_UNAVAILABLE');
+      }
+      try {
+        const report = await optimizeModel({
+          engine,
+          model: body.model,
+          onProgress: (s) => logger?.info('optimize', { model: body.model, ...s })
+        });
+        return json(res, 200, report);
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'optimize_error', err.code || null);
+      }
+    }
+
+    // --- Adaptive Controller: настройки и статистика ----------------------
+    if (req.method === 'GET' && p === '/api/adaptive') {
+      return json(res, 200, {
+        config: config.adaptive ?? {},
+        stats: engine.adaptiveStats ?? null,
+        optimizations: config.optimizations ?? {},
+        activeProfile: config.profile
+      });
+    }
+    if (req.method === 'POST' && p === '/api/adaptive') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      config.adaptive = config.adaptive ?? {};
+      if (typeof body.enabled === 'boolean') config.adaptive.enabled = body.enabled;
+      if (typeof body.contextCompaction === 'boolean') config.adaptive.contextCompaction = body.contextCompaction;
+      if (typeof body.auxEnabled === 'boolean') config.adaptive.auxEnabled = body.auxEnabled;
+      if ('auxModel' in body) config.adaptive.auxModel = body.auxModel ? String(body.auxModel) : null;
+      saveConfig(config, config.paths.configPath);
+      logger?.info('adaptive settings saved', { adaptive: config.adaptive });
+      return json(res, 200, { ok: true, config: config.adaptive });
+    }
+
+    // --- Project Context (индексация и поиск по проекту) ------------------
+    if (req.method === 'POST' && p === '/api/project/scan') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const dir = body.path ? path.resolve(body.path) : null;
+      if (!dir) return openaiError(res, 400, 'path is required', 'invalid_request_error');
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        return openaiError(res, 404, `Каталог не найден: ${dir}`, 'invalid_request_error');
+      }
+      const summary = await projectIndex.scanProject(dir, { force: body.force === true });
+      return json(res, 200, summary);
+    }
+    if (req.method === 'GET' && p === '/api/project/search') {
+      const dir = url.searchParams.get('path');
+      const q = url.searchParams.get('q');
+      if (!dir || !q) return openaiError(res, 400, 'path and q are required', 'invalid_request_error');
+      try {
+        const result = await projectIndex.searchProject(dir, q, { limit: Number(url.searchParams.get('limit')) || 5 });
+        return json(res, 200, result);
+      } catch (err) {
+        return openaiError(res, 500, err.message, 'api_error', 'PROJECT_SEARCH_FAILED');
+      }
+    }
+    if (req.method === 'GET' && p === '/api/project/map') {
+      const dir = url.searchParams.get('path');
+      if (!dir) return openaiError(res, 400, 'path is required', 'invalid_request_error');
+      return json(res, 200, projectIndex.projectMap(dir) ?? { error: 'проект не просканирован' });
+    }
+
+    // --- Карта возможностей runtime (честная) -----------------------------
+    if (req.method === 'GET' && p === '/api/capabilities') {
+      return json(res, 200, { runtime: engine.backend.type, capabilities: capabilitiesFor(engine.backend.type) });
+    }
+
     // Graceful shutdown: closes only this server; the CLI exits on 'close'.
     if (req.method === 'POST' && p === '/api/shutdown') {
       json(res, 200, { stopping: true });
@@ -154,6 +284,119 @@ export function createServer({ config, engine, logger }) {
     }
 
     // --- OpenAI compatible ----------------------------------------------
+
+    // --- LiteMind v0.2: hardware, catalog, downloads, install -----------
+    await refreshInstalled();
+
+    if (req.method === 'GET' && p === '/api/hardware') {
+      const hw = await hardware.analyzeHardware({ candidateRoots: disksCandidateRoots() });
+      hw.ggufFiles = await listGgufFiles(config.models.rootDir);
+      return json(res, 200, hw);
+    }
+
+    if (req.method === 'GET' && p === '/api/settings') {
+      return json(res, 200, { modelsRootDir: config.models.rootDir, profile: config.profile, configPath: config.paths.configPath });
+    }
+
+    if (req.method === 'POST' && p === '/api/settings') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (typeof body.modelsRootDir === 'string' && body.modelsRootDir.trim()) {
+        config.models.rootDir = path.resolve(body.modelsRootDir.trim());
+      }
+      if (typeof body.profile === 'string') engine.setProfile(body.profile);
+      const saved = saveConfig(config, config.paths.configPath);
+      logger?.info('settings saved', { modelsRootDir: config.models.rootDir, profile: config.profile, path: saved });
+      return json(res, 200, { ok: true, modelsRootDir: config.models.rootDir, profile: config.profile, configPath: saved });
+    }
+
+    if (req.method === 'GET' && p === '/api/catalog') {
+      const hw = await hardware.analyzeHardware({ candidateRoots: disksCandidateRoots() });
+      return json(res, 200, {
+        categories: CATEGORIES,
+        modelsRootDir: config.models.rootDir,
+        models: CATALOG.map((m) => {
+          const rating = compat.rateCatalogModel(m, hw);
+          const installed = installedNames.has(m.ollamaName);
+          const downloaded = fs.existsSync(path.join(config.models.rootDir, rating.recommended?.name ?? ''));
+          return { ...m, compatibility: rating, installed, downloaded };
+        }),
+        hardware: { totalRamMb: hw.totalRamMb, freeRamMb: hw.freeRamMb, cpu: hw.cpu, recommendation: hw.recommendation }
+      });
+    }
+
+    if (req.method === 'GET' && p === '/api/downloads') {
+      return json(res, 200, { downloads: downloads.list(), rootDir: config.models.rootDir });
+    }
+
+    if (req.method === 'POST' && p === '/api/downloads') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const model = catalogEntry(body.modelId);
+      if (!model) return openaiError(res, 404, `Unknown catalog model: ${body.modelId}`, 'invalid_request_error');
+      const file = model.files.find((f) => f.name === body.fileName) ?? model.files[model.files.length - 1];
+      const targetDir = path.resolve(body.targetDir || config.models.rootDir);
+      // Проверка места на диске до старта (защита от забитого диска).
+      try {
+        const st = fs.statfsSync(targetDir);
+        if (file.sizeBytes && st.bsize * st.bfree < file.sizeBytes + config.models.minFreeFraction * (st.bsize * st.blocks)) {
+          return openaiError(res, 507, 'Недостаточно места на выбранном диске (с учётом резерва 5%). Выберите другой диск.', 'insufficient_storage', 'NO_DISK_SPACE');
+        }
+      } catch {
+        /* каталог ещё не создан — mkdir сделает менеджер; проверка free места невозможна */
+      }
+      const job = await downloads.start({ id: model.id, url: file.url, name: file.name, targetDir, sizeBytes: file.sizeBytes });
+      return json(res, 202, job);
+    }
+
+    {
+      const m = /^\/api\/downloads\/([^/]+)\/(pause|resume|cancel)$/.exec(p);
+      if (m && req.method === 'POST') {
+        const [, id, action] = m;
+        if (action === 'pause') return json(res, 200, downloads.pause(id));
+        if (action === 'resume') return json(res, 200, await downloads.resume(id));
+        return json(res, 200, await downloads.cancel(id));
+      }
+    }
+
+    if (req.method === 'POST' && p === '/api/install') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      // Форма А: ggufPath (вкладка «Мои модели») — имя модели генерируем.
+      // Форма Б: modelId [+ fileName] (каталог) — фирменное имя из каталога.
+      let ggufPath = null;
+      let modelName = null;
+      if (body.modelId) {
+        const model = catalogEntry(body.modelId);
+        if (!model) return openaiError(res, 404, `Unknown catalog model: ${body.modelId}`, 'invalid_request_error');
+        const rating = compat.rateCatalogModel(model, await hardware.analyzeHardware({ candidateRoots: disksCandidateRoots() }));
+        const fileName = body.fileName ?? rating.recommended?.name;
+        if (!fileName) return openaiError(res, 409, 'Не удалось выбрать квантование — передайте fileName.', 'invalid_request_error');
+        ggufPath = path.join(body.targetDir || config.models.rootDir, fileName);
+        modelName = model.ollamaName;
+      } else if (typeof body.ggufPath === 'string' && body.ggufPath.trim()) {
+        ggufPath = path.resolve(body.ggufPath.trim());
+        const base = path.basename(ggufPath).replace(/\.gguf$/i, '').replace(/[^\w.-]+/g, '-').toLowerCase();
+        modelName = body.modelName ?? `litemind-custom-${base.slice(0, 48)}`;
+      } else {
+        return openaiError(res, 400, 'Нужен modelId или ggufPath.', 'invalid_request_error');
+      }
+      if (!fs.existsSync(ggufPath)) {
+        return openaiError(res, 409, `GGUF не найден: ${ggufPath}. Сначала скачайте модель.`, 'invalid_request_error', 'GGUF_NOT_FOUND');
+      }
+      try {
+        const result = await installer.installFromGguf({
+          ggufPath,
+          modelName,
+          onStage: (s) => logger?.info('install stage', { model: modelName, ...s })
+        });
+        installedNames.add(result.model);
+        installedCacheAt = Date.now();
+        logger?.info('model installed into backend', { model: result.model, digest: result.digest });
+        return json(res, 200, { ok: true, ...result });
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'install_error', err.code);
+      }
+    }
+
+    // --- OpenAI compatible: models --------------------------------------
     if (req.method === 'GET' && (p === '/v1/models' || p === '/api/models')) {
       let models = [];
       let err = null;
@@ -165,7 +408,22 @@ export function createServer({ config, engine, logger }) {
       }
       const data = {
         object: 'list',
-        data: models.map((m) => ({ id: m.id, object: 'model', created: 0, owned_by: 'litemind', size: m.sizeBytes ?? null }))
+        data: models.map((m) => ({
+          id: m.id,
+          object: 'model',
+          created: 0,
+          owned_by: 'litemind',
+          size: m.sizeBytes ?? null,
+          litemind: {
+            sizeBytes: m.sizeBytes ?? null,
+            quantization: m.quantization ?? null,
+            family: m.family ?? null,
+            contextTokens: null,
+            tools: m.tools ?? true,
+            vision: m.vision ?? false,
+            backend: engine.backend.type
+          }
+        }))
       };
       if (err && models.length === 0) {
         return openaiError(res, 503, `Backend unavailable: ${err}`, 'api_error', 'BACKEND_UNAVAILABLE');

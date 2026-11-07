@@ -68,3 +68,41 @@ button.danger { background: rgba(224,92,92,.14); border-color: rgba(224,92,92,.5
 .events { list-style: none; margin: 0; padding: 0; font-size: 12px; max-height: 200px; overflow: auto; }
 .events li { padding: 3px 0; border-bottom: 1px dashed var(--line); color: var(--muted); }
 .events li b { color: var(--fg); font-weight: 600; }
+
+/* ===== v0.2: tabs, catalog, downloads ===== */
+.tabs { display: flex; gap: 4px; padding: 10px 18px 0; max-width: 1100px; margin: 0 auto; }
+.tab {
+  padding: 8px 14px; border-radius: 8px 8px 0 0; border: 1px solid transparent;
+  background: transparent; color: var(--muted);
+}
+.tab.active { background: var(--card); border-color: var(--line); color: var(--fg); }
+.model-list { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; }
+.model-list li {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 7px 4px; border-bottom: 1px dashed var(--line); flex-wrap: wrap;
+}
+.model-list li:last-child { border-bottom: none; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; }
+.dot.green { background: var(--ok); }
+.dot.yellow { background: var(--warn); }
+.dot.red { background: var(--bad); }
+.tag {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+  background: rgba(224,92,92,.15); color: var(--bad); border: 1px solid rgba(224,92,92,.45);
+  margin-left: 6px;
+}
+.tag.muted-tag { background: #2a3342; color: var(--muted); border-color: var(--line); }
+.tag.ok-tag { background: rgba(57,192,122,.12); color: var(--ok); border-color: rgba(57,192,122,.4); }
+.filters { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-size: 13px; margin-bottom: 8px; }
+.filters label { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.filters input[type="checkbox"] { width: auto; margin: 0; }
+.dir-input { width: 260px; margin-top: 0; display: inline-block; }
+.model-item-main { min-width: 240px; flex: 1; }
+.model-item-title { font-weight: 600; }
+.model-item-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.model-item-actions { display: flex; gap: 6px; align-items: center; }
+.model-item-actions select { width: auto; margin: 0; padding: 5px 8px; font-size: 12px; }
+.progress { height: 6px; background: #0c1017; border-radius: 4px; overflow: hidden; margin-top: 6px; width: 100%; }
+.progress i { display: block; height: 100%; background: var(--accent); transition: width .5s; }
+#catalog-list { display: grid; gap: 10px; margin-top: 12px; }
+.catalog-item { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #131924; }

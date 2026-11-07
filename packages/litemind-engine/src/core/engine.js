@@ -1,8 +1,10 @@
 // LiteMind Core — request lifecycle, queueing, cancellation, timeouts, model unload.
 // Owns policy (Low Resource limits, memory gate); never implements inference itself.
 import { randomUUID } from 'node:crypto';
-import { activeProfile } from '../config.js';
+import { activeProfile, saveConfig } from '../config.js';
 import { checkStartBudget, estimateModelMemoryMb } from '../resource/gate.js';
+import { applyBackendPriority } from '../resource/priority.js';
+import { prepareRequest } from '../adaptive/controller.js';
 import { BackendError } from '../backends/base.js';
 
 export class EngineError extends Error {
@@ -31,6 +33,7 @@ export class Engine {
     this._idleTimer = null;
     this._modelsCache = { at: 0, models: null, ttlMs: 4000 };
     this.stats = { enqueued: 0, rejectedQueueFull: 0, rejectedBudget: 0, cancelled: 0, timeouts: 0, completed: 0, failed: 0 };
+    this.adaptiveStats = { compacted: 0, tokensSaved: 0, byComplexity: { simple: 0, file: 0, project: 0, hard: 0 } };
   }
 
   get profile() {
@@ -42,6 +45,8 @@ export class Engine {
       throw new EngineError(`Unknown profile "${name}". Available: ${Object.keys(this.config.profiles).join(', ')}`, { code: 'BAD_PROFILE', status: 400 });
     }
     this.config.profile = name;
+    // Приоритет процессов инференса (Бережный → BelowNormal). Fire-and-forget.
+    applyBackendPriority({ profile: name, log: this.log });
     this.log.info('profile switched', { profile: name });
     return this.profile;
   }
@@ -90,6 +95,8 @@ export class Engine {
       requests: [...this.requests.values()].slice(-10).reverse(),
       metrics,
       stats: { ...this.stats },
+      adaptive: this.adaptiveStats,
+      optimizations: this.config.optimizations ?? {},
       perf: this.perf?.summary() ?? null,
       models: [],
       modelsError: null
@@ -156,7 +163,11 @@ export class Engine {
     const p = this.profile;
     const ctx = Number(contextTokens) > 0 ? Number(contextTokens) : p.contextTokens;
     const maxOut = Number(maxOutputTokens) > 0 ? Number(maxOutputTokens) : p.maxOutputTokens;
-    const thr = threads === undefined || threads === null ? p.cpuThreads : Number(threads);
+    let thr = threads === undefined || threads === null ? p.cpuThreads : Number(threads);
+    // Автооптимизация: измеренная для модели конфигурация потоков имеет приоритет
+    // над профилем (если вызывающий не передал threads явно).
+    const savedOpt = this.config.optimizations?.[model];
+    if ((threads === undefined || threads === null) && savedOpt?.threads) thr = savedOpt.threads;
 
     const record = {
       id: `req_${randomUUID().slice(0, 8)}`,
@@ -171,6 +182,21 @@ export class Engine {
     };
     this.requests.set(record.id, record);
 
+    // --- Adaptive Controller: сложность, уплотнение контекста, бюджет генерации ---
+    const prepared = prepareRequest({
+      messages,
+      contextTokens: ctx,
+      maxOutputTokens: maxOut,
+      adaptive: this.config.adaptive ?? {}
+    });
+    if (prepared.meta?.adaptive === 'on') {
+      if (prepared.meta.compaction) {
+        this.adaptiveStats.compacted++;
+        this.adaptiveStats.tokensSaved += prepared.meta.compaction.dropped;
+      }
+      if (prepared.complexity) this.adaptiveStats.byComplexity[prepared.complexity]++;
+    }
+
     const ctrl = new AbortController();
     record._ctrl = ctrl;
     const onOuterAbort = () => ctrl.abort(new Error('cancelled by client'));
@@ -181,7 +207,9 @@ export class Engine {
 
     let timedOut = false;
     let cancelled = false;
+    let overloaded = false;
     let watchdog = null;
+    let overloadWatch = null;
     const armWatchdog = () => {
       if (watchdog) clearTimeout(watchdog);
       watchdog = setTimeout(() => {
@@ -215,6 +243,9 @@ export class Engine {
         if (gate.severity === 'warn') this.log.warn('memory forecast warning', { model, ...gate });
       }
 
+      // --- контроль памяти ВО ВРЕМЯ генерации (защита Windows от зависаний) ---
+      overloadWatch = this._startOverloadWatch(ctrl, () => { overloaded = true; });
+
       const started = this.now();
       let firstTokenAt = null;
 
@@ -231,10 +262,12 @@ export class Engine {
 
       const result = await this.backend.generate({
         model,
-        messages,
-        contextTokens: ctx,
-        maxOutputTokens: maxOut,
+        messages: prepared.messages,
+        contextTokens: prepared.contextTokens,
+        maxOutputTokens: prepared.maxOutputTokens,
         threads: thr,
+        numBatch: p.numBatch ?? 0,
+        useMmap: this.config.backend.useMmap ?? null,
         signal: ctrl.signal,
         onToken: wrappedOnToken
       });
@@ -245,6 +278,7 @@ export class Engine {
       const sample = {
         requestId: record.id,
         model,
+        complexity: prepared.complexity,
         durationMs,
         ttftMs: record.ttftMs,
         outputTokens,
@@ -252,10 +286,25 @@ export class Engine {
         queuedMs: record.startedAt - record.createdAt
       };
       this.perf?.record(sample);
+      this._trackModelPerformance(model, sample);
       this.stats.completed++;
       this._record(record, { state: 'done', finishedAt, outputTokens, durationMs, ttftMs: record.ttftMs });
       return { ...result, requestId: record.id, timings: sample };
     } catch (err) {
+      if (overloaded) {
+        this.stats.failed++;
+        // Безопасно выгружаем модель: RAM должна вернуться системе сразу.
+        this.backend.unload(model).catch(() => {});
+        const e = new EngineError(
+          'Обнаружена опасная нагрузка на память — генерация остановлена для защиты Windows. ' +
+            'Попробуйте меньший контекст, более лёгкий квант или профиль «Бережный».',
+          { code: 'MEMORY_OVERLOAD', status: 503 }
+        );
+        this.perf?.record({ requestId: record.id, model, error: e.message, overloaded: true });
+        this._record(record, { state: 'error', finishedAt: this.now(), error: e.message });
+        this.log.warn('generation stopped: memory overload', { id: record.id, model });
+        throw e;
+      }
       if (timedOut && !signal?.aborted) {
         this.stats.timeouts++;
         const e = new EngineError(
@@ -293,8 +342,60 @@ export class Engine {
     } finally {
       clearTimeout(overallTimer);
       if (watchdog) clearTimeout(watchdog);
+      if (overloadWatch) clearInterval(overloadWatch);
       signal?.removeEventListener('abort', onOuterAbort);
       if (acquired) this._release();
+    }
+  }
+
+  /**
+   * Периодическая проверка памяти во время генерации. При опасном уровне
+   * (выше maxRamUsageFraction + 15%) прерывает генерацию — Windows остаётся
+   * отзывчивой, модель затем выгружается вызывающим кодом.
+   */
+  _startOverloadWatch(ctrl, onOverload) {
+    const interval = Math.max(1000, this.config.resource.pollIntervalMs || 2000);
+    const critical = (this.config.resource.maxRamUsageFraction ?? 0.75) + 0.15;
+    const timer = setInterval(() => {
+      Promise.resolve(this.sampler?.sample?.())
+        .then((m) => {
+          if (!m?.totalRamMb) return;
+          const frac = (m.totalRamMb - (m.availableRamMb ?? m.totalRamMb)) / m.totalRamMb;
+          if (frac >= critical && !ctrl.signal.aborted) {
+            this.log.warn('memory overload detected', { usedFraction: Math.round(frac * 100) + '%' });
+            onOverload();
+            ctrl.abort(new Error('memory overload'));
+          }
+        })
+        .catch(() => {});
+    }, interval);
+    timer.unref?.();
+    return timer;
+  }
+
+  /**
+   * Самообучение (ТЗ §7): живые метрики каждой модели (EMA tokens/sec, TTFT,
+   * число запросов, стабильность) копятся в config.optimizations и периодически
+   * пишутся на диск. Бенчмарк-метки (threads/measuredAt) не перезаписываются.
+   */
+  _trackModelPerformance(model, sample) {
+    const o = this.config.optimizations ?? (this.config.optimizations = {});
+    const cur = o[model] ?? {};
+    const ema = (prev, val, k = 0.3) => {
+      if (val == null || !Number.isFinite(val)) return prev ?? null;
+      if (prev == null || !Number.isFinite(prev)) return Math.round(val * 10) / 10;
+      return Math.round((prev * (1 - k) + val * k) * 10) / 10;
+    };
+    o[model] = {
+      ...cur,
+      tokensPerSecond: ema(cur.tokensPerSecond, sample.tokensPerSecond),
+      ttftMs: ema(cur.ttftMs, sample.ttftMs),
+      requests: (cur.requests ?? 0) + 1,
+      lastSeenAt: new Date().toISOString()
+    };
+    if (!this._perfPersistAt || Date.now() - this._perfPersistAt > 60000) {
+      this._perfPersistAt = Date.now();
+      try { saveConfig(this.config, this.config.paths.configPath); } catch { /* не критично */ }
     }
   }
 

@@ -16,6 +16,7 @@ export const DEFAULT_PROFILES = {
     contextTokens: 2048,
     maxOutputTokens: 512,
     cpuThreads: 2,
+    numBatch: 128,
     requestTimeoutMs: 120000,
     idleUnloadSeconds: 300,
     autoLoadAtStartup: false,
@@ -31,11 +32,30 @@ export const DEFAULT_PROFILES = {
     contextTokens: 4096,
     maxOutputTokens: 1024,
     cpuThreads: 0, // 0 = backend default
+    numBatch: 256,
     requestTimeoutMs: 180000,
     idleUnloadSeconds: 600,
     autoLoadAtStartup: false,
     allowAutoDownload: false,
     memoryReserveMb: 1024,
+    kvOverheadKbPerToken: 64,
+    blockOnUnknownEstimate: false
+  },
+  // «Производительный»: максимум ресурсов для ИИ, но безопасный резерв
+  // системы и строгий memory-gate сохраняются.
+  high: {
+    label: 'High Performance',
+    maxConcurrentRequests: 2,
+    queueLimit: 48,
+    contextTokens: 8192,
+    maxOutputTokens: 2048,
+    cpuThreads: 0, // 0 = backend default
+    numBatch: 512,
+    requestTimeoutMs: 300000,
+    idleUnloadSeconds: 900,
+    autoLoadAtStartup: false,
+    allowAutoDownload: false,
+    memoryReserveMb: 768,
     kvOverheadKbPerToken: 64,
     blockOnUnknownEstimate: false
   }
@@ -53,9 +73,34 @@ export const DEFAULT_CONFIG = {
     type: 'ollama',
     baseUrl: 'http://127.0.0.1:11434',
     connectTimeoutMs: 1500,
-    streamIdleTimeoutMs: 60000
+    streamIdleTimeoutMs: 60000,
+    // mmap держим включённым (экономия RAM, быстрая загрузка); mlock запрещён:
+    // на 16 ГБ он усиливает давление на память Windows.
+    useMmap: true,
+    useMlock: false
   },
-  profile: 'low',
+  // ТЗ §6: профиль по умолчанию — Сбалансированный.
+  profile: 'balanced',
+  models: {
+    // Папка загрузок по умолчанию. На Windows пользователь выбирает диск
+    // (ТЗ: предпочтительно E:\LiteMind\models); в песочнице/на CI — tmp.
+    rootDir: process.platform === 'win32' ? 'E:\\LiteMind\\models' : path.join(os.tmpdir(), 'litemind-models'),
+    // Насколько заполненным может стать диск (0..1), прежде чем загрузка отклоняется.
+    minFreeFraction: 0.05
+  },
+  // Лучшие измеренные настройки генерации на модель (заполняет автооптимизация).
+  // Формат: { [model]: { threads, tokensPerSecond, ttftMs, measuredAt, candidates } }
+  optimizations: {},
+  // Adaptive Controller (ТЗ Adaptive Engine): управление контекстом и нагрузкой.
+  adaptive: {
+    enabled: true,
+    // Уплотнение истории чата (система/первая задача/недавние — сохраняются).
+    contextCompaction: true,
+    // Вспомогательная модель: ВЫКЛЮЧЕНА по умолчанию. Классификация выполняется
+    // эвристикой (нулевая нагрузка). Пользователь может включить вручную.
+    auxEnabled: false,
+    auxModel: null
+  },
   resource: {
     pollIntervalMs: 2000,
     // Refuse to start a model when forecast exceeds this share of total RAM.

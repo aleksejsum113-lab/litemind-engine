@@ -74,6 +74,14 @@ export class OllamaBackend {
       id: m.name,
       sizeBytes: typeof m.size === 'number' ? m.size : null,
       detail: m.details?.quantization_level ? `${m.details.parameter_size ?? ''} ${m.details.quantization_level}`.trim() : undefined,
+      // Метаданные для OpenCode-провайдера (plugin/provider/litemind.ts):
+      quantization: m.details?.quantization_level ?? null,
+      family: m.details?.family ?? null,
+      parameterSize: m.details?.parameter_size ?? null,
+      // GGUF-инструкты в каталоге LiteMind поддерживают инструменты; обновим,
+      // если когда-нибудь появятся модели без поддержки tools.
+      tools: true,
+      vision: false,
       modifiedAt: m.modified_at
     }));
   }
@@ -93,11 +101,13 @@ export class OllamaBackend {
    * Stream a chat completion. Resolves when Ollama finishes.
    * Cancellation: aborting `signal` closes the socket, which stops generation server-side.
    */
-  async generate({ model, messages, contextTokens = 2048, maxOutputTokens = 512, threads = 0, signal, onToken }) {
+  async generate({ model, messages, contextTokens = 2048, maxOutputTokens = 512, threads = 0, numBatch = 0, useMmap = null, signal, onToken }) {
     const options = {};
     if (contextTokens > 0) options.num_ctx = contextTokens;
     if (maxOutputTokens > 0) options.num_predict = maxOutputTokens;
     if (threads > 0) options.num_thread = threads;
+    if (numBatch > 0) options.num_batch = numBatch;
+    if (useMmap !== null && useMmap !== undefined) options.use_mmap = Boolean(useMmap);
 
     const body = { model, messages, stream: true, options };
 
