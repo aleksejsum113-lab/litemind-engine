@@ -1,0 +1,205 @@
+<div align="center">
+
+<img src="packages/desktop/icons/prod/128x128@2x.png" width="80" alt="LiteMind Engine" />
+
+# LiteMind Engine
+
+**Local AI coding chat for low-end Windows PCs — no cloud, no subscription, no AVX required.**
+
+[![Download for Windows](https://img.shields.io/badge/%E2%AC%87%EF%B8%8F%20Download%20Windows%20x64-v0.3.0-2ea44f?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+**[⬇️ Download LiteMind Engine for Windows x64 (installer + portable)](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)**
+
+[Русский](README.md) | English
+
+</div>
+
+---
+
+## What is LiteMind Engine
+
+LiteMind Engine is a Windows desktop application that turns an ordinary office
+PC or an old laptop into a local AI workstation. In a single window you get an
+AI chat with local LLMs, a catalog of curated coding models, a download manager,
+hardware analysis and resource monitoring.
+
+The neural network runs **entirely on your computer**: dialogs, code and files
+never leave your machine. The internet is needed once — to download a model.
+There is no subscription, quota or token budget: the model answers as long as
+you need.
+
+The key feature is the **Adaptive Engine**: the engine analyzes your hardware
+(including weak CPUs without AVX/AVX2, e.g. Intel Celeron N5095A), picks safe
+model settings, monitors memory and prevents generation from freezing Windows.
+
+## What it solves
+
+- **Writing and explaining code** — the catalog is focused on coding models
+  (Qwen2.5 Coder, DeepSeek Coder, StarCoder2, Granite Code); the chat sees the
+  project context and files.
+- **Working with texts** — explain, translate, summarize and edit documents
+  without uploading them anywhere.
+- **Privacy** — everything stays on your disk: suitable for confidential
+  projects and air-gapped networks.
+- **Offline use** — once the model is downloaded, no internet is needed.
+- **Getting started with local AI** — the catalog shows which model physically
+  fits into your memory and marks compatible options.
+
+## How it differs from LM Studio, Jan and Ollama
+
+| | **LiteMind Engine** | LM Studio | Jan | Ollama |
+| --- | --- | --- | --- | --- |
+| License | MIT, open source | proprietary | MIT, open source | MIT, open source |
+| Interface | Full desktop app: chat + catalog + downloads + monitoring in one window | proprietary GUI | GUI | CLI + local server; GUI only via third-party shells |
+| Weak PCs without AVX/AVX2 | **Target platform**: hardware auto-analysis, safe limits, freeze protection | not a target platform, AVX2 recommended | works, no low-end adaptation | works, thread/context tuning is manual |
+| Model auto-optimization | Yes: tokens/sec & TTFT measurement, thread tuning, best profile saved | partial (manual quantization pick) | no | no |
+| Windows memory protection | Memory gate, watchdog, auto-unload under pressure, process priority | no | no | no |
+| Curated GGUF model catalog | Built-in, with hardware compatibility rating | yes | yes | CLI registry |
+| Chat with project context | yes (project files + terminal in one window) | yes | yes | no (CLI only) |
+| Open API | OpenAI-compatible on `127.0.0.1:8399` | yes | yes | yes (`11434`) |
+
+In short: Ollama is a backend without a UI, LM Studio is polished but closed and
+heavy, Jan is an open general-purpose GUI. LiteMind focuses on one scenario —
+**a coding assistant on a weak Windows PC** — with automatic tuning nobody else
+does.
+
+## System requirements
+
+| Component | Minimum | Recommended |
+| --- | --- | --- |
+| OS | Windows 10 x64 (1903+) | Windows 11 x64 |
+| CPU | 2 cores, x64 | 4 cores; **AVX/AVX2 not required** |
+| RAM | 8 GB (0.5B–1.5B models) | 16 GB (3B–7B models) |
+| Disk | 2 GB for the app | + 1–6 GB per model (disk is selectable) |
+| GPU | Not required | Any — the engine works without one |
+| Backend | [Ollama](https://ollama.com) for Windows | Installed beforehand; detected automatically |
+
+Verified on Intel Celeron N5095A (4 cores, no AVX/AVX2) + 16 GB RAM — the
+target configuration of this project.
+
+## Supported models
+
+The built-in catalog ships 12 curated GGUF coding models (0.5B–7B), including
+**uncensored/abliterated** variants. For every model the app shows hardware
+compatibility (green / yellow / red), recommended quantization and size:
+
+Qwen2.5 Coder 0.5B / 1.5B / 3B / 7B (plus Abliterated and Non-Censure
+variants), DeepSeek Coder 1.3B / 6.7B, StarCoder2 3B Instruct, Granite Code 3B
+Instruct. Your own GGUF models added to Ollama appear in the same model
+switcher.
+
+## Adaptive Engine
+
+- **Task complexity classification** (simple / file / project / hard) —
+  heuristic, no second model needed.
+- **Smart context management**: system prompt and first user task stay intact
+  (stable prefix → llama.cpp prompt-cache works), middle history is compacted
+  into a summary, recent messages are kept.
+- **Long inputs** are digested with a fact-preserving extractive summarizer.
+- **Safe RAM management**: memory gate before launch, OS reserve, in-generation
+  watchdog — dangerous load stops generation and safely unloads the model.
+- **CPU thread tuning**: auto-optimization probes configurations, measures
+  tokens/sec and TTFT and stores the best profile per model.
+- **Performance profiles**: Careful (BelowNormal Ollama priority) /
+  **Balanced (default)** / Performance.
+- **Honesty**: speculative decoding, prompt lookup and KV-cache quantization
+  are not faked — the Ollama API does not support them, and the engine says so
+  in its capability map. No silent quality degradation, no silent model swaps.
+
+Details: [docs/litemind/ADAPTIVE-ENGINE.md](docs/litemind/ADAPTIVE-ENGINE.md).
+
+## Installation (Windows x64)
+
+1. Open [**Releases**](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)
+   and download `litemind-desktop-win-x64.exe` (installer) — or the portable
+   build if you prefer no installation.
+2. Windows SmartScreen may warn about an unsigned file: click **"More info" →
+   "Run anyway"** (the app ships without paid code signing; sources are open).
+3. Install — you can choose the folder; a "LiteMind Engine" shortcut appears on
+   the desktop and in the Start menu.
+4. Make sure [Ollama](https://ollama.com) is installed — an existing
+   installation and downloaded models are not touched.
+5. Launch the app with a double click — the engine starts automatically, no
+   terminal needed.
+
+The portable build requires no installation: unpack anywhere and run the exe.
+
+## First launch: your first answer in 4 steps
+
+1. **Hardware.** The app opens with the hardware analysis: CPU, RAM, AVX/AVX2,
+   GPU, disks — plus a recommended performance profile.
+2. **Models folder.** In "LiteMind Settings" pick the disk for models
+   (default `E:\LiteMind\models`, any folder works).
+3. **Download a model.** In the model catalog pick a green (fully compatible)
+   model and click Download — progress, speed and ETA are shown in Downloads.
+   Then click Install — the model appears in Ollama.
+4. **Ask.** Return to the chat, select the model in the switcher above the
+   input box and type your question. Answers are generated locally;
+   Monitoring shows tokens/sec and time-to-first-token (TTFT).
+
+## Using the app
+
+All sections live in one window, in the left sidebar: **AI chat** (history,
+model switcher, files, project context), **Projects / Workspace** (open a
+folder, let the chat read and edit code, built-in terminal), **My models**
+(auto-optimization, unload), **Model catalog**, **Downloads** (pause / resume /
+cancel, HTTP Range resume, disk choice), **Hardware**, **Monitoring**, and
+**LiteMind Settings**.
+
+## Local OpenAI-compatible API
+
+The engine runs inside the desktop app on `127.0.0.1:8399` and serves
+`/v1/models` and `/v1/chat/completions` (streaming SSE + usage + timings), so
+LiteMind models are available to any OpenAI-compatible client. Loopback only;
+LAN access requires explicit `allowLan` + token.
+
+## FAQ / Troubleshooting
+
+**SmartScreen or antivirus blocks the app.** It is not code-signed yet. Click
+"More info → Run anyway". Builds are produced automatically from the open
+sources of this repository.
+
+**"Engine did not start" / chat is silent.** Check that Ollama is installed and
+running (`ollama --version`) and that port `8399` is free. The desktop app
+starts the engine automatically.
+
+**Answers are very slow.** Pick a smaller model (1.5B instead of 7B), switch to
+the "Careful" profile and run "Auto-optimization" in My models — it tunes CPU
+threads for your machine.
+
+**The app eats all memory.** The Adaptive Engine watches RAM and stops
+generation under dangerous load. If this happens often, use a smaller model or
+close heavy programs.
+
+**Where are models stored?** In the folder from LiteMind Settings (default
+`E:\LiteMind\models`). Uninstalling LiteMind Engine does **not** delete this
+folder or Ollama models.
+
+**Why no speculative decoding / KV-cache Q8?** These require direct llama.cpp
+access; LiteMind talks to the Ollama API, which does not expose them. The
+engine reports this honestly instead of faking speedups.
+
+**Can I add my own model?** Yes — any GGUF model added to Ollama appears in the
+chat model switcher.
+
+**Where are chats and settings stored?** In the Windows user profile
+(`%APPDATA%`); back it up before uninstalling.
+
+## Building from source
+
+```bash
+bun install
+bun run --cwd packages/app build
+bun run --cwd packages/cli build
+OPENCODE_CHANNEL=prod bun run --cwd packages/desktop build
+bun run --cwd packages/desktop pack --win --x64   # NSIS + portable → dist/
+```
+
+Engine tests: `cd packages/litemind-engine && npm test` (87 tests).
+More: [docs/litemind/BUILD-WINDOWS.md](docs/litemind/BUILD-WINDOWS.md).
+
+## License
+
+MIT. OpenCode © its authors (MIT). Catalog models are distributed under their
+authors' licenses (see each model card in the catalog).
