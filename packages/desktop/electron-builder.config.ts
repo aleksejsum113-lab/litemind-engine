@@ -178,8 +178,9 @@ const getBase = (appId: string): Configuration => {
     },
     win: {
       icon: `resources/icons/icon.ico`,
-      // NSIS-установщик + portable-версия (ТЗ §7).
-      target: [{ target: "nsis", arch: ["x64"] }, { target: "portable", arch: ["x64"] }],
+      // NSIS-установщик (ТЗ §7); portable собирается отдельным конфигом
+      // electron-builder.portable.ts — custom-инклуд несовместим с portable-шаблоном.
+      target: [{ target: "nsis", arch: ["x64"] }],
       verifyUpdateCodeSignature: false,
     },
     nsis: {

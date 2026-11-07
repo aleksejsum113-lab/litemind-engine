@@ -47,12 +47,18 @@ jobs:
           OPENCODE_CHANNEL: prod
           OPENCODE_VERSION: ${{ github.ref_name == 'main' && '0.3.0' || '0.3.0-dev' }}
         run: bun run build
-      - name: Package (NSIS + portable, x64)
+      - name: Package NSIS installer (x64)
         working-directory: packages/desktop
         env:
           OPENCODE_CHANNEL: prod
           OPENCODE_VERSION: ${{ github.ref_name == 'main' && '0.3.0' || (github.ref_name == 'dev' && '0.3.0-dev' || '0.3.0') }}
         run: bunx electron-builder --win --x64 --publish never --config electron-builder.config.ts
+      - name: Package portable (x64)
+        working-directory: packages/desktop
+        env:
+          OPENCODE_CHANNEL: prod
+          OPENCODE_VERSION: ${{ github.ref_name == 'main' && '0.3.0' || (github.ref_name == 'dev' && '0.3.0-dev' || '0.3.0') }}
+        run: bunx electron-builder --win portable --x64 --publish never --config electron-builder.portable.ts
       - name: List build output (verification)
         shell: pwsh
         run: Get-ChildItem packages/desktop/dist -Filter *.exe | Select-Object Name, Length
