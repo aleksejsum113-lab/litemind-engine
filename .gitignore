@@ -1,6 +1,9 @@
+# === LiteMind + OpenCode (merged) ===
+
 # Dependencies / node_modules
 node_modules/
 package-lock.json
+bun.lockb
 npm-debug.log*
 
 # Logs and local run state
@@ -8,6 +11,7 @@ npm-debug.log*
 logs/
 run/
 *.pid
+tmp/
 
 # User configuration and secrets (never publish)
 .env
@@ -20,19 +24,46 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# Installer build output
+# Installer / build output
 installer/Output/
 dist/
+dist-node/
+ts-dist/
 *.exe
 *.exe.*
-
-# Editor / tooling
-.vscode/
-.idea/
-.freebuff/
 
 # Models and weights (never commit)
 *.gguf
 *.bin
 *.safetensors
 models/
+
+# Editor / tooling
+.vscode/
+.idea/
+.freebuff/
+.worktrees
+.sst
+.codex
+*~
+playground
+.turbo
+.typecheck-profiles
+**/.serena
+.serena/
+**/.omo
+.omo/
+/result
+refs
+Session.vim
+/opencode.json
+a.out
+target
+.scripts
+.cache
+.direnv/
+opencode-dev
+RELEASE_REVIEW.md
+*.bun-build
+tsconfig.tsbuildinfo
+/artifacts/
