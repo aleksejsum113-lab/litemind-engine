@@ -1,5 +1,10 @@
+import path from "node:path"
+import { fileURLToPath } from "node:url"
+
 import type { Configuration } from "electron-builder"
 import { getConfig } from "./electron-builder.config"
+
+const packageDir = path.dirname(fileURLToPath(import.meta.url))
 
 // Отдельный конфиг для portable-версии LiteMind (ТЗ §7): один exe без установки.
 // Основной конфиг подключает resources/windows/installer.nsh (staged updates,
@@ -15,7 +20,9 @@ const config: Configuration = {
   },
   nsis: {
     ...base.nsis,
-    include: undefined,
+    // Заглушка ${DirState}: патч app-builder-lib использует его в extractUsing7za,
+    // но в portable-шаблоне NSIS макрос не определён.
+    include: path.join(packageDir, "resources", "windows", "portable.nsh"),
     oneClick: true,
     perMachine: false,
     allowToChangeInstallationDirectory: false,
