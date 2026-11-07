@@ -183,6 +183,8 @@ const getBase = (appId: string): Configuration => {
       verifyUpdateCodeSignature: false,
     },
     nsis: {
+      // Отдельные имена файлов, чтобы NSIS и portable не перезаписывали друг друга в dist/.
+      artifactName: "litemind-desktop-win-x64-setup.${ext}",
       include: path.join(packageDir, "resources", "windows", "installer.nsh"),
       // Пошаговый установщик: пользователь выбирает папку, создаются ярлыки.
       oneClick: false,
@@ -194,6 +196,9 @@ const getBase = (appId: string): Configuration => {
       installerIcon: `resources/icons/icon.ico`,
       uninstallerIcon: `resources/icons/icon.ico`,
       installerHeaderIcon: `resources/icons/icon.ico`,
+    },
+    portable: {
+      artifactName: "litemind-desktop-win-x64-portable.${ext}",
     },
     linux: {
       icon: `resources/icons`,
