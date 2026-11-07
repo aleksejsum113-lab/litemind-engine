@@ -11,9 +11,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-87%2F87-brightgreen.svg)](#сборка-из-исходников)
 
-**[⬇️ Скачать LiteMind Engine для Windows x64 (установщик + portable)](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)**
+**[⬇️ Скачать LiteMind Engine для Windows x64](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)**
 
-Установщик `litemind-desktop-win-x64.exe`, portable-версия, размеры файлов и
+Установщик `litemind-desktop-win-x64.exe` (NSIS), размеры файла и
 SHA-256 контрольные суммы — в разделе **[Releases](https://github.com/aleksejsum113-lab/litemind-engine/releases)**.
 Ссылка всегда ведёт на актуальный стабильный релиз.
 
@@ -134,8 +134,7 @@ N5095A), подбирает безопасные настройки моделе
 ## Установка (Windows x64)
 
 1. Откройте раздел [**Releases**](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)
-   и скачайте `litemind-desktop-win-x64.exe` (установщик) — или portable-версию,
-   если не хотите установку.
+   и скачайте `litemind-desktop-win-x64.exe` (NSIS-установщик).
 2. Windows SmartScreen может предупредить о неподписанном файле: нажмите
    **«Подробнее» → «Выполнить в любом случае»** (приложение распространяется
    без платной подписи кода, исходники открыты).
@@ -146,8 +145,10 @@ N5095A), подбирает безопасные настройки моделе
 5. Запустите приложение двойным щелчком — движок поднимется автоматически,
    терминал и команды не нужны.
 
-Portable-версия не требует установки: распакуйте папку в любое место и
-запустите exe.
+Portable-версия (один exe без установки) пока не поставляется: патч
+   upstream-движка сборки несовместим с portable-таргетом NSIS (см. комментарий
+   в `packages/desktop/electron-builder.config.ts`). Для работы без установки
+   можно использовать установщик в режиме `/S`.
 
 ## Первый запуск: до первого ответа за 4 шага
 
@@ -230,7 +231,7 @@ bun install
 bun run --cwd packages/app build            # UI
 bun run --cwd packages/cli build            # CLI sidecar (нужен для пакета)
 OPENCODE_CHANNEL=prod bun run --cwd packages/desktop build   # electron-vite
-bun run --cwd packages/desktop pack --win --x64              # NSIS + portable → dist/
+bun run --cwd packages/desktop pack --win --x64              # NSIS-установщик → dist/
 ```
 
 Тесты движка: `cd packages/litemind-engine && npm test` (87 тестов).
@@ -241,7 +242,7 @@ bun run --cwd packages/desktop pack --win --x64              # NSIS + portable �
 - `packages/litemind-engine` — движок: адаптивный контроллер, каталог, загрузчик,
   установка моделей в Ollama, анализ железа, совместимость, API-сервер (Node.js, без зависимостей).
 - `packages/app` — интерфейс Desktop (SolidJS), включая нативные экраны LiteMind (`src/litemind`).
-- `packages/desktop` — Electron-оболочка, автозапуск движка (`src/main/service/litemind-host.ts`), NSIS/portable.
+- `packages/desktop` — Electron-оболочка, автозапуск движка (`src/main/service/litemind-host.ts`), NSIS-установщик.
 - `packages/core` — ядро OpenCode; LiteMind-провайдер подключается плагином (`src/plugin/provider/litemind.ts`).
 
 ## Документация
@@ -250,7 +251,7 @@ bun run --cwd packages/desktop pack --win --x64              # NSIS + portable �
 - [docs/litemind/ADAPTIVE-ENGINE.md](docs/litemind/ADAPTIVE-ENGINE.md) — как устроен Adaptive Engine
 - [docs/litemind/BUILD-WINDOWS.md](docs/litemind/BUILD-WINDOWS.md) — сборка под Windows
 - [CHANGELOG-LITEMIND.md](CHANGELOG-LITEMIND.md) — история версий
-- [Releases](https://github.com/aleksejsum113-lab/litemind-engine/releases) — установщики и portable
+- [Releases](https://github.com/aleksejsum113-lab/litemind-engine/releases) — установщик и SHA-256 суммы
 
 ## Лицензия
 

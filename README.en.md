@@ -9,7 +9,7 @@
 [![Download for Windows](https://img.shields.io/badge/%E2%AC%87%EF%B8%8F%20Download%20Windows%20x64-v0.3.0-2ea44f?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**[⬇️ Download LiteMind Engine for Windows x64 (installer + portable)](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)**
+**[⬇️ Download LiteMind Engine for Windows x64](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)**
 
 [Русский](README.md) | English
 
@@ -112,8 +112,7 @@ Details: [docs/litemind/ADAPTIVE-ENGINE.md](docs/litemind/ADAPTIVE-ENGINE.md).
 ## Installation (Windows x64)
 
 1. Open [**Releases**](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)
-   and download `litemind-desktop-win-x64.exe` (installer) — or the portable
-   build if you prefer no installation.
+   and download `litemind-desktop-win-x64.exe` (NSIS installer).
 2. Windows SmartScreen may warn about an unsigned file: click **"More info" →
    "Run anyway"** (the app ships without paid code signing; sources are open).
 3. Install — you can choose the folder; a "LiteMind Engine" shortcut appears on
@@ -123,7 +122,10 @@ Details: [docs/litemind/ADAPTIVE-ENGINE.md](docs/litemind/ADAPTIVE-ENGINE.md).
 5. Launch the app with a double click — the engine starts automatically, no
    terminal needed.
 
-The portable build requires no installation: unpack anywhere and run the exe.
+A portable build (single exe, no installation) is not shipped yet: an
+upstream build-tool patch is incompatible with the NSIS portable target (see
+the comment in `packages/desktop/electron-builder.config.ts`). For a
+no-install setup, run the installer with the `/S` switch.
 
 ## First launch: your first answer in 4 steps
 
@@ -193,7 +195,7 @@ bun install
 bun run --cwd packages/app build
 bun run --cwd packages/cli build
 OPENCODE_CHANNEL=prod bun run --cwd packages/desktop build
-bun run --cwd packages/desktop pack --win --x64   # NSIS + portable → dist/
+bun run --cwd packages/desktop pack --win --x64   # NSIS installer → dist/
 ```
 
 Engine tests: `cd packages/litemind-engine && npm test` (87 tests).

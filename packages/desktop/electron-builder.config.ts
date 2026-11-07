@@ -178,14 +178,13 @@ const getBase = (appId: string): Configuration => {
     },
     win: {
       icon: `resources/icons/icon.ico`,
-      // NSIS-установщик (ТЗ §7); portable собирается отдельным конфигом
-      // electron-builder.portable.ts — custom-инклуд несовместим с portable-шаблоном.
+      // NSIS-установщик (ТЗ §7). Portable-таргет не собирается: патч апстрима
+      // app-builder-lib использует ${DirState}, определённый только в assisted-шаблоне.
       target: [{ target: "nsis", arch: ["x64"] }],
       verifyUpdateCodeSignature: false,
     },
     nsis: {
-      // Отдельные имена файлов, чтобы NSIS и portable не перезаписывали друг друга в dist/.
-      artifactName: "litemind-desktop-win-x64-setup.${ext}",
+      artifactName: "litemind-desktop-win-x64.${ext}",
       include: path.join(packageDir, "resources", "windows", "installer.nsh"),
       // Пошаговый установщик: пользователь выбирает папку, создаются ярлыки.
       oneClick: false,
@@ -197,9 +196,6 @@ const getBase = (appId: string): Configuration => {
       installerIcon: `resources/icons/icon.ico`,
       uninstallerIcon: `resources/icons/icon.ico`,
       installerHeaderIcon: `resources/icons/icon.ico`,
-    },
-    portable: {
-      artifactName: "litemind-desktop-win-x64-portable.${ext}",
     },
     linux: {
       icon: `resources/icons`,
