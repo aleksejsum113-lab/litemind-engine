@@ -38,6 +38,18 @@ jobs:
           node-version: 20
       - name: Install dependencies
         run: bun install
+      # Версия сборки: из тега (v0.3.1 -> 0.3.1), для веток — 0.3.0 / 0.3.0-dev.
+      - name: Derive version
+        id: ver
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REF_NAME" = "dev" ]; then
+            echo "version=0.3.0-dev" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.3.0" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build CLI sidecar
         working-directory: packages/cli
         run: bun run build
@@ -45,13 +57,13 @@ jobs:
         working-directory: packages/desktop
         env:
           OPENCODE_CHANNEL: prod
-          OPENCODE_VERSION: ${{ github.ref_name == 'main' && '0.3.0' || '0.3.0-dev' }}
+          OPENCODE_VERSION: ${{ steps.ver.outputs.version }}
         run: bun run build
       - name: Package NSIS installer (x64)
         working-directory: packages/desktop
         env:
           OPENCODE_CHANNEL: prod
-          OPENCODE_VERSION: ${{ github.ref_name == 'main' && '0.3.0' || (github.ref_name == 'dev' && '0.3.0-dev' || '0.3.0') }}
+          OPENCODE_VERSION: ${{ steps.ver.outputs.version }}
         run: bunx electron-builder --win --x64 --publish never --config electron-builder.config.ts
       # Portable-таргет временно не собирается: патч апстрима app-builder-lib
       # использует ${DirState} из assisted-шаблона, которого нет в oneClick/portable.
