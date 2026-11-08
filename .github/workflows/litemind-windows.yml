@@ -4,8 +4,14 @@ on:
   push:
     branches: [main, dev]
     tags: ['v*']
+    paths-ignore:
+      - '.github/**'
+      - '**/*.md'
   pull_request:
     branches: [main, dev]
+    paths-ignore:
+      - '.github/**'
+      - '**/*.md'
   workflow_dispatch:
 
 permissions:
@@ -16,10 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Bun ставится из npm-реестра: oven-sh/setup-bun качает бинарник с GitHub
-      # Releases, который периодически отдаёт 504 (инцидент 2026-11-08).
-      - name: Install bun (npm registry)
-        run: npm install -g bun@latest
+      # Bun строго той версии, что закреплена в packageManager (bun@1.4.4) —
+      # из npm-реестра: GitHub Releases периодически отдаёт 504 (инцидент 2026-11-08).
+      - name: Install bun 1.4.4 (npm registry)
+        run: npm install -g bun@1.4.4
       - run: bun install --ignore-scripts
       - name: Engine tests
         working-directory: packages/litemind-engine
@@ -31,8 +37,8 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
-      - name: Install bun (npm registry)
-        run: npm install -g bun@latest
+      - name: Install bun 1.4.4 (npm registry)
+        run: npm install -g bun@1.4.4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
