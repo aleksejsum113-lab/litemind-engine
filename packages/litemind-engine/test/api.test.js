@@ -260,7 +260,7 @@ test('dashboard is served without a bundler and references its controls', async 
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-type'), /text\/html/);
     const html = await page.text();
-    for (const marker of ['id="model"', 'id="btn-stop"', 'id="btn-unload"', 'id="saver"', 'id="ctx"', 'LiteMind']) {
+    for (const marker of ['id="model"', 'id="btn-stop"', 'id="btn-unload-all"', 'id="saver"', 'id="ctx"', 'id="sidebar"', 'LiteMind']) {
       assert.ok(html.includes(marker), `dashboard contains ${marker}`);
     }
     const css = await fetch(`${api.url}/style.css`);

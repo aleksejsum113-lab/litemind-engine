@@ -16,6 +16,37 @@ function resolveChannel() {
 
 const appPlugin = (await import("@opencode/app/vite")).default
 
+// Собственный интерфейс LiteMind: статические файлы движка
+// (packages/litemind-engine/src/ui/public) копируются в бандл рендерера как
+// /litemind/* — окно LiteMind Desktop открывает litemind/index.html вместо
+// оболочки OpenCode. LiteMind самодостаточен: движок — единственный backend.
+import { readFileSync, existsSync } from "node:fs"
+import path from "node:path"
+
+const litemindUiDir = path.resolve(import.meta.dirname, "../litemind-engine/src/ui/public")
+
+const litemindUiPlugin = (): Plugin => ({
+  name: "litemind-desktop:standalone-ui",
+  configureServer(server) {
+    server.middlewares.use("/litemind", (req, res, next) => {
+      const name = String(req.url ?? "/").split("?")[0].replace(/^\//, "") || "index.html"
+      const file = path.join(litemindUiDir, name)
+      if (!existsSync(file)) return next()
+      res.setHeader("content-type", name.endsWith(".css") ? "text/css" : name.endsWith(".js") ? "text/javascript" : "text/html")
+      res.end(readFileSync(file))
+    })
+  },
+  generateBundle() {
+    for (const name of ["index.html", "app.js", "style.css"]) {
+      this.emitFile({
+        type: "asset",
+        fileName: `litemind/${name}`,
+        source: readFileSync(path.join(litemindUiDir, name), "utf8"),
+      })
+    }
+  },
+})
+
 // Every module the entry reaches through static imports lands in one chunk. Automatic splitting
 // otherwise fragments the initial graph into ~50 files shared with lazy routes, and each file costs
 // the renderer a main-thread request round trip through the main process before first paint.
@@ -124,7 +155,7 @@ export default defineConfig(async ({ command }) => {
           command === "serve" && process.env.OPENCODE_TEST_ONBOARDING === "1",
         ),
       },
-      plugins: [pickerPlugin(), appPlugin, initialChunk],
+      plugins: [pickerPlugin(), appPlugin, initialChunk, litemindUiPlugin()],
       publicDir: "../../../app/public",
       root: "src/renderer",
       build: {

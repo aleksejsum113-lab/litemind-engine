@@ -371,6 +371,94 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       return json(res, 200, projectIndex.projectMap(dir) ?? { error: 'проект не просканирован' });
     }
 
+    // --- Workspace: чтение и сохранение файлов проекта (ТЗ §4/§7) ---------
+    // Чтение ограничено 2 МиБ и текстовыми файлами; запись требует, чтобы
+    // файл уже существовал (создание файлов — через инструменты проекта).
+    if (req.method === 'GET' && p === '/api/project/file') {
+      const dir = url.searchParams.get('path');
+      const rel = url.searchParams.get('file');
+      if (!dir || !rel) return openaiError(res, 400, 'path and file are required', 'invalid_request_error');
+      const root = path.resolve(dir);
+      const file = path.resolve(root, rel);
+      if (!file.startsWith(root + path.sep) && file !== root) {
+        return openaiError(res, 400, 'файл вне каталога проекта', 'invalid_request_error');
+      }
+      if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+        return openaiError(res, 404, `Файл не найден: ${rel}`, 'invalid_request_error');
+      }
+      const stat = fs.statSync(file);
+      if (stat.size > 2 * 1024 * 1024) {
+        return openaiError(res, 413, 'файл больше 2 МиБ — откройте во внешнем редакторе', 'invalid_request_error');
+      }
+      const buf = fs.readFileSync(file);
+      // Бинарный файл? Проверяем наличие нулевого байта в первых 8 КиБ.
+      const head = buf.subarray(0, 8192);
+      if (head.includes(0)) {
+        return openaiError(res, 415, 'бинарный файл не отображается в Workspace', 'invalid_request_error');
+      }
+      return json(res, 200, { file: path.relative(root, file), sizeBytes: stat.size, content: buf.toString('utf8') });
+    }
+
+    if (req.method === 'POST' && p === '/api/project/file') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const dir = body.path ? path.resolve(body.path) : null;
+      const rel = typeof body.file === 'string' ? body.file : null;
+      if (!dir || !rel) return openaiError(res, 400, 'path and file are required', 'invalid_request_error');
+      const root = path.resolve(dir);
+      const file = path.resolve(root, rel);
+      if (!file.startsWith(root + path.sep) && file !== root) {
+        return openaiError(res, 400, 'файл вне каталога проекта', 'invalid_request_error');
+      }
+      if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+        return openaiError(res, 404, `Файл не найден: ${rel} (создание новых файлов не поддерживается)`, 'invalid_request_error');
+      }
+      if (typeof body.content !== 'string') return openaiError(res, 400, 'content must be a string', 'invalid_request_error');
+      if (Buffer.byteLength(body.content, 'utf8') > 2 * 1024 * 1024) {
+        return openaiError(res, 413, 'файл больше 2 МиБ', 'invalid_request_error');
+      }
+      fs.writeFileSync(file, body.content, 'utf8');
+      logger?.info('workspace file saved', { file: path.relative(root, file) });
+      return json(res, 200, { saved: true, file: path.relative(root, file), sizeBytes: Buffer.byteLength(body.content, 'utf8') });
+    }
+
+    // --- AI Terminal: выполнение команд в проекте (ТЗ §4) ------------------
+    // Реальный запуск через shell с таймаутом и ограничением вывода.
+    // Работает только в каталоге проекта (cwd), выходные данные обрезаются.
+    if (req.method === 'POST' && p === '/api/terminal/exec') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const cwd = body.cwd ? path.resolve(body.cwd) : null;
+      const command = typeof body.command === 'string' ? body.command : '';
+      if (!cwd || !command.trim()) return openaiError(res, 400, 'cwd and command are required', 'invalid_request_error');
+      if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+        return openaiError(res, 404, `Каталог не найден: ${cwd}`, 'invalid_request_error');
+      }
+      if (command.length > 4000) return openaiError(res, 400, 'команда слишком длинная', 'invalid_request_error');
+      const timeoutMs = Math.min(Number(body.timeoutMs) || 30000, 120000);
+      const started = Date.now();
+      try {
+        const { exec } = await import('node:child_process');
+        const result = await new Promise((resolve) => {
+          exec(command, { cwd, timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024, windowsHide: true, killSignal: 'SIGKILL' }, (err, stdout, stderr) => {
+            resolve({ err, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+          });
+        });
+        const durationMs = Date.now() - started;
+        const timedOut = result.err?.killed === true || result.err?.signal === 'SIGKILL';
+        if (timedOut) logger?.warn('terminal command timed out', { cwd, durationMs });
+        else logger?.info('terminal command executed', { cwd, durationMs, exitCode: result.err?.code ?? 0 });
+        return json(res, 200, {
+          exitCode: result.err?.code ?? (result.err ? 1 : 0),
+          timedOut,
+          durationMs,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          error: timedOut ? `превышен таймаут ${timeoutMs} мс — процесс принудительно завершён` : result.err?.message ?? null
+        });
+      } catch (err) {
+        return openaiError(res, 500, err.message, 'api_error', 'TERMINAL_FAILED');
+      }
+    }
+
     // --- Карта возможностей runtime (честная) -----------------------------
     if (req.method === 'GET' && p === '/api/capabilities') {
       return json(res, 200, { runtime: engine.backend.type, capabilities: capabilitiesFor(engine.backend.type) });

@@ -16,7 +16,7 @@ import {
 } from "./early-machine"
 import { cancelRendererAssetsServed, registerRendererProtocol } from "./protocol"
 import { persistedWindowIDs } from "./registry"
-import { loadWindow } from "./scheme"
+import { LITEMIND_ENTRY, loadWindow } from "./scheme"
 import { allowRendererPermissions, wireNavigationPolicy, wireRendererHeaders } from "./security"
 import {
   manageWindowState,
@@ -124,7 +124,7 @@ export function createEarlyWindow() {
   allowRendererPermissions(win)
   wireNavigationPolicy(win, (url) => dispatch({ type: "external.opened", entry, url }))
   wireRendererHeaders(win)
-  loadWindow(win, "index.html")
+  loadWindow(win, LITEMIND_ENTRY)
 }
 
 /** The user closed the first window before the layers adopted it, so the app is quitting. */

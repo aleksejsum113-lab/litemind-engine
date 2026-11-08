@@ -4,6 +4,9 @@ export const rendererProtocol = "oc"
 
 export const rendererHost = "renderer"
 
+/** Точка входа собственного интерфейса LiteMind (статические файлы движка). */
+export const LITEMIND_ENTRY = "litemind/index.html"
+
 export function loadWindow(win: BrowserWindow, html: string) {
   const devUrl = process.env.ELECTRON_RENDERER_URL
 

@@ -26,7 +26,7 @@ import {
   wireZoom,
 } from "./appearance"
 import { registerRendererProtocol, setProtocolReporter } from "./protocol"
-import { loadWindow } from "./scheme"
+import { LITEMIND_ENTRY, loadWindow } from "./scheme"
 import { createWindowRegistry } from "./registry"
 import { windowRecovery } from "./recovery"
 import { createRevealDriver } from "./reveal-machine"
@@ -184,7 +184,7 @@ export const mainWindows = Effect.fn("Window.make")(function* (input: {
     wireFullscreen(win)
     wireFocus(win)
 
-    if (!early) loadWindow(win, "index.html")
+    if (!early) loadWindow(win, LITEMIND_ENTRY)
     wireZoom(win)
 
     if (early) {
