@@ -64,6 +64,9 @@ jobs:
         env:
           OPENCODE_CHANNEL: prod
           OPENCODE_VERSION: ${{ steps.ver.outputs.version }}
+          # Ресурсы electron-builder (winCodeSign, NSIS) качаются с зеркала npmmirror:
+          # GitHub Releases периодически отдаёт 504 (два прогона подряд).
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
         run: bunx electron-builder --win --x64 --publish never --config electron-builder.config.ts
       # Portable-таргет временно не собирается: патч апстрима app-builder-lib
       # использует ${DirState} из assisted-шаблона, которого нет в oneClick/portable.
