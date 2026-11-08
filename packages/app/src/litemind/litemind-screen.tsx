@@ -40,9 +40,10 @@ const fmtEta = (s: number | null | undefined) => {
   return `${Math.floor(s / 3600)} ч ${Math.floor((s % 3600) / 60)} мин`
 }
 
-export type Section = "models" | "catalog" | "downloads" | "hardware" | "monitor" | "settings"
+export type Section = "control" | "models" | "catalog" | "downloads" | "hardware" | "monitor" | "settings"
 
 const SECTIONS: { id: Section; title: string }[] = [
+  { id: "control", title: "Управление" },
   { id: "models", title: "Мои модели" },
   { id: "catalog", title: "Каталог моделей" },
   { id: "downloads", title: "Загрузки" },
@@ -103,6 +104,258 @@ function ErrorBanner(props: { error: unknown }) {
   )
 }
 
+// ------------------------------------------------- Управление движком (ТЗ §16)
+
+/**
+ * Мост к Electron main-процессу (запуск/остановка движка, выход). В браузерной
+ * dev-версии моста нет — остаются только HTTP-команды движку.
+ */
+const engineBridge = (): { control: (action: "status" | "start" | "stop" | "quit") => Promise<any> } | null =>
+  typeof window !== "undefined" ? ((window as any).electron?.litemindEngine ?? null) : null
+
+const ENGINE_STATE_LABEL: Record<string, string> = {
+  running: "Движок запущен",
+  stopping: "Движок останавливается…",
+  stopped: "Движок полностью остановлен",
+}
+
+const MODEL_STATE_LABEL: Record<string, string> = {
+  loading: "Модель загружается…",
+  running: "Модель работает",
+  stopping: "Модель останавливается…",
+  stopped: "Модель остановлена",
+}
+
+const MODEL_STATE_COLOR: Record<string, string> = {
+  loading: "text-blue-400",
+  running: "text-green-500",
+  stopping: "text-amber-500",
+  stopped: "text-v2-text-text-faint",
+}
+
+type EngineState = {
+  engine: string
+  since: number
+  models: { id: string; state: string }[]
+  backend: { type: string; healthy: boolean; error: string | null }
+  queue: { active: number; waiting: number }
+  downloads: number
+  metrics: { availableRamMb?: number | null; totalRamMb?: number | null; cpuPercent?: number | null } | null
+}
+
+type StopReport = {
+  verified?: boolean
+  cancelledRequests?: number
+  unloaded?: string[]
+  ram?: { availableRamMbBefore: number | null; availableRamMbAfter: number | null; freedMb: number | null }
+}
+
+const fmtRam = (mb: number | null | undefined) => (mb != null ? fmtBytes(mb * 1024 * 1024) : "—")
+
+function FreedRamLine(props: { ram: StopReport["ram"] }) {
+  return (
+    <Show
+      when={props.ram?.freedMb != null}
+      fallback={<div class="text-xs text-v2-text-text-faint">RAM до: {fmtRam(props.ram?.availableRamMbBefore)} доступно · после: {fmtRam(props.ram?.availableRamMbAfter)} доступно</div>}
+    >
+      <div class="text-xs text-green-500">
+        Освобождено ≈ {fmtRam(props.ram!.freedMb)} RAM (было доступно {fmtRam(props.ram!.availableRamMbBefore)}, стало {fmtRam(props.ram!.availableRamMbAfter)}).
+      </div>
+    </Show>
+  )
+}
+
+function ControlSection() {
+  const [state, setState] = createSignal<EngineState | null>(null)
+  const [offline, setOffline] = createSignal(false)
+  const [busy, setBusy] = createSignal<string | null>(null)
+  const [report, setReport] = createSignal<{ kind: "stopAll" | "stopEngine" | "error"; text: string; ram?: StopReport["ram"] } | null>(null)
+  const [hostInfo, setHostInfo] = createSignal<any>(null)
+  let timer: ReturnType<typeof setInterval> | undefined
+
+  const bridge = engineBridge()
+
+  const refresh = async () => {
+    try {
+      const s = await api<EngineState>("/api/engine/state")
+      setState(s)
+      setOffline(false)
+    } catch {
+      setOffline(true)
+      setState(null)
+    }
+    if (bridge) setHostInfo(await bridge.control("status").catch(() => null))
+  }
+
+  onMount(() => {
+    refresh()
+    timer = setInterval(refresh, 1500)
+  })
+  onCleanup(() => clearInterval(timer))
+
+  const stopAllModels = async () => {
+    setBusy("stop-all")
+    setReport(null)
+    try {
+      const r = await api<StopReport>("/api/models/stop-all", { method: "POST", body: JSON.stringify({}) })
+      setReport({
+        kind: "stopAll",
+        text: r.verified
+          ? `Все модели остановлены и выгружены из RAM/VRAM${r.unloaded?.length ? ` (${r.unloaded.join(", ")})` : ""}. Выгрузка подтверждена опросом бэкенда.`
+          : "Модели остановлены, но бэкенд не подтвердил выгрузку — проверьте Мониторинг.",
+        ram: r.ram,
+      })
+      refresh()
+    } catch (e) {
+      setReport({ kind: "error", text: (e as Error).message })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const stopEngine = async () => {
+    setBusy("stop-engine")
+    setReport(null)
+    try {
+      await api("/api/engine/stop", { method: "POST", body: JSON.stringify({}) })
+      setReport({ kind: "stopEngine", text: "Движок останавливается: генерации отменены, загрузки остановлены, модели выгружаются из RAM/VRAM, сервер закрывается." })
+      // Ждём фактической остановки и обновляем карточку состояний.
+      setTimeout(refresh, 800)
+      setTimeout(refresh, 2500)
+    } catch (e) {
+      // Соединение рвётся при закрытии сервера — это и есть успешная остановка.
+      if (String((e as Error).message).includes("Failed to fetch") || String((e as Error).message).includes("fetch failed")) {
+        setReport({ kind: "stopEngine", text: "Движок полностью остановлен: сервер закрыт, модели выгружены." })
+        refresh()
+      } else {
+        setReport({ kind: "error", text: (e as Error).message })
+      }
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const startEngine = async () => {
+    if (!bridge) {
+      setReport({ kind: "error", text: "Запуск доступен в LiteMind Desktop (мост Electron недоступен в браузере). Запустите приложение — движок стартует автоматически." })
+      return
+    }
+    setBusy("start-engine")
+    setReport(null)
+    try {
+      const r = await bridge.control("start")
+      setReport({ kind: "stopEngine", text: r?.ok ? "Движок запущен." : `Не удалось запустить: ${r?.error ?? "неизвестная ошибка"}` })
+      refresh()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const quitApp = async () => {
+    if (!bridge) {
+      setReport({ kind: "error", text: "Выход доступен в LiteMind Desktop: закройте окно приложения — движок будет остановлен корректно." })
+      return
+    }
+    setBusy("quit")
+    await bridge.control("quit").catch(() => {})
+  }
+
+  const engineLabel = () => {
+    if (offline()) return ENGINE_STATE_LABEL.stopped
+    const s = state()
+    if (!s) return "Уточняю состояние…"
+    return ENGINE_STATE_LABEL[s.engine] ?? s.engine
+  }
+  const engineColor = () => {
+    if (offline()) return "text-v2-text-text-faint"
+    const s = state()?.engine
+    return s === "running" ? "text-green-500" : s === "stopping" ? "text-amber-500" : "text-v2-text-text-faint"
+  }
+
+  return (
+    <div class="flex flex-col gap-4">
+      <Card title="Состояние">
+        <div class="flex flex-wrap items-center gap-x-8 gap-y-2">
+          <div>
+            <div class={`text-[15px] font-semibold ${engineColor()}`}>{engineLabel()}</div>
+            <Show when={!offline() && state()?.backend?.healthy === false}>
+              <div class="mt-1 text-xs text-amber-500">Runtime (Ollama) не отвечает: {state()?.backend?.error ?? "—"}. Модели не запущены — CPU и память не заняты.</div>
+            </Show>
+          </div>
+          <div class="text-[13px] text-v2-text-text-faint">
+            <div>Активных генераций / в очереди: {offline() ? "0 / 0" : `${state()?.queue?.active ?? 0} / ${state()?.queue?.waiting ?? 0}`}</div>
+            <div>Активных загрузок: {offline() ? "0" : (state()?.downloads ?? 0)}</div>
+            <Show when={!offline() && state()?.metrics}>
+              <div>RAM доступно: {fmtRam(state()?.metrics?.availableRamMb)} из {fmtRam(state()?.metrics?.totalRamMb)}</div>
+            </Show>
+          </div>
+        </div>
+        <Show when={!offline() && (state()?.models ?? []).length > 0}>
+          <div class="mt-3 flex flex-col gap-1">
+            <For each={state()!.models}>
+              {(m) => (
+                <div class="flex items-center justify-between text-[13px]">
+                  <span class="text-v2-text-text-primary">{m.id}</span>
+                  <span class={MODEL_STATE_COLOR[m.state] ?? ""}>{MODEL_STATE_LABEL[m.state] ?? m.state}</span>
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
+        <Show when={offline()}>
+          <div class="mt-2 text-xs text-v2-text-text-faint">
+            Сервер движка не отвечает — LiteMind не использует ресурсы компьютера для работы моделей.
+            {bridge ? " Нажмите «Запустить движок», чтобы продолжить работу." : ""}
+          </div>
+        </Show>
+      </Card>
+
+      <Card title="Управление">
+        <div class="flex flex-wrap gap-2">
+          <Show when={offline() || state()?.engine === "stopped"}>
+            <Btn disabled={busy() != null} onClick={startEngine}>Запустить движок</Btn>
+          </Show>
+          <Btn disabled={busy() != null || offline()} onClick={stopAllModels}>
+            {busy() === "stop-all" ? "Останавливаю модели…" : "Остановить все модели"}
+          </Btn>
+          <Btn danger disabled={busy() != null || offline()} onClick={stopEngine}>
+            {busy() === "stop-engine" ? "Останавливаю движок…" : "Остановить движок"}
+          </Btn>
+          <Btn danger disabled={busy() != null} onClick={quitApp}>Выход</Btn>
+        </div>
+        <div class="mt-2 text-xs text-v2-text-text-faint">
+          «Остановить все модели» — генерации отменяются, модели выгружаются из RAM/VRAM, приложение продолжает работать.
+          «Остановить движок» — дополнительно останавливаются загрузки и сервер движка; приложение остаётся открытым, движок можно запустить заново.
+          «Выход» — сначала останавливает все процессы LiteMind, затем закрывает приложение.
+        </div>
+      </Card>
+
+      <Show when={report()}>
+        <div
+          class={`rounded-md border px-3 py-2 text-[13px] ${
+            report()!.kind === "error"
+              ? "border-red-500/40 bg-red-500/10 text-red-400"
+              : "border-v2-stroke-stroke-soft bg-v2-bg-bg-subtle text-v2-text-text-secondary"
+          }`}
+        >
+          {report()!.text}
+          <Show when={report()!.ram && report()!.kind === "stopAll"}>
+            <div class="mt-1"><FreedRamLine ram={report()!.ram} /></div>
+          </Show>
+        </div>
+      </Show>
+
+      <Show when={hostInfo()?.host}>
+        <Card title="Хост (LiteMind Desktop)">
+          <Row label="Процесс движка в приложении" value={hostInfo().host.owned ? "запущен приложением" : "сторонний/усыновлён"} />
+          <Row label="Состояние хоста" value={hostInfo().host.state} />
+          <Row label="Движок отвечает по HTTP" value={hostInfo().reachable ? "да" : "нет"} />
+        </Card>
+      </Show>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------- Мои модели
 
 type OptimizeInfo = { threads?: number; tokensPerSecond?: number; ttftMs?: number; measuredAt?: string; advice?: string }
@@ -112,6 +365,7 @@ function ModelsSection() {
   const [opt, { refetch: refetchOpt }] = createResource(() => api<any>("/api/optimize"))
   const [busy, setBusy] = createSignal<string | null>(null)
   const [report, setReport] = createSignal<OptimizeInfo | null>(null)
+  const [stopInfo, setStopInfo] = createSignal<{ model: string; verified: boolean; ram?: StopReport["ram"] } | null>(null)
 
   const optimize = async (model: string) => {
     setBusy(model)
@@ -122,6 +376,20 @@ function ModelsSection() {
       refetchOpt()
     } catch (e) {
       setReport({ advice: (e as Error).message })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const stopModel = async (model: string) => {
+    setBusy(model)
+    setStopInfo(null)
+    try {
+      const r = await api<StopReport>("/api/models/stop", { method: "POST", body: JSON.stringify({ model }) })
+      setStopInfo({ model, verified: r.verified ?? false, ram: r.ram })
+      refetch()
+    } catch (e) {
+      setStopInfo({ model, verified: false })
     } finally {
       setBusy(null)
     }
@@ -140,10 +408,18 @@ function ModelsSection() {
                   <Btn disabled={busy() === m.id} onClick={() => optimize(m.id)}>
                     {busy() === m.id ? "Измеряю…" : "Автооптимизация"}
                   </Btn>
-                  <Btn onClick={() => api("/api/unload", { method: "POST", body: JSON.stringify({ model: m.id }) }).then(refetch)}>
-                    Выгрузить
+                  <Btn disabled={busy() === m.id} onClick={() => stopModel(m.id)}>
+                    {busy() === m.id ? "Останавливаю…" : "Остановить модель"}
                   </Btn>
                 </div>
+                <Show when={stopInfo()?.model === m.id}>
+                  <div class="mt-2 rounded-md border border-v2-stroke-stroke-soft bg-v2-bg-bg-subtle px-3 py-2 text-xs text-v2-text-text-secondary">
+                    {stopInfo()!.verified
+                      ? "Генерации отменены, модель выгружена из RAM/VRAM (подтверждено опросом бэкенда)."
+                      : "Команда отправлена, но выгрузка не подтверждена — проверьте «Управление»."}
+                    <Show when={stopInfo()!.ram}><div class="mt-1"><FreedRamLine ram={stopInfo()!.ram} /></div></Show>
+                  </div>
+                </Show>
               </div>
               <div class="mt-2 grid grid-cols-2 gap-x-6 md:grid-cols-4">
                 <Row label="Размер" value={fmtBytes(m.sizeBytes)} />
@@ -532,6 +808,7 @@ export default function LiteMindScreen() {
       <div class="min-h-0 flex-1 overflow-y-auto p-4">
         <Show when={!offline.error} fallback={<ErrorBanner error={offline.error} />}>
           <Switch>
+            <Match when={section() === "control"}><ControlSection /></Match>
             <Match when={section() === "models"}><ModelsSection /></Match>
             <Match when={section() === "catalog"}><CatalogSection /></Match>
             <Match when={section() === "downloads"}><DownloadsSection /></Match>

@@ -11,6 +11,7 @@ const HELP = `LiteMind Engine — лёгкий локальный движок �
 
 Использование:
   litemind serve [--port N] [--host H]   запустить сервер и панель управления
+  litemind stop [--port N]               полная остановка запущенного движка (модели выгружаются из RAM/VRAM)
   litemind status                        состояние backend, очередь, память
   litemind models                        список локальных моделей
   litemind doctor                        диагностика установки
@@ -98,6 +99,41 @@ async function main() {
       return;
     }
 
+    case 'stop': {
+      // ТЗ §16: команда полной остановки движка из терминала/скриптов.
+      const port = flags.port ? Number(flags.port) : 8399;
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/api/engine/stop`, { method: 'POST' });
+        if (!res.ok && res.status !== 200) throw new Error(`HTTP ${res.status}`);
+        process.stdout.write(`Команда остановки принята. Модели выгружаются из RAM/VRAM, сервер на порту ${port} закрывается.\n`);
+        // Дождаться фактического закрытия сервера — значит, все модели выгружены.
+        const deadline = Date.now() + 15000;
+        for (;;) {
+          let alive = false;
+          try {
+            const h = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(600) });
+            alive = h.ok || h.status === 503;
+          } catch {
+            alive = false;
+          }
+          if (!alive) {
+            process.stdout.write('Движок полностью остановлен.\n');
+            return;
+          }
+          if (Date.now() > deadline) {
+            process.stderr.write('Движок не закрылся за 15 с — проверьте процессы вручную.\n');
+            process.exitCode = 1;
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 400));
+        }
+      } catch (err) {
+        process.stderr.write(`Не удалось остановить движок на порту ${port}: ${err.message}\nСкорее всего, он и не запущен.\n`);
+        process.exitCode = 1;
+      }
+      return;
+    }
+
     case 'serve': {
       const { config, engine, sampler, logger } = build({ withServer: true });
       if (flags.port) config.api.port = Number(flags.port);
@@ -130,10 +166,17 @@ async function main() {
         process.stdout.write(`\nLiteMind Engine: http://${config.api.host}:${config.api.port}\n`);
       });
 
-      const shutdown = () => {
+      const shutdown = async () => {
         logger.info('shutting down');
+        try {
+          engine.beginStop();
+          await engine.stopAllModels(); // модели не должны остаться в RAM/VRAM после Ctrl+C
+        } catch (err) {
+          logger.warn('stopAllModels on shutdown failed', { error: err.message });
+        }
+        await engine.shutdownFull();
         server.close();
-        engine.shutdown();
+        server.closeAllConnections?.();
         process.exit(0);
       };
       process.on('SIGINT', shutdown);

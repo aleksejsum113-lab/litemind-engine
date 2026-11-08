@@ -234,6 +234,31 @@ export class DownloadManager {
     return { cancelled: true };
   }
 
+  /**
+   * Остановить все загрузки (ТЗ §16.3/§16.4: после полной остановки движка не
+   * должно остаться процессов загрузки). Активные отменяются, приостановленные
+   * помечаются отменёнными; .part удаляется — докачка после «Отменить» не
+   * продолжается незаметно в фоне.
+   */
+  async cancelAll() {
+    const jobs = [...this.jobs.values()];
+    const active = jobs.filter((j) => j.state === 'downloading');
+    for (const j of active) {
+      j.state = 'cancelling';
+      j._ctrl.abort(new Error('cancelled by engine stop'));
+    }
+    if (active.length) await new Promise((r) => setTimeout(r, 200));
+    let cancelled = 0;
+    for (const j of jobs) {
+      await fs.promises.rm(j.partPath, { force: true }).catch(() => {});
+      j.state = 'cancelled';
+      this.jobs.delete(j.id);
+      this._emit({ type: 'cancelled', id: j.id });
+      cancelled++;
+    }
+    return { cancelled };
+  }
+
   _snapshot(job) {
     return {
       id: job.id,

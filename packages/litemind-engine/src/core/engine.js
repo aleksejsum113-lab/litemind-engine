@@ -31,6 +31,12 @@ export class Engine {
     this.queue = [];
     this.active = 0;
     this._idleTimer = null;
+    // ТЗ §16 — жизненный цикл движка: running | stopping | stopped.
+    this.lifecycle = { state: 'running', since: this.now() };
+    // Модели, для которых пользователь запросил остановку ('stopping')
+    // и подтверждённую выгрузку ('stopped'). Новая генерация сбрасывает отметку.
+    this._stoppingModels = new Set();
+    this._stoppedModels = new Set();
     this._modelsCache = { at: 0, models: null, ttlMs: 4000 };
     this.stats = { enqueued: 0, rejectedQueueFull: 0, rejectedBudget: 0, cancelled: 0, timeouts: 0, completed: 0, failed: 0 };
     this.adaptiveStats = { compacted: 0, tokensSaved: 0, byComplexity: { simple: 0, file: 0, project: 0, hard: 0 } };
@@ -156,10 +162,172 @@ export class Engine {
   }
 
   /**
+   * ТЗ §16: после команды остановки движка новые генерации отклоняются —
+   * остановленные модели не включаются повторно ни автоматически, ни через
+   * очередь запросов.
+   */
+  _assertRunning() {
+    if (this.lifecycle.state === 'running') return;
+    throw new EngineError(
+      this.lifecycle.state === 'stopping'
+        ? 'Движок останавливается — новые генерации не принимаются.'
+        : 'Движок полностью остановлен. Запустите его заново, чтобы работать с моделями.',
+      { code: 'ENGINE_STOPPING', status: 503 }
+    );
+  }
+
+  /** Для операций остановки (ТЗ §16): разрешены в running и stopping, запрещены после полной остановки. */
+  _assertNotStopped() {
+    if (this.lifecycle.state !== 'stopped') return;
+    throw new EngineError(
+      'Движок полностью остановлен. Запустите его заново, чтобы работать с моделями.',
+      { code: 'ENGINE_STOPPING', status: 503 }
+    );
+  }
+
+  /**
+   * Runtime-состояние моделей (ТЗ §16): loading / running / stopping / stopped.
+   * Честные признаки: запрос без первого токена — «загружается», с токенами или
+   * резидентная в бэкенде (/api/ps) — «работает», пользовательская остановка —
+   * «останавливается», выгружена и подтверждена — «остановлена».
+   */
+  async modelRuntime() {
+    let loaded = [];
+    try {
+      loaded = await this.backend.loaded();
+    } catch {
+      loaded = [];
+    }
+    const loadedIds = new Set(loaded.map((m) => m.id));
+    const activeByModel = new Map(); // model -> { loading, running }
+    for (const rec of this.requests.values()) {
+      if (!['new', 'queued', 'running'].includes(rec.state)) continue;
+      const a = activeByModel.get(rec.model) ?? { loading: 0, running: 0 };
+      if (rec.ttftMs == null) a.loading++;
+      else a.running++;
+      activeByModel.set(rec.model, a);
+    }
+    const ids = new Set([...loadedIds, ...activeByModel.keys(), ...this._stoppingModels, ...this._stoppedModels]);
+    const models = [];
+    for (const id of ids) {
+      const a = activeByModel.get(id);
+      let state;
+      if (this._stoppingModels.has(id)) state = 'stopping';
+      else if (a?.running) state = 'running';
+      else if (a?.loading) state = 'loading';
+      else if (loadedIds.has(id)) state = 'running'; // резидент в RAM/VRAM
+      else state = 'stopped';
+      models.push({ id, state });
+    }
+    return models.sort((x, y) => x.id.localeCompare(y.id));
+  }
+
+  /** Начать остановку движка: мгновенный запрет новых генераций и отмена текущих. */
+  beginStop() {
+    if (this.lifecycle.state !== 'running') return this.lifecycle;
+    this.lifecycle = { state: 'stopping', since: this.now() };
+    this._clearIdleTimer(); // idle-unload больше не планируем: модели выгрузит stopAllModels
+    this.cancelAll();
+    this.log.info('engine stopping', { active: this.active, queued: this.queue.length });
+    return this.lifecycle;
+  }
+
+  /**
+   * Остановить одну модель (ТЗ §16.1): отменяет её генерации, дожидается
+   * фактического завершения, выгружает из RAM/VRAM и подтверждает выгрузку
+   * повторным опросом бэкенда. Чужие процессы не затрагиваются.
+   */
+  async stopModel(modelId) {
+    if (!modelId || typeof modelId !== 'string') {
+      throw new EngineError('model is required', { code: 'BAD_MODEL', status: 400 });
+    }
+    this._assertNotStopped();
+    this._stoppedModels.delete(modelId);
+    this._stoppingModels.add(modelId);
+    let cancelledRequests = 0;
+    for (const rec of this.requests.values()) {
+      if (rec.model === modelId && ['new', 'queued', 'running'].includes(rec.state)) {
+        if (this.cancel(rec.id).cancelled) cancelledRequests++;
+      }
+    }
+    // Дожидаемся фактического завершения отменённых генераций (сокет закрыт,
+    // бэкенд перестал считать токены), чтобы выгрузка не вошла в гонку с чатом.
+    const deadline = this.now() + 5000;
+    while (this.now() < deadline) {
+      const busy = [...this.requests.values()].some(
+        (r) => r.model === modelId && ['new', 'queued', 'running'].includes(r.state)
+      );
+      if (!busy) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await this.backend.unload(modelId);
+    // Верификация: модель действительно больше не резидентна?
+    let verified = false;
+    try {
+      const loaded = await this.backend.loaded();
+      verified = !loaded.some((m) => m.id === modelId);
+    } catch {
+      verified = false;
+    }
+    if (verified) {
+      this._stoppingModels.delete(modelId);
+      this._stoppedModels.add(modelId);
+    }
+    this.log.info('model stopped', { model: modelId, cancelledRequests, verified });
+    return { model: modelId, cancelledRequests, verified };
+  }
+
+  /**
+   * Остановить все модели (ТЗ §16.2): отменяет генерации, выгружает всё,
+   * что резидентно в бэкенде, и подтверждает результат опросом /api/ps.
+   */
+  async stopAllModels() {
+    this._assertNotStopped();
+    const { cancelled } = this.cancelAll();
+    const deadline = this.now() + 5000;
+    while (this.now() < deadline && this.active > 0) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const res = await this.backend.unload(null);
+    let loaded = [];
+    try {
+      loaded = await this.backend.loaded();
+    } catch {
+      loaded = [];
+    }
+    const verified = loaded.length === 0;
+    this._stoppingModels.clear();
+    for (const id of res.unloaded) this._stoppedModels.add(id);
+    this.log.info('all models stopped', { cancelled, unloaded: res.unloaded, verified });
+    return { cancelled, unloaded: res.unloaded, verified, stillLoaded: loaded.map((m) => m.id) };
+  }
+
+  /**
+   * Полная остановка движка (ТЗ §16.3): генерации отменены, модели выгружены,
+   * таймеры сняты. Вызов до выгрузки моделей — чтобы sampler зафиксировал
+   * RAM до/после. Сервер закрывает вызывающая сторона.
+   */
+  async shutdownFull() {
+    this.beginStop();
+    try {
+      await this.stopAllModels();
+    } catch (err) {
+      // Остановка движка не должна прерываться из-за недоступного бэкенда.
+      this.log.warn('stopAllModels during shutdown failed', { error: err.message });
+    }
+    this.shutdown();
+    this.lifecycle = { state: 'stopped', since: this.now() };
+    this.log.info('engine fully stopped');
+    return this.lifecycle;
+  }
+
+  /**
    * Run one chat completion. Honours: queue limit, memory gate, cancellation,
    * request timeout, stream idle watchdog. Always releases its slot.
+   * После beginStop()/shutdownFull() новые генерации отклоняются (ТЗ §16).
    */
   async generate({ model, messages, contextTokens, maxOutputTokens, threads, signal, onToken }) {
+    this._assertRunning();
     const p = this.profile;
     const ctx = Number(contextTokens) > 0 ? Number(contextTokens) : p.contextTokens;
     const maxOut = Number(maxOutputTokens) > 0 ? Number(maxOutputTokens) : p.maxOutputTokens;
@@ -168,6 +336,8 @@ export class Engine {
     // над профилем (если вызывающий не передал threads явно).
     const savedOpt = this.config.optimizations?.[model];
     if ((threads === undefined || threads === null) && savedOpt?.threads) thr = savedOpt.threads;
+    // Новая генерация выводит модель из состояния «остановлена».
+    this._stoppedModels.delete(model);
 
     const record = {
       id: `req_${randomUUID().slice(0, 8)}`,
@@ -486,5 +656,6 @@ export class Engine {
     this._clearIdleTimer();
     this.cancelAll();
     this.sampler?.stop?.();
+    if (this.lifecycle.state === 'running') this.lifecycle = { state: 'stopped', since: this.now() };
   }
 }

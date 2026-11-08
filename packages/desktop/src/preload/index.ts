@@ -29,4 +29,9 @@ contextBridge.exposeInMainWorld("electron", {
   storageSnapshot: snapshot.then((snapshot) => snapshot.storage),
   plugins: snapshot.then((snapshot) => snapshot.plugins),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
+  // ТЗ §16: управление движком LiteMind (статус/запуск/остановка/выход).
+  litemindEngine: {
+    control: (action: "status" | "start" | "stop" | "quit") =>
+      ipcRenderer.invoke("litemind:engine-control", action),
+  },
 })

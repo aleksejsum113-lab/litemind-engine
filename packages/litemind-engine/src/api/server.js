@@ -60,7 +60,17 @@ function tokenFrom(req, url) {
 
 function json(res, status, data) {
   const body = JSON.stringify(data);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  // ТЗ §16: рендерер Electron (origin oc://renderer) и dev-браузер управляют
+  // движком через fetch — без CORS-заголовков Chromium блокирует ответы.
+  // Сервер доступен только с 127.0.0.1 (проверка checkAccess выше), поэтому
+  // открытый origin безопасен; авторизация для LAN сохраняется.
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'content-type, authorization'
+  });
   res.end(body);
 }
 
@@ -86,9 +96,11 @@ function readBody(req) {
   });
 }
 
-export function createServer({ config, engine, logger }) {
+export function createServer({ config, engine, logger, downloads: downloadsOverride = null, onEngineStopped = null }) {
   // --- LiteMind v0.2 services -----------------------------------------
-  const downloads = new DownloadManager({
+  // DownloadManager можно передать снаружи (index.js/Desktop), чтобы полный
+  // stop() хоста отменял те же загрузки, что видит API (ТЗ §16.3).
+  const downloads = downloadsOverride ?? new DownloadManager({
     onEvent: (e) => logger?.info('download', { ...e })
   });
   const installer = new OllamaInstaller({ baseUrl: config.backend.baseUrl });
@@ -142,6 +154,15 @@ export function createServer({ config, engine, logger }) {
     const p = url.pathname;
 
     // --- access control -------------------------------------------------
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-allow-headers': 'content-type, authorization',
+        'access-control-max-age': '600'
+      });
+      return res.end();
+    }
     const access = checkAccess({
       remoteAddress: req.socket.remoteAddress,
       allowLan: config.api.allowLan,
@@ -190,7 +211,90 @@ export function createServer({ config, engine, logger }) {
 
     if (req.method === 'POST' && p === '/api/stop') return json(res, 200, engine.cancelAll());
 
-    // --- Автооптимизация модели (замер скорости и подбор потоков) --------
+    // --- ТЗ §16: управление запуском и полной остановкой ------------------
+
+    if (req.method === 'GET' && p === '/api/engine/state') {
+      const models = await engine.modelRuntime();
+      return json(res, 200, {
+        engine: engine.lifecycle.state,
+        since: engine.lifecycle.since,
+        models,
+        backend: { type: engine.backend.type, healthy: engine.health.ok, error: engine.health.error },
+        queue: { active: engine.active, waiting: engine.queue.length },
+        downloads: downloads.list().filter((d) => ['downloading', 'paused'].includes(d.state)).length,
+        metrics: engine.sampler?.latest ?? null
+      });
+    }
+
+    if (req.method === 'POST' && p === '/api/models/stop') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (!body.model) return openaiError(res, 400, 'model is required', 'invalid_request_error');
+      try {
+        const before = await engine.sampler?.sample?.();
+        const r = await engine.stopModel(String(body.model));
+        const after = await engine.sampler?.sample?.();
+        return json(res, 200, {
+          ...r,
+          ram: {
+            availableRamMbBefore: before?.availableRamMb ?? null,
+            availableRamMbAfter: after?.availableRamMb ?? null,
+            freedMb: before?.availableRamMb != null && after?.availableRamMb != null ? after.availableRamMb - before.availableRamMb : null
+          }
+        });
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'api_error', err.code || null);
+      }
+    }
+
+    if (req.method === 'POST' && p === '/api/models/stop-all') {
+      try {
+        const before = await engine.sampler?.sample?.();
+        const r = await engine.stopAllModels();
+        const after = await engine.sampler?.sample?.();
+        return json(res, 200, {
+          ...r,
+          ram: {
+            availableRamMbBefore: before?.availableRamMb ?? null,
+            availableRamMbAfter: after?.availableRamMb ?? null,
+            freedMb: before?.availableRamMb != null && after?.availableRamMb != null ? after.availableRamMb - before.availableRamMb : null
+          }
+        });
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'api_error', err.code || null);
+      }
+    }
+
+    if (req.method === 'POST' && p === '/api/engine/stop') {
+      if (engine.lifecycle.state !== 'running') {
+        return json(res, 200, { stopping: true, engine: engine.lifecycle.state });
+      }
+      const before = await engine.sampler?.sample?.();
+      json(res, 200, { stopping: true, engine: 'stopping', modelsBeingUnloaded: true });
+      // Отвечаем сразу, затем корректно завершаем всё принадлежащее движку:
+      // генерации → загрузки → выгрузка моделей из RAM/VRAM → закрытие сервера.
+      setTimeout(async () => {
+        try {
+          engine.beginStop();
+          await downloads.cancelAll();
+          await engine.stopAllModels();
+        } catch (err) {
+          logger?.error('engine stop sequence failed', { error: err.message });
+        }
+        const after = await engine.sampler?.sample?.().catch(() => null);
+        logger?.info('engine fully stopped via API', {
+          freedRamMb: before?.availableRamMb != null && after?.availableRamMb != null ? after.availableRamMb - before.availableRamMb : null
+        });
+        await engine.shutdownFull();
+        // Дать клиентам прочитать ответы (HTTP keep-alive) до принудительного разрыва,
+        // затем закрыть всё — не оставляя ни одного открытого сокета.
+        server.close();
+        server.closeIdleConnections?.();
+        setTimeout(() => server.closeAllConnections?.(), 300);
+        onEngineStopped?.();
+      }, 30);
+      return;
+    }
+
     if (req.method === 'GET' && p === '/api/optimize') {
       return json(res, 200, {
         optimizations: config.optimizations ?? {},
@@ -272,14 +376,29 @@ export function createServer({ config, engine, logger }) {
       return json(res, 200, { runtime: engine.backend.type, capabilities: capabilitiesFor(engine.backend.type) });
     }
 
-    // Graceful shutdown: closes only this server; the CLI exits on 'close'.
+    // Полная остановка (ТЗ §16): выгружает модели, отменяет генерации и
+    // загрузки, затем закрывает сервер. В standalone-режиме CLI завершает
+    // процесс по событию 'close'.
     if (req.method === 'POST' && p === '/api/shutdown') {
-      json(res, 200, { stopping: true });
-      setTimeout(() => {
-        engine.shutdown();
-        server.close();
-        server.closeAllConnections?.();
-      }, 50);
+      if (engine.lifecycle.state === 'running') {
+        json(res, 200, { stopping: true });
+        setTimeout(async () => {
+          try {
+            engine.beginStop();
+            await downloads.cancelAll();
+            await engine.stopAllModels();
+          } catch (err) {
+            logger?.error('shutdown sequence failed', { error: err.message });
+          }
+          await engine.shutdownFull();
+          server.close();
+          server.closeIdleConnections?.();
+          setTimeout(() => server.closeAllConnections?.(), 300);
+          onEngineStopped?.();
+        }, 30);
+      } else {
+        json(res, 200, { stopping: true, engine: engine.lifecycle.state });
+      }
       return;
     }
 

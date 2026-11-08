@@ -358,6 +358,14 @@ export function LiteMindNav(props: { class?: string }) {
       <HomeProjectNavButton
         type="button"
         class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
+        onClick={() => open("control")}
+      >
+        <Icon name="server" size="small" />
+        <span class={HOME_PROJECT_NAV_LABEL}>Управление</span>
+      </HomeProjectNavButton>
+      <HomeProjectNavButton
+        type="button"
+        class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
         onClick={() => open("models")}
       >
         <Icon name="outline-brain" size="small" />
