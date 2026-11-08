@@ -109,17 +109,39 @@ export async function stopEngine(_reason = "user"): Promise<void> {
       log.warn("[litemind] engine stop error:", err)
     }
     host.handle = null
+  } else if (await engineAlive()) {
+    // Движок был «усыновлён» (standalone-процесс на этом порту): останавливаем
+    // его через HTTP API, чтобы «Остановить движок» останавливал и его тоже,
+    // а состояние хоста не оставалось устаревшим «running».
+    host.state = "stopping"
+    try {
+      await fetch(`${ENGINE_URL}/api/engine/stop`, {
+        method: "POST",
+        body: "{}",
+        headers: { "content-type": "application/json" },
+        signal: AbortSignal.timeout(3000),
+      })
+    } catch {
+      // сервер мог закрыться во время запроса — это и есть успешная остановка
+    }
+    log.info("[litemind] adopted engine stopped via HTTP API")
   }
   host.state = "stopped"
 }
 
 /** Явный запуск по команде пользователя из раздела «Управление». */
 export async function startEngine(): Promise<{ ok: boolean; state: HostState; error?: string }> {
-  if (host.state === "running" || host.state === "starting") return { ok: true, state: host.state }
+  if (host.state === "starting") return { ok: true, state: host.state }
+  // Реальность, а не кэш состояния: после HTTP-остановки усыновлённого движка
+  // host.state может оставаться устаревшим «running» — проверяем фактический /health.
   if (await engineAlive()) {
     host.state = "running"
     host.owned = false
     return { ok: true, state: "running" }
+  }
+  if (host.state === "running" && host.handle) {
+    // Мы считали движок своим, но он не отвечает: сбрасываем и запускаем заново.
+    host.handle = null
   }
   try {
     host.state = "starting"

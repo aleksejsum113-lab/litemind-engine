@@ -19,6 +19,13 @@ export type Reply = {
  * of any other attempt is stale. Callers that arrive while an attempt runs wait for that attempt.
  */
 export type State =
+  /**
+   * LiteMind Desktop: сервис OpenCode при старте приложения НЕ запускается — собственный
+   * UI LiteMind к нему не подключается, а лишний процесс тратил бы RAM слабого железа.
+   * Первый запрос подключения (connection()/reconnect() — только из OpenCode-функциональности)
+   * запускает сервис лениво.
+   */
+  | { readonly status: "idle" }
   /** No service has been reached yet. */
   | { readonly status: "connecting"; readonly attempt: number; readonly waiters: readonly Reply[] }
   /** `data` is the active service. A probed service is still verified by `attempt`'s `Service.ensure`. */
@@ -69,8 +76,8 @@ const DISPOSED_ERROR = new Error("Background service is disposed")
 
 export function initialTransition(): Transition {
   return {
-    state: { status: "connecting", attempt: 1, waiters: [] },
-    commands: [{ type: "connect", attempt: 1, mode: "initial" }],
+    state: { status: "idle" },
+    commands: [],
   }
 }
 
@@ -87,6 +94,8 @@ export function transition(state: State, event: Event): Transition {
       state: { status: "disposed" },
       commands: reject(pending(state), DISPOSED_ERROR),
     }
+
+  if (state.status === "idle") return idle(state, event)
 
   if (state.status === "connecting") return connecting(state, event)
 
@@ -119,6 +128,17 @@ export function transition(state: State, event: Event): Transition {
 }
 
 // No service was reached yet, so every caller shares the attempt's outcome, failure included.
+// LiteMind: первый запрос подключения запускает сервис; всё остальное в idle игнорируется.
+function idle(state: Extract<State, { status: "idle" }>, event: Event): Transition {
+  if (event.type === "connection.requested" || event.type === "reconnect.requested")
+    return {
+      state: { status: "connecting", attempt: 1, waiters: [event.reply] },
+      commands: [{ type: "connect", attempt: 1, mode: "initial" }],
+    }
+
+  return unchanged(state)
+}
+
 function connecting(state: Extract<State, { status: "connecting" }>, event: Event): Transition {
   // Every caller joins the attempt in flight, so windows that start together run one `Service.ensure`.
   if (event.type === "connection.requested" || event.type === "reconnect.requested")

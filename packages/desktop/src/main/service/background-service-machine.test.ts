@@ -28,14 +28,30 @@ function replay(
   )
 }
 
-const readyA = replay([{ type: "connect.succeeded", attempt: 1, data: A }]).state
+// Состояние после первого запроса подключения: попытка connect уже в полёте.
+// (В LiteMind сервис стартует лениво — только по первому запросу, не при запуске приложения.)
+const connecting = replay([{ type: "connection.requested", reply: reply() }]).state as Extract<
+  BackgroundServiceMachine.State,
+  { status: "connecting" }
+>
+
+const readyA = replay([{ type: "connect.succeeded", attempt: 1, data: A }], connecting).state
 
 describe("background service connection", () => {
-  test("starts the initial connect at once", () => {
+  test("starts idle — OpenCode-сервис не запускается при старте приложения (LiteMind)", () => {
     expect(BackgroundServiceMachine.initialTransition()).toEqual({
-      state: { status: "connecting", attempt: 1, waiters: [] },
-      commands: [{ type: "connect", attempt: 1, mode: "initial" }],
+      state: { status: "idle" },
+      commands: [],
     })
+  })
+
+  test("the first connection request launches the service lazily", () => {
+    const [r1] = [reply()]
+
+    const result = replay([{ type: "connection.requested", reply: r1 }])
+
+    expect(result.state).toEqual({ status: "connecting", attempt: 1, waiters: [r1] })
+    expect(result.commands).toEqual([[{ type: "connect", attempt: 1, mode: "initial" }]])
   })
 
   test("windows that reconnect together share one attempt and all move to its service", () => {
@@ -103,7 +119,7 @@ describe("background service connection", () => {
   })
 
   test("a failed verification keeps the probed service", () => {
-    const probed = replay([{ type: "probe.succeeded", attempt: 1, data: A }]).state
+    const probed = replay([{ type: "probe.succeeded", attempt: 1, data: A }], connecting).state
     const result = replay([{ type: "verify.failed", attempt: 1, error: new Error("handoff failed") }], probed)
 
     expect(result.state).toBe(probed)
@@ -122,7 +138,7 @@ describe("background service connection", () => {
     ])
 
     expect(result.commands).toEqual([
-      [],
+      [{ type: "connect", attempt: 1, mode: "initial" }],
       [{ type: "reject", replies: [r1], error }],
       [{ type: "connect", attempt: 2, mode: "initial" }],
       [
@@ -197,7 +213,7 @@ describe("background service connection", () => {
 
   test("ignores results of an attempt a reconnect superseded", () => {
     const r1 = reply()
-    const probed = replay([{ type: "probe.succeeded", attempt: 1, data: A }]).state
+    const probed = replay([{ type: "probe.succeeded", attempt: 1, data: A }], connecting).state
     const reconnecting = replay([{ type: "reconnect.requested", reply: r1 }], probed).state
 
     const result = replay(
