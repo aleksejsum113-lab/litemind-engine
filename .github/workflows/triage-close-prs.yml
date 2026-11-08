@@ -39,11 +39,13 @@ jobs:
             max_close="50"
           fi
 
-          args=("--threshold" "2" "--age-months" "1" "--sleep-ms" "20000" "--max-close" "$max_close")
+          # Всегда таргетим собственный репозиторий: дефолт скрипта — апстрим
+          # anomalyco/opencode, где токен форка не имеет прав записи (403).
+          args=("--threshold" "2" "--age-months" "1" "--sleep-ms" "20000" "--max-close" "$max_close" "--repo" "${{ github.repository }}")
 
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            args+=("--execute")
-          elif [ "${{ inputs['dry-run'] }}" = "false" ]; then
+          # По расписанию — только dry-run (отчёт без изменений).
+          # Закрывать PR может только ручной запуск с dry-run=false.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs['dry-run'] }}" = "false" ]; then
             args+=("--execute")
           fi
 

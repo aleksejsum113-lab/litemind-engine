@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 
-const repo = "anomalyco/opencode"
+// GitHub Actions всегда выставляет GITHUB_REPOSITORY — так скрипт работает
+// в форках и не пытается закрывать issues в апстриме (там у токена форка нет прав).
+// Явная переменная окружения ISSUES_REPO позволяет переопределить цель вручную.
+const repo = process.env.ISSUES_REPO ?? process.env.GITHUB_REPOSITORY ?? "anomalyco/opencode"
 const days = 60
 const msg = `To stay organized issues are automatically closed after ${days} days of no activity. If the issue is still relevant please open a new one.`
 
