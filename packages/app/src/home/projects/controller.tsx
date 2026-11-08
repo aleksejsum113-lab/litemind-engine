@@ -101,7 +101,8 @@ export function createHomeProjectsController(home: HomeController) {
     },
     utility: {
       settings: openSettings,
-      help: () => platform.openExternal("https://opencode.ai/desktop-feedback"),
+      // Справка и обратная связь — страница продукта LiteMind Engine (ТЗ §2: брендинг LiteMind).
+      help: () => platform.openExternal("https://github.com/aleksejsum113-lab/litemind-engine#readme"),
     },
   }
 }

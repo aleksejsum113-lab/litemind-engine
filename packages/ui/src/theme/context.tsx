@@ -194,9 +194,11 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     onThemeApplied?: (mode: "light" | "dark", scheme: ColorScheme) => void
   }) => {
     // An id no theme has yet stays selected until `settle`: a registered theme can arrive after startup.
+    // LiteMind (ТЗ §2): dark is the default on first run; the stored choice ("system"/"light"/"dark") wins.
+    const storedScheme = read(STORAGE_KEYS.COLOR_SCHEME)
     const initial = createThemeState({
       themeId: read(STORAGE_KEYS.THEME_ID) || props.defaultTheme || DEFAULT_THEME_ID,
-      scheme: parseColorScheme(read(STORAGE_KEYS.COLOR_SCHEME)),
+      scheme: storedScheme ? parseColorScheme(storedScheme) : "dark",
       systemMode: getSystemMode(),
       defaultTheme: oc2Theme,
       bundled: knownThemes(),

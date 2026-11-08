@@ -19,6 +19,7 @@ import type { HomeProjectSelection, LocalProject } from "@/shell/state/layout"
 import { ServerConnection } from "@/runtime/server/registry"
 import { useLanguage } from "@/runtime/i18n/language"
 import { ServerRowMenuView, serverMenuLabels } from "@/servers/registry/row-menu"
+import { useSettingsDialog } from "@/settings/command"
 import { useNavigate } from "@solidjs/router"
 import { ServerHealthIndicator } from "@/servers/registry/row"
 import {
@@ -345,6 +346,8 @@ function HomeProjectsPanel(props: HomeProjectsViewProps) {
 export function LiteMindNav(props: { class?: string }) {
   const navigate = useNavigate()
   const open = (section: string) => navigate(`/litemind?section=${section}`)
+  // Workspace (git-worktree-проекты OpenCode) — страница настроек внутри того же окна (ТЗ §4).
+  const openWorkspaces = useSettingsDialog("workspaces")
   return (
     <div
       class={`${props.class ?? ""} min-w-0 flex-row justify-between gap-1 lg:flex-col lg:justify-start lg:pr-3 [&>button]:w-auto lg:[&>button]:w-full`}
@@ -375,6 +378,14 @@ export function LiteMindNav(props: { class?: string }) {
       >
         <Icon name="arrow-down-to-line" size="small" />
         <span class={HOME_PROJECT_NAV_LABEL}>Загрузки</span>
+      </HomeProjectNavButton>
+      <HomeProjectNavButton
+        type="button"
+        class="text-v2-text-text-faint [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted"
+        onClick={() => openWorkspaces()}
+      >
+        <Icon name="outline-worktree" size="small" />
+        <span class={HOME_PROJECT_NAV_LABEL}>Workspace</span>
       </HomeProjectNavButton>
       <HomeProjectNavButton
         type="button"
