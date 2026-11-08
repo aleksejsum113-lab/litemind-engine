@@ -16,9 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
+      # Bun ставится из npm-реестра: oven-sh/setup-bun качает бинарник с GitHub
+      # Releases, который периодически отдаёт 504 (инцидент 2026-11-08).
+      - name: Install bun (npm registry)
+        run: npm install -g bun@latest
       - run: bun install --ignore-scripts
       - name: Engine tests
         working-directory: packages/litemind-engine
@@ -30,9 +31,8 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
+      - name: Install bun (npm registry)
+        run: npm install -g bun@latest
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -67,6 +67,8 @@ jobs:
           # Ресурсы electron-builder (winCodeSign, NSIS) качаются с зеркала npmmirror:
           # GitHub Releases периодически отдаёт 504 (два прогона подряд).
           ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
+          # Zip дистрибутива Electron тоже качается с GitHub Releases — зеркало снимает зависимость от его стабильности.
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
         run: bunx electron-builder --win --x64 --publish never --config electron-builder.config.ts
       # Portable-таргет временно не собирается: патч апстрима app-builder-lib
       # использует ${DirState} из assisted-шаблона, которого нет в oneClick/portable.
