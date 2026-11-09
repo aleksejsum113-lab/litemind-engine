@@ -103,7 +103,8 @@ const runtime = Layer.effect(
     const deepLinks = yield* DeepLinks.make(focusWindow)
 
     const secondInstance = (_event: Event, argv: string[]) => {
-      const urls = argv.filter((arg) => arg.startsWith("opencode://"))
+      // v0.4: собственный протокол litemind:// (opencode:// больше не регистрируется).
+      const urls = argv.filter((arg) => arg.startsWith("litemind://"))
 
       if (urls.length) {
         runFork(Effect.logInfo("deep link received via second-instance", { urls }))
