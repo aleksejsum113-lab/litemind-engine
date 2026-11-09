@@ -13,6 +13,7 @@ import { OllamaInstaller } from '../install/ollama.js';
 import { optimizeModel, SLOW_TOKENS_PER_SEC } from '../optimize/optimizer.js';
 import { capabilitiesFor } from '../adaptive/capabilities.js';
 import * as projectIndex from '../adaptive/project-index.js';
+import { extractText } from '../attachments/extract.js';
 import { saveConfig } from '../config.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui', 'public');
@@ -78,13 +79,13 @@ function openaiError(res, status, message, type = 'invalid_request_error', code 
   json(res, status, { error: { message, type, code, param: null, line: null } });
 }
 
-function readBody(req) {
+function readBody(req, maxBytes = MAX_BODY) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > MAX_BODY) {
+      if (size > maxBytes) {
         reject(Object.assign(new Error('Request body too large'), { status: 413 }));
         req.destroy();
         return;
@@ -651,6 +652,31 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         return json(res, 200, { ok: true, ...result });
       } catch (err) {
         return openaiError(res, err.status || 500, err.message, 'delete_error', err.code);
+      }
+    }
+
+    // --- Вложения чата: извлечение текста (TXT/MD/CSV/JSON/код/PDF/DOCX) ---
+    if (req.method === 'POST' && p === '/api/attachments') {
+      let body;
+      try {
+        body = JSON.parse((await readBody(req, 14 * 1024 * 1024)) || '{}');
+      } catch {
+        return openaiError(res, 400, 'Ожидался JSON: { name, dataBase64 }', 'invalid_request_error');
+      }
+      const name = String(body.name || 'attachment.txt');
+      if (!body.dataBase64) return openaiError(res, 400, 'Поле dataBase64 обязательно.', 'invalid_request_error');
+      let buf;
+      try {
+        buf = Buffer.from(String(body.dataBase64).replace(/^data:[^,]+,/, ''), 'base64');
+      } catch {
+        return openaiError(res, 400, 'dataBase64 не является корректным base64.', 'invalid_request_error');
+      }
+      try {
+        const result = extractText(name, buf);
+        logger?.info('attachment extracted', { name, kind: result.kind, chars: result.text.length });
+        return json(res, 200, { ok: true, name, kind: result.kind, chars: result.text.length, warning: result.warning, text: result.text });
+      } catch (err) {
+        return openaiError(res, err.status || 400, err.message, 'attachment_error', err.code);
       }
     }
 

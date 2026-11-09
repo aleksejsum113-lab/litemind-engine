@@ -1,12 +1,13 @@
 // LiteMind UI — собственный интерфейс движка. Vanilla JS, без сборки.
 // Работает в двух режимах: панель движка (http://127.0.0.1:8399) и
-// собственный интерфейс LiteMind Desktop (oc://renderer/litemind/index.html).
-// API движка — единственный backend; в Desktop добавляется IPC-мост Electron.
+// собственный интерфейс LiteMind Desktop. API движка — единственный backend;
+// в Desktop добавляется IPC-мост Electron.
+// AI Chat — главный экран: сессии, Markdown, вложения, стриминг, стоп.
 const $ = (id) => document.getElementById(id);
 const ENGINE_BASE = location.protocol.startsWith('http') && location.port === '8399' ? '' : 'http://127.0.0.1:8399';
 const bridge = () => (typeof window !== 'undefined' && window.electron?.litemindEngine) || null;
 
-const state = { streaming: false, engineOnline: null, catalog: null, wsDir: null, wsFile: null, projDir: null };
+const state = { streaming: false, engineOnline: null, catalog: null, wsDir: null, wsFile: null, projDir: null, stickBottom: true };
 
 /* ============================ утилиты ============================ */
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -67,11 +68,18 @@ matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => {
 });
 applyTheme(localStorage.getItem('litemind-theme') || 'dark');
 
+/* ============================ боковая панель ============================ */
+$('sidebar-toggle').addEventListener('click', () => {
+  document.getElementById('app').classList.toggle('sidebar-collapsed');
+});
+$('chat-menu-btn').addEventListener('click', () => document.getElementById('app').classList.toggle('sidebar-open'));
+$('sidebar-overlay').addEventListener('click', () => document.getElementById('app').classList.remove('sidebar-open'));
+
 /* ============================ навигация ============================ */
 function switchTab(name) {
-  name = name || 'home';
+  name = name || 'chat';
   const btn = document.querySelector(`.nav-item[data-tab="${name}"]`);
-  if (!btn) name = 'home';
+  if (!btn) name = 'chat';
   document.querySelectorAll('.nav-item').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('[data-page]').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
   ({ catalog: loadCatalog, downloads: refreshDownloads, hardware: loadHardware, settings: loadSettings,
@@ -79,6 +87,7 @@ function switchTab(name) {
      chat: loadChat, projects: loadProjects, workspace: loadWorkspace, terminal: loadTerminal })[name]?.();
   const hash = '#' + name;
   if (location.hash !== hash) history.replaceState(null, '', hash);
+  document.getElementById('app').classList.remove('sidebar-open');
   $('main').scrollTop = 0;
 }
 document.querySelectorAll('.nav-item').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
@@ -87,8 +96,24 @@ const openTab = (name) => switchTab(name);
 $('home-open-chat').addEventListener('click', () => openTab('chat'));
 $('home-open-catalog').addEventListener('click', () => openTab('catalog'));
 
-/* ============================ статус / главная ============================ */
+/* ============================ статус ============================ */
 let statusCache = null;
+
+function setEngineDot(online, healthy, backendType) {
+  const dot = $('engine-dot');
+  const txt = $('engine-state-text');
+  if (!dot) return;
+  if (!online) {
+    dot.className = 'dot bad';
+    txt.textContent = 'движок не отвечает';
+  } else if (healthy) {
+    dot.className = 'dot ok';
+    txt.textContent = `${backendType ?? 'runtime'} готов`;
+  } else {
+    dot.className = 'dot warn';
+    txt.textContent = 'модель не запущена';
+  }
+}
 
 async function refreshStatus() {
   let online = true;
@@ -102,14 +127,14 @@ async function refreshStatus() {
     $('home-backend').textContent = healthy ? 'онлайн' : 'не обнаружен';
     $('home-backend').className = 'state-value ' + (healthy ? 'ok' : 'bad');
     const models = s.models || [];
-    $('home-models').textContent = `${models.length} установлено`;
+    $('home-models').textContent = `${models.length} доступно`;
     $('home-queue').textContent = `${s.queue.active} активных / ${s.queue.waiting} в очереди`;
     $('queue').textContent = `${s.queue.active} активных / ${s.queue.waiting} в очереди (лимит ${s.queue.limit})`;
     $('profile').textContent = s.engine.profileLabel;
     $('saver').checked = s.engine.profile === 'low';
     $('home-note').textContent = healthy
-      ? `Backend: ${s.backend.type} ${s.backend.health.version || ''}. Движок подобрал параметры под ваше железо автоматически.`
-      : `Runtime (Ollama) не отвечает: ${s.backend.health.error || '—'}. Модели не запущены — CPU и память не заняты.`;
+      ? `Runtime: ${s.backend.type} ${s.backend.health.version || ''}. Параметры подобраны под ваше железо.`
+      : `Модель не запущена: ${s.backend.health.error || '—'} CPU и память не заняты.`;
     const m = s.metrics;
     if (m) {
       const ramPct = m.totalRamMb ? (m.usedRamMb / m.totalRamMb) * 100 : 0;
@@ -119,8 +144,9 @@ async function refreshStatus() {
       else { $('vram').textContent = 'недоступно'; const b = $('vram-bar'); if (b) b.style.width = '0'; }
       $('gpu-name').textContent = (m.gpuNames && m.gpuNames.length) ? m.gpuNames.join(', ') : 'видеокарта не определена';
     }
-    fillModels(models, s.limits?.contextTokens ? String(s.limits.contextTokens) : undefined);
-    if (!$('maxtok').dataset.touched && s.limits?.maxOutputTokens) $('maxtok').value = String(s.limits.maxOutputTokens);
+    fillModels(models);
+    setEngineDot(true, healthy, s.backend.type);
+    updateWelcomeHint(models, healthy);
     monFill(s);
   } catch (err) {
     online = false;
@@ -131,10 +157,23 @@ async function refreshStatus() {
     $('home-queue').textContent = '—';
     $('home-note').textContent = 'Сервер движка не отвечает. В LiteMind Desktop нажмите «Запустить движок» в разделе «Управление».';
     monOffline();
+    setEngineDot(false, false, null);
   }
   setConn(online);
   if ($('ctl-engine')) refreshControl(online);
   refreshDlBadge();
+}
+
+function updateWelcomeHint(models, healthy) {
+  const el = $('welcome-model-hint');
+  if (!el) return;
+  if (!models || !models.length) {
+    el.innerHTML = 'Модель не установлена — <a href="#catalog" onclick="openTab(\'catalog\');return false">откройте каталог</a> и скачайте GGUF.';
+  } else if (!healthy) {
+    el.textContent = 'Модели найдены, но runtime не готов. Проверьте вкладку «Мои модели».';
+  } else {
+    el.textContent = `Активная модель: ${$('model')?.value || models[0].id}`;
+  }
 }
 
 function setConn(ok) {
@@ -144,7 +183,6 @@ function setConn(ok) {
   c.textContent = ok ? 'движок: подключён' : 'движок: не отвечает';
   c.className = 'conn ' + (ok ? 'ok' : 'bad');
   if (!ok) event('связь с движком потеряна');
-  else if (state.engineOnline !== null) event('движок подключён');
 }
 
 function monFill(s) {
@@ -204,18 +242,98 @@ $('btn-unload-all').addEventListener('click', async () => {
 /* ============================ Мониторинг ============================ */
 function loadMonitor() { refreshStatus(); }
 
+/* ============================ Markdown рендер ============================ */
+// Минимальный безопасный Markdown: код-блоки с языком и копированием,
+// таблицы, списки, заголовки, цитаты, inline-форматирование.
+function mdToHtml(src) {
+  const lines = String(src ?? '').split('\n');
+  const out = [];
+  let i = 0;
+  let inCode = false, codeLang = '', codeBuf = [];
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = line.match(/^\s*```(\w*)/);
+    if (fence && !inCode) { inCode = true; codeLang = fence[1] || ''; codeBuf = []; continue; }
+    if (inCode) {
+      if (/^\s*```/.test(line)) { out.push(codeBlockHtml(codeBuf.join('\n'), codeLang)); inCode = false; }
+      else codeBuf.push(line);
+      continue;
+    }
+    if (/^\s*$/.test(line)) { out.push(''); continue; }
+    const h = line.match(/^(#{1,6})\s+(.*)/);
+    if (h) { out.push(`<h${h[1].length}>${mdInline(h[2])}</h${h[1].length}>`); continue; }
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { out.push('<hr>'); continue; }
+    if (/^\s*&gt;\s?/.test(line) || /^\s*>\s?/.test(line)) {
+      const q = [];
+      while (i < lines.length && /^\s*&gt;?\s?|^\s*>\s?/.test(lines[i])) { q.push(lines[i].replace(/^\s*(&gt;|>)\s?/, '')); i++; }
+      i--;
+      out.push(`<blockquote>${mdInline(q.join(' '))}</blockquote>`);
+      continue;
+    }
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(lines[i]); i++; }
+      i--;
+      out.push(mdTable(rows));
+      continue;
+    }
+    if (/^\s*[-*+]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) {
+      const ordered = /^\s*\d+[.)]\s+/.test(line);
+      const items = [];
+      while (i < lines.length && (ordered ? /^\s*\d+[.)]\s+/.test(lines[i]) : /^\s*[-*+]\s+/.test(lines[i]))) {
+        items.push(lines[i].replace(/^\s*(?:[-*+]|\d+[.)])\s+/, ''));
+        i++;
+      }
+      i--;
+      const tag = ordered ? 'ol' : 'ul';
+      out.push(`<${tag}>${items.map((it) => `<li>${mdInline(it)}</li>`).join('')}</${tag}>`);
+      continue;
+    }
+    // Абзац: собираем до пустой строки.
+    const para = [line];
+    while (i + 1 < lines.length && !/^\s*$/.test(lines[i + 1]) && !/^\s*(```|#{1,6}\s|>|\||[-*+]\s|\d+[.)]\s)/.test(lines[i + 1])) {
+      para.push(lines[++i]);
+    }
+    out.push(`<p>${mdInline(para.join('\n')).replace(/\n/g, '<br>')}</p>`);
+  }
+  if (inCode && codeBuf.length) out.push(codeBlockHtml(codeBuf.join('\n'), codeLang));
+  return out.filter((s) => s !== '').join('\n');
+}
+
+function codeBlockHtml(code, lang) {
+  return `<div class="code-block"><div class="code-head"><span>${esc(lang || 'code')}</span><button class="code-copy" type="button">копировать</button></div><pre><code>${esc(code)}</code></pre></div>`;
+}
+
+function mdTable(rows) {
+  const parse = (r) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+  const head = parse(rows[0]);
+  const bodyRows = rows.slice(1).filter((r) => !/^\s*\|?[\s:|-]+\|?\s*$/.test(r));
+  const th = head.map((c) => `<th>${mdInline(c)}</th>`).join('');
+  const body = bodyRows.map((r) => `<tr>${parse(r).map((c) => `<td>${mdInline(c)}</td>`).join('')}</tr>`).join('');
+  return `<div class="md-table-wrap"><table><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function mdInline(s) {
+  let x = esc(s);
+  x = x.replace(/`([^`]+)`/g, '<code>$1</code>');
+  x = x.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  x = x.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1<i>$2</i>');
+  x = x.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  return x;
+}
+
 /* ============================ модели (выбор в чате) ============================ */
 function fillModels(models, _current) {
   const sel = $('model');
   if (!sel) return;
-  const wanted = sel.value;
+  const wanted = localStorage.getItem('litemind-selected-model') || sel.value;
   const ids = models.map((m) => m.id);
   if (sel.dataset.ids !== ids.join('|')) {
     sel.innerHTML = '';
     for (const m of models) {
       const o = document.createElement('option');
       o.value = m.id;
-      o.textContent = m.id + (m.sizeBytes ? ` (${fmtSize(m.sizeBytes)})` : '');
+      o.textContent = m.id + (m.sizeBytes ? ` · ${fmtSize(m.sizeBytes)}` : '');
       sel.appendChild(o);
     }
     sel.dataset.ids = ids.join('|');
@@ -228,59 +346,339 @@ function fillModels(models, _current) {
     sel.appendChild(o);
   }
 }
+$('model')?.addEventListener('change', () => localStorage.setItem('litemind-selected-model', $('model').value));
 
-/* ============================ AI Chat ============================ */
-const CHAT_KEY = 'litemind-chat-history';
-let chatHistory = [];
-try { chatHistory = JSON.parse(localStorage.getItem(CHAT_KEY) || '[]'); } catch { chatHistory = []; }
+/* ============================ AI Chat — сессии ============================ */
+const CHATS_KEY = 'litemind-chats-v2';
+const ACTIVE_CHAT_KEY = 'litemind-active-chat-v2';
+let chats = [];
+try { chats = JSON.parse(localStorage.getItem(CHATS_KEY) || '[]'); } catch { chats = []; }
+let activeChatId = localStorage.getItem(ACTIVE_CHAT_KEY) || null;
+let pendingAttachments = []; // [{name, kind, chars, text, warning}]
+let currentAbort = null;
+const WELCOME_HTML = document.getElementById('chat-welcome')?.outerHTML ?? '';
 
-function renderChat() {
+function saveChats() {
+  try { localStorage.setItem(CHATS_KEY, JSON.stringify(chats.slice(0, 60))); }
+  catch { // переполнение localStorage — оставляем только последние чаты
+    chats = chats.slice(0, 10);
+    localStorage.setItem(CHATS_KEY, JSON.stringify(chats));
+  }
+  localStorage.setItem(ACTIVE_CHAT_KEY, activeChatId ?? '');
+}
+
+const activeChat = () => chats.find((c) => c.id === activeChatId) ?? null;
+
+function newChat(silent) {
+  const c = { id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6), title: 'Новый чат', createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
+  chats.unshift(c);
+  activeChatId = c.id;
+  saveChats();
+  renderChatList();
+  renderMessages();
+  if (!silent) $('prompt').focus();
+  return c;
+}
+
+function deleteChat(id) {
+  chats = chats.filter((c) => c.id !== id);
+  if (activeChatId === id) activeChatId = chats[0]?.id ?? null;
+  if (!activeChatId && !chats.length) { saveChats(); newChat(true); return; }
+  saveChats();
+  renderChatList();
+  renderMessages();
+}
+
+function renderChatList() {
+  const wrap = $('chat-list');
+  wrap.innerHTML = '';
+  if (!chats.length) { newChat(true); return; }
+  for (const c of chats) {
+    const item = document.createElement('div');
+    item.className = 'chat-list-item' + (c.id === activeChatId ? ' active' : '');
+    item.innerHTML = `<span class="chat-list-title">${esc(c.title)}</span><button class="chat-list-del" title="Удалить чат">×</button>`;
+    item.addEventListener('click', () => { activeChatId = c.id; saveChats(); renderChatList(); renderMessages(); });
+    item.querySelector('.chat-list-del').addEventListener('click', (e) => { e.stopPropagation(); deleteChat(c.id); });
+    wrap.appendChild(item);
+  }
+}
+
+function msgBubble(m, { streaming = false } = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = `msg ${m.role === 'user' ? 'msg-user' : 'msg-bot'}`;
+  const avatar = document.createElement('div');
+  avatar.className = 'msg-avatar';
+  avatar.textContent = m.role === 'user' ? 'Вы' : 'LM';
+  const body = document.createElement('div');
+  body.className = 'msg-body';
+  if (m.role === 'user') {
+    if (m.attachments?.length) {
+      const bar = document.createElement('div');
+      bar.className = 'msg-attachments';
+      for (const a of m.attachments) {
+        const chip = document.createElement('span');
+        chip.className = 'attach-chip';
+        chip.textContent = `📄 ${a.name} (${a.kind}${a.chars ? ', ' + a.chars + ' симв.' : ''})`;
+        bar.appendChild(chip);
+      }
+      body.appendChild(bar);
+    }
+    const p = document.createElement('div');
+    p.className = 'msg-text';
+    p.textContent = m.content;
+    body.appendChild(p);
+  } else {
+    const md = document.createElement('div');
+    md.className = 'msg-md';
+    md.innerHTML = m.content ? mdToHtml(m.content) : '<span class="thinking">…</span>';
+    body.appendChild(md);
+    if (m.stopped) {
+      const note = document.createElement('div');
+      note.className = 'muted small';
+      note.textContent = '⏹ генерация остановлена';
+      body.appendChild(note);
+    }
+    if (streaming) body.insertAdjacentHTML('beforeend', '<span class="cursor-blink"></span>');
+  }
+  wrap.append(avatar, body);
+  return wrap;
+}
+
+function errorBubble(text) {
+  const div = document.createElement('div');
+  div.className = 'msg msg-error';
+  div.innerHTML = `<div class="msg-avatar">!</div><div class="msg-body"><b>Ошибка.</b> ${esc(text)}</div>`;
+  return div;
+}
+
+function scrollChat(force) {
+  const log = $('chat-log');
+  if (force || state.stickBottom) log.scrollTop = log.scrollHeight;
+}
+
+function renderMessages() {
+  const c = activeChat();
   const log = $('chat-log');
   log.innerHTML = '';
-  for (const m of chatHistory) {
-    const div = document.createElement('div');
-    div.className = 'chat-msg ' + (m.role === 'user' ? 'user' : 'assistant');
-    div.textContent = m.content;
-    log.appendChild(div);
+  $('chat-title').textContent = c?.title ?? 'Новый чат';
+  if (!c || !c.messages.length) {
+    log.appendChild(welcomeBlock());
+    return;
   }
-  log.scrollTop = log.scrollHeight;
+  for (const m of c.messages) log.appendChild(msgBubble(m));
+  log.querySelectorAll('.code-copy').forEach(bindCopy);
+  scrollChat(true);
 }
-function loadChat() { renderChat(); }
 
-$('btn-newchat').addEventListener('click', () => {
-  chatHistory = [];
-  localStorage.setItem(CHAT_KEY, '[]');
-  renderChat();
-  $('timings').textContent = '';
-  event('начат новый чат');
+function welcomeBlock() {
+  // Шаблон хранится строкой: renderMessages очищает #chat-log вместе с исходником.
+  const div = document.createElement('div');
+  div.innerHTML = WELCOME_HTML;
+  return div.firstElementChild ?? div;
+}
+
+function bindCopy(btn) {
+  btn.addEventListener('click', () => {
+    const code = btn.closest('.code-block')?.querySelector('code')?.textContent ?? '';
+    navigator.clipboard?.writeText(code).then(() => {
+      btn.textContent = 'скопировано';
+      setTimeout(() => { btn.textContent = 'копировать'; }, 1200);
+    }).catch(() => {});
+  });
+}
+
+// Копирование кода — делегирование (кнопки создаются динамически при рендере)
+$('chat-log').addEventListener('click', (e) => {
+  const btn = e.target.closest('.code-copy');
+  if (!btn) return;
+  const code = btn.closest('.code-block')?.querySelector('code')?.textContent ?? '';
+  navigator.clipboard?.writeText(code).then(() => {
+    btn.textContent = 'скопировано';
+    setTimeout(() => { btn.textContent = 'копировать'; }, 1200);
+  }).catch(() => {});
 });
 
+// Автоскролл: прилипаем к низу, пока пользователь не проскроллил вверх
+$('chat-log').addEventListener('scroll', () => {
+  const log = $('chat-log');
+  state.stickBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+});
+
+function loadChat() {
+  if (!chats.length && !activeChatId) newChat(true);
+  if (!activeChat()) activeChatId = chats[0]?.id ?? null;
+  renderChatList();
+  renderMessages();
+}
+
+$('btn-newchat').addEventListener('click', () => newChat());
+$('btn-clear-chats').addEventListener('click', () => {
+  if (!confirm('Удалить все чаты? Это действие необратимо.')) return;
+  chats = [];
+  activeChatId = null;
+  saveChats();
+  newChat();
+});
+
+// Подсказки на экране приветствия
+$('chat-log').addEventListener('click', (e) => {
+  const hint = e.target.closest('[data-hint]');
+  if (hint) {
+    $('prompt').value = hint.dataset.hint;
+    $('prompt').focus();
+    autoGrow();
+  }
+});
+
+/* ============================ AI Chat — вложения ============================ */
+$('btn-attach').addEventListener('click', () => $('file-input').click());
+
+$('file-input').addEventListener('change', async (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  for (const f of files) await addAttachment(f);
+  renderAttachBar();
+});
+
+async function addAttachment(file) {
+  if (file.size > 10 * 1024 * 1024) { showError(`«${file.name}» больше 10 МБ`); return; }
+  const chip = { name: file.name, kind: '…', chars: 0, text: '', warning: null, loading: true };
+  pendingAttachments.push(chip);
+  renderAttachBar();
+  try {
+    const buf = await file.arrayBuffer();
+    const b64 = arrayBufferToBase64(buf);
+    const r = await api('/api/attachments', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: file.name, dataBase64: b64 })
+    });
+    Object.assign(chip, { kind: r.kind, chars: r.chars, text: r.text, warning: r.warning, loading: false });
+    if (r.warning) showError(`«${file.name}»: ${r.warning}`);
+    event(`вложение прочитано: ${file.name} (${r.chars} симв.)`);
+  } catch (err) {
+    pendingAttachments = pendingAttachments.filter((a) => a !== chip);
+    showError(`вложение «${file.name}»: ${err.message}`);
+  }
+  renderAttachBar();
+}
+
+function arrayBufferToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
+function renderAttachBar() {
+  const barEl = $('attach-bar');
+  barEl.innerHTML = '';
+  barEl.hidden = pendingAttachments.length === 0;
+  pendingAttachments.forEach((a, idx) => {
+    const chip = document.createElement('span');
+    chip.className = 'attach-chip' + (a.loading ? ' loading' : '');
+    chip.innerHTML = `📄 ${esc(a.name)} <button title="Убрать">×</button>`;
+    chip.querySelector('button').addEventListener('click', () => {
+      pendingAttachments.splice(idx, 1);
+      renderAttachBar();
+    });
+    barEl.appendChild(chip);
+  });
+}
+
+/* ============================ AI Chat — отправка ============================ */
+function autoGrow() {
+  const ta = $('prompt');
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
+}
+$('prompt').addEventListener('input', autoGrow);
+
+function composerBusy(busy) {
+  state.streaming = busy;
+  $('btn-send').hidden = busy;
+  $('btn-stop').hidden = !busy;
+  $('run-state').textContent = busy ? 'генерация…' : '';
+}
+
 async function sendChat() {
+  const ta = $('prompt');
+  const promptText = ta.value.trim();
+  if (!promptText && !pendingAttachments.length) return;
+  if (state.streaming) return;
   const model = $('model').value;
-  const prompt = $('prompt').value.trim();
   if (!model) { showError('Модели не установлены — скачайте модель в «Каталоге моделей».'); return; }
-  if (!prompt || state.streaming) return;
-  $('prompt').value = '';
-  chatHistory.push({ role: 'user', content: prompt });
-  renderChat();
+
+  let chat = activeChat();
+  if (!chat) chat = newChat(true);
+
+  // Текст пользователя + содержимое вложений (реальные данные для модели).
+  let content = promptText;
+  const attachMeta = [];
+  for (const a of pendingAttachments) {
+    attachMeta.push({ name: a.name, kind: a.kind, chars: a.chars });
+    const clipped = (a.text ?? '').slice(0, 12000);
+    content += `\n\n---\nФайл: ${a.name} (${a.kind})\n\`\`\`\n${clipped}${(a.text ?? '').length > 12000 ? '\n[…файл обрезан до 12000 символов…]' : ''}\n\`\`\``;
+  }
+  pendingAttachments = [];
+  renderAttachBar();
+
+  const userMsg = { role: 'user', content, attachments: attachMeta.length ? attachMeta : undefined };
+  chat.messages.push(userMsg);
+  if (chat.title === 'Новый чат' && promptText) {
+    chat.title = promptText.slice(0, 48) + (promptText.length > 48 ? '…' : '');
+    $('chat-title').textContent = chat.title;
+  }
+  chat.updatedAt = Date.now();
+  ta.value = '';
+  autoGrow();
+  saveChats();
+  renderChatList();
+
+  // Рисуем пользователя + пустой ответ модели
+  const log = $('chat-log');
+  const welcome = log.querySelector('.chat-welcome');
+  if (welcome) welcome.remove();
+  log.appendChild(msgBubble(userMsg));
   const reply = { role: 'assistant', content: '' };
-  chatHistory.push(reply);
-  const holder = document.createElement('div');
-  holder.className = 'chat-msg assistant';
-  $('chat-log').appendChild(holder);
-  $('chat-log').scrollTop = $('chat-log').scrollHeight;
-  state.streaming = true;
-  $('btn-send').disabled = true;
-  $('run-state').textContent = 'генерация…';
+  const botBubble = msgBubble(reply, { streaming: true });
+  log.appendChild(botBubble);
+  scrollChat(true);
+
+  composerBusy(true);
+  const mdEl = botBubble.querySelector('.msg-md');
   const t0 = performance.now();
   let ttft = null;
+  let lastRender = 0;
+  currentAbort = new AbortController();
+
+  const renderMd = (final = false) => {
+    const now = performance.now();
+    if (!final && now - lastRender < 80) return;
+    lastRender = now;
+    mdEl.innerHTML = reply.content ? mdToHtml(reply.content) : '<span class="thinking">…</span>';
+    mdEl.querySelectorAll('.code-copy').forEach(bindCopy);
+    scrollChat();
+  };
+
   try {
-    // Контекст: последние сообщения (уплотнение середины выполняет движок).
-    const send = chatHistory.slice(0, -1).slice(-20);
+    // История: последние 24 сообщения (уплотнение середины выполняет движок).
+    // Последний элемент chat.messages — текущий запрос пользователя.
+    const send = chat.messages.slice(-24).map((m) => ({ role: m.role, content: m.content }));
     const res = await fetch(ENGINE_BASE + '/v1/chat/completions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model, stream: true, context_tokens: Number($('ctx').value), max_tokens: Number($('maxtok').value), messages: send })
+      signal: currentAbort.signal,
+      body: JSON.stringify({
+        model,
+        stream: true,
+        context_tokens: Number($('ctx').value),
+        max_tokens: 1024,
+        messages: send
+      })
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -289,7 +687,7 @@ async function sendChat() {
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
-    for (;;) {
+    stream: for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       buf += dec.decode(value, { stream: true });
@@ -300,48 +698,54 @@ async function sendChat() {
         for (const line of block.split('\n')) {
           if (!line.startsWith('data: ')) continue;
           const payload = line.slice(6);
-          if (payload === '[DONE]') continue;
+          if (payload === '[DONE]') break stream;
           let obj;
           try { obj = JSON.parse(payload); } catch { continue; }
           if (obj.error) throw new Error(obj.error.message);
           const delta = obj.choices?.[0]?.delta?.content;
           if (delta) {
-            if (ttft === null) ttft = Math.round(performance.now() - t0);
+            if (ttft === null) {
+              ttft = Math.round(performance.now() - t0);
+              $('timings').textContent = `первый токен: ${ttft} мс`;
+            }
             reply.content += delta;
-            holder.textContent = reply.content;
-            $('chat-log').scrollTop = $('chat-log').scrollHeight;
+            renderMd();
           }
         }
       }
     }
+    renderMd(true);
     const total = Math.round(performance.now() - t0);
-    $('timings').textContent = `время до первого токена: ${ttft ?? '—'} мс · общее время: ${total} мс`;
+    $('timings').textContent = `первый токен: ${ttft ?? '—'} мс · всего: ${total} мс`;
     event(`чат: ответ получен (${total} мс)`);
   } catch (err) {
-    reply.content = reply.content || '';
-    const e = document.createElement('div');
-    e.className = 'chat-msg error';
-    e.textContent = 'Ошибка: ' + err.message;
-    $('chat-log').appendChild(e);
-    event('ошибка чата: ' + err.message);
+    if (err.name === 'AbortError') {
+      reply.stopped = true;
+      event('генерация остановлена пользователем');
+    } else {
+      // Честная ошибка прямо в потоке диалога
+      log.appendChild(errorBubble(err.message));
+      event('ошибка чата: ' + err.message);
+    }
+    renderMd(true);
   } finally {
-    localStorage.setItem(CHAT_KEY, JSON.stringify(chatHistory.slice(-40)));
-    state.streaming = false;
-    $('btn-send').disabled = false;
-    $('run-state').textContent = '';
-    holder.textContent = reply.content || '— пустой ответ —';
+    if (reply.content || reply.stopped) {
+      chat.messages.push({ role: 'assistant', content: reply.content, stopped: reply.stopped });
+    }
+    chat.updatedAt = Date.now();
+    saveChats();
+    composerBusy(false);
+    currentAbort = null;
+    scrollChat();
     refreshStatus();
   }
 }
+
 $('btn-send').addEventListener('click', sendChat);
+$('btn-stop').addEventListener('click', () => currentAbort?.abort(new Error('user stop')));
 $('prompt').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
 });
-$('btn-stop').addEventListener('click', async () => {
-  try { const r = await api('/api/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); event(`генерация остановлена (${r.cancelled})`); }
-  catch (err) { showError(err.message); }
-});
-$('maxtok').addEventListener('input', () => { $('maxtok').dataset.touched = '1'; });
 
 /* ============================ Управление (ТЗ §16) ============================ */
 const ENGINE_STATE_LABEL = { running: 'Движок запущен', stopping: 'Движок останавливается…', stopped: 'Движок полностью остановлен' };
@@ -372,7 +776,6 @@ async function refreshControl(onlineHint) {
       wrap.appendChild(li);
     }
   }
-  // Мост хоста (Desktop)
   const b = bridge();
   if (b) {
     try {
@@ -427,7 +830,6 @@ async function stopEngine() {
     setTimeout(refreshStatus, 900);
     setTimeout(refreshStatus, 2500);
   } catch (err) {
-    // Соединение рвётся при закрытии сервера — это и есть успешная остановка.
     if (/Failed to fetch|fetch failed|NetworkError/i.test(String(err.message))) {
       ctlReport(true, 'Движок полностью остановлен: сервер закрыт, модели выгружены.');
       refreshStatus();
@@ -462,21 +864,45 @@ $('ctl-quit').addEventListener('click', quitApp);
 /* ============================ Мои модели ============================ */
 async function loadMyModels() {
   try {
-    const s = await api('/api/status');
+    const s = await api('/api/models/scan');
+    $('scan-rootdir').textContent = `Папка моделей: ${s.rootDir} · runtime: ${s.runtimeBinary ?? 'llama-server не найден'}`;
     const ul = $('my-models');
     ul.innerHTML = '';
     if (!(s.models || []).length) {
-      ul.innerHTML = '<li class="muted">Модели не установлены. Скачайте из каталога — после установки они появятся здесь.</li>';
+      ul.innerHTML = '<li class="muted">В папке пока нет GGUF. Скачайте модель из каталога — она появится здесь автоматически.</li>';
     } else {
       for (const m of s.models) {
         const li = document.createElement('li');
-        li.innerHTML = `<div class="model-item-main"><div class="model-item-title">${esc(m.id)}</div>
-          <div class="model-item-sub">${fmtSize(m.sizeBytes)} · ${esc(m.detail || '')}</div></div>
-          <div class="model-item-actions"><button data-opt="${esc(m.id)}">Автооптимизация</button>
-          <button data-stop="${esc(m.id)}">Остановить модель</button></div>
-          <div class="model-item-sub" data-report="${esc(m.id)}"></div>`;
-        li.querySelector('[data-opt]').addEventListener('click', () => optimizeModel(m.id, li.querySelector('[data-report]')));
-        li.querySelector('[data-stop]').addEventListener('click', () => stopModel(m.id));
+        const status = m.ok
+          ? (m.compatible ? '<span class="tag ok-tag">готова</span>' : '<span class="tag warn-tag">может не хватить RAM</span>')
+          : '<span class="tag bad-tag">повреждён</span>';
+        const loadedNow = state.streaming ? '' : '';
+        li.innerHTML = `<div class="model-item-main"><div class="model-item-title">${esc(m.id)} ${status}</div>
+          <div class="model-item-sub">${fmtSize(m.sizeBytes)} · ${esc(m.architecture ?? '?')} · ${esc(m.quant ?? 'квант не определён')} · контекст ${m.contextLength ?? '—'} · ≈${m.memoryEstimateMb} МБ RAM</div>
+          ${m.error ? `<div class="model-item-sub" style="color:var(--bad)">${esc(m.error)}</div>` : ''}</div>
+          <div class="model-item-actions">
+            <button data-use="${esc(m.id)}" ${m.ok ? '' : 'disabled'}>Открыть в чате</button>
+            <button data-del="${esc(m.id)}" class="danger">Удалить файл</button>
+          </div>`;
+        li.querySelector('[data-use]')?.addEventListener('click', () => {
+          const sel = $('model');
+          if ([...sel.options].some((o) => o.value === m.id)) {
+            sel.value = m.id;
+            localStorage.setItem('litemind-selected-model', m.id);
+            openTab('chat');
+          } else {
+            showError('Модель ещё не видна движку — подождите пару секунд или обновите вкладку.');
+          }
+        });
+        li.querySelector('[data-del]').addEventListener('click', async () => {
+          if (!confirm(`Удалить файл «${m.id}.gguf» с диска безвозвратно?`)) return;
+          try {
+            await api(`/api/models/${encodeURIComponent(m.id)}`, { method: 'DELETE' });
+            event(`модель удалена: ${m.id}`);
+            loadMyModels();
+            refreshStatus();
+          } catch (err) { showError('удаление: ' + err.message); }
+        });
         ul.appendChild(li);
       }
     }
@@ -507,15 +933,15 @@ async function optimizeModel(id, reportEl) {
 $('btn-install-gguf').addEventListener('click', async () => {
   const sel = document.querySelector('input[name="gguf"]:checked');
   if (!sel) { showError('Выберите GGUF-файл.'); return; }
-  $('install-note').textContent = 'установка… (загрузка blob в backend, может занять несколько минут)';
+  $('install-note').textContent = 'применяю…';
   try {
     const r = await api('/api/install', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ggufPath: sel.value }) });
-    $('install-note').textContent = '';
-    event(`установлено: ${r.model}`);
+    $('install-note').textContent = r.skipped ? 'готово (runtime читает GGUF напрямую)' : '';
+    event(`применено: ${r.model}`);
     loadMyModels();
   } catch (err) {
     $('install-note').textContent = '';
-    showError('ошибка установки: ' + err.message);
+    showError('ошибка: ' + err.message);
   }
 });
 
@@ -564,7 +990,7 @@ function catalogCard(m, c) {
   div.className = 'catalog-item';
   const st = m.compatibility.status;
   const rec = m.compatibility.recommended;
-  const installed = m.installed ? '<span class="tag ok-tag">установлена</span>' : '';
+  const installed = m.installed ? '<span class="tag ok-tag">скачана</span>' : '';
   const unc = m.uncensored ? `<span class="tag">${esc(m.uncensoredLabel || 'Uncensored')}</span>` : '';
   const lic = m.license === 'not specified' ? '<span class="tag muted-tag">лицензия не указана</span>' : '';
   div.innerHTML = `
@@ -585,7 +1011,7 @@ function catalogCard(m, c) {
         ${m.files.map((f) => `<option value="${esc(f.name)}" ${rec && f.name === rec.name ? 'selected' : ''}>
           ${esc(f.name.replace(/\.gguf$/i, '').split('.').pop())} · ${fmtSize(f.sizeBytes)}</option>`).join('')}
       </select>
-      ${m.installed ? '' : `<button class="btn-download">${m.downloaded ? 'Перекачать' : 'Скачать и установить'}</button>`}
+      ${m.installed ? '' : `<button class="btn-download">${m.downloaded ? 'Перекачать' : 'Скачать'}</button>`}
     </div>`;
   div.querySelector('.btn-download')?.addEventListener('click', async () => {
     const fileName = div.querySelector('.quant-select').value;
@@ -641,7 +1067,7 @@ async function refreshDownloads() {
         ${d.state === 'downloading' ? '<button class="act-pause">Пауза</button>' : ''}
         ${['paused', 'error'].includes(d.state) ? '<button class="act-resume">Продолжить</button>' : ''}
         ${['downloading', 'paused', 'error'].includes(d.state) ? '<button class="act-cancel danger">Отменить</button>' : ''}
-        ${d.state === 'done' ? '<button class="act-install">Установить в движок</button>' : ''}
+        ${d.state === 'done' ? '<button class="act-install">Применить</button>' : ''}
       </div>`;
     const act = (action) => async () => {
       try { await api(`/api/downloads/${d.id}/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); }
@@ -653,15 +1079,16 @@ async function refreshDownloads() {
     li.querySelector('.act-cancel')?.addEventListener('click', act('cancel'));
     li.querySelector('.act-install')?.addEventListener('click', () =>
       api('/api/install', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ggufPath: `${d.targetDir}/${d.name}` }) })
-        .then((r) => { event(`установлено: ${r.model}`); refreshDownloads(); })
+        .then((r) => { event(`${r.skipped ? 'модель готова' : 'установлено'}: ${r.model}`); refreshDownloads(); refreshStatus(); })
         .catch((err) => showError('установка: ' + err.message)));
     ul.appendChild(li);
 
     if (d.state === 'done' && d.modelId && !AUTO_INSTALLED.has(d.id)) {
       AUTO_INSTALLED.add(d.id);
+      // При lmlama «установка» не нужна — модель видна сразу. Просто обновим списки.
       api('/api/install', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: d.modelId, fileName: d.name, targetDir: d.targetDir }) })
-        .then((r) => event(`автоустановка завершена: ${r.model}`))
-        .catch((err) => event(`автоустановка (${d.name}): ${err.message} — установите вручную`));
+        .then((r) => event(`${r.skipped ? 'модель готова к чату' : 'автоустановка завершена'}: ${r.model}`))
+        .catch((err) => event(`(${d.name}): ${err.message}`));
     }
   }
   refreshDlBadge();
@@ -686,8 +1113,6 @@ async function scanProject(force) {
   try {
     const s = await api('/api/project/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: dir, force: force === true }) });
     $('proj-summary').textContent = `Проект открыт: ${dir}`;
-    // API отдаёт: { root, fileCount, scannedAt, byExt } — показываем только
-    // реально вычисленные поля, без вымышленных «—»-строк.
     const exts = Object.entries(s.byExt ?? {})
       .sort((a, b) => b[1] - a[1])
       .map(([ext, n]) => `${ext} ×${n}`);
@@ -898,7 +1323,8 @@ $('set-compaction').addEventListener('change', (e) =>
   api('/api/adaptive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contextCompaction: e.target.checked }) }).catch((err) => showError(err.message)));
 
 /* ============================ запуск ============================ */
-switchTab(location.hash.slice(1) || 'home');
+loadChat();
+switchTab(location.hash.slice(1) || 'chat');
 refreshStatus();
 setInterval(refreshStatus, 2500);
 setInterval(() => {

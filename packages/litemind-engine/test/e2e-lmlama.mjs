@@ -133,6 +133,34 @@ try {
   } catch (e) { cancelled = ctrl.signal.aborted; }
   ok('отмена генерации (кнопка Stop)', cancelled ? 'аборт дошёл' : 'запрос завершился сам');
 
+  // 10. Новый чат-UI раздаётся статикой: ключевые элементы нового интерфейса
+  const html = await fetch(`${BASE}/`).then((r) => r.text());
+  for (const marker of ['chat-shell', 'composer', 'btn-attach', 'chat-list', 'chat-welcome', 'btn-stop']) {
+    assert.ok(html.includes(marker), `в index.html нет ${marker}`);
+  }
+  const appJs = await fetch(`${BASE}/app.js`).then((r) => r.text());
+  for (const marker of ['mdToHtml', 'pendingAttachments', 'currentAbort', 'renderChatList', '/api/attachments']) {
+    assert.ok(appJs.includes(marker), `в app.js нет ${marker}`);
+  }
+  const css = await fetch(`${BASE}/style.css`).then((r) => r.text());
+  assert.ok(css.includes('.composer') && css.includes('.msg-bot'), 'style.css не содержит стили чата');
+  ok('чат-UI (главный экран) раздаётся движком', 'index.html + app.js + style.css');
+
+  // 11. Вложения по HTTP: DOCX и PDF
+  const docxB64 = fs.readFileSync('/tmp/litemind-attachments/test.docx').toString('base64');
+  const at1 = await fetch(`${BASE}/api/attachments`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'test.docx', dataBase64: docxB64 })
+  }).then((r) => r.json());
+  assert.ok(at1.ok && at1.text.includes('LiteMind attachment test'), `docx: ${JSON.stringify(at1).slice(0, 200)}`);
+  const pdfB64 = fs.readFileSync('/tmp/litemind-attachments/test.pdf').toString('base64');
+  const at2 = await fetch(`${BASE}/api/attachments`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'test.pdf', dataBase64: pdfB64 })
+  }).then((r) => r.json());
+  assert.ok(at2.ok && at2.text.includes('Hello from PDF'), `pdf: ${JSON.stringify(at2).slice(0, 200)}`);
+  ok('вложения DOCX+PDF через /api/attachments', `docx=${at1.chars} симв., pdf=${at2.chars} симв.`);
+
   console.log('\n=== ИТОГ E2E v0.4 ===');
   results.forEach((r) => console.log(r));
 } catch (err) {

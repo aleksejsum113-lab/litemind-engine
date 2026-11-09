@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LiteMind Engine</title>
+  <title>LiteMind</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -14,36 +14,30 @@
         <div class="logo">LM</div>
         <div class="brand-text">
           <b>LiteMind</b>
-          <span>Engine</span>
+          <span>локальный ИИ</span>
         </div>
+        <button id="sidebar-toggle" class="icon-btn" title="Свернуть панель">⟨</button>
       </div>
 
+      <button id="btn-newchat" class="new-chat-btn">＋ Новый чат</button>
+
+      <div class="chats-label">Чаты <button id="btn-clear-chats" class="link-btn" title="Удалить все чаты">очистить</button></div>
+      <div id="chat-list" class="chat-list"></div>
+
       <nav id="nav">
-        <div class="nav-group">
-          <button class="nav-item" data-tab="home"><i>⌂</i>Главная</button>
-          <button class="nav-item" data-tab="chat"><i>◇</i>AI Chat</button>
-        </div>
-        <div class="nav-group">
-          <div class="nav-label">Модели</div>
-          <button class="nav-item" data-tab="models"><i>▣</i>Мои модели</button>
-          <button class="nav-item" data-tab="catalog"><i>◫</i>Каталог моделей</button>
-          <button class="nav-item" data-tab="downloads"><i>⇩</i>Загрузки <span id="dl-count" class="nav-badge" hidden></span></button>
-        </div>
-        <div class="nav-group">
-          <div class="nav-label">Проекты</div>
-          <button class="nav-item" data-tab="projects"><i>△</i>Проекты</button>
-          <button class="nav-item" data-tab="workspace"><i>▤</i>Workspace</button>
-          <button class="nav-item" data-tab="terminal"><i>▸_</i>AI Terminal</button>
-        </div>
-        <div class="nav-group">
-          <div class="nav-label">Система</div>
-          <button class="nav-item" data-tab="hardware"><i>⚙</i>Железо</button>
-          <button class="nav-item" data-tab="monitor"><i>◉</i>Мониторинг</button>
-          <button class="nav-item" data-tab="settings"><i>◧</i>Настройки</button>
-        </div>
-        <div class="nav-group">
-          <button class="nav-item" data-tab="control"><i>⏻</i>Управление</button>
-        </div>
+        <div class="nav-label">Инструменты</div>
+        <button class="nav-item" data-tab="models"><i>▣</i><span>Мои модели</span></button>
+        <button class="nav-item" data-tab="catalog"><i>◫</i><span>Каталог моделей</span></button>
+        <button class="nav-item" data-tab="downloads"><i>⇩</i><span>Загрузки</span> <span id="dl-count" class="nav-badge" hidden></span></button>
+        <button class="nav-item" data-tab="projects"><i>△</i><span>Проекты</span></button>
+        <button class="nav-item" data-tab="workspace"><i>▤</i><span>Workspace</span></button>
+        <button class="nav-item" data-tab="terminal"><i>▸_</i><span>AI Terminal</span></button>
+        <div class="nav-label">Система</div>
+        <button class="nav-item" data-tab="home"><i>⌂</i><span>Состояние</span></button>
+        <button class="nav-item" data-tab="hardware"><i>⚙</i><span>Железо</span></button>
+        <button class="nav-item" data-tab="monitor"><i>◉</i><span>Мониторинг</span></button>
+        <button class="nav-item" data-tab="control"><i>⏻</i><span>Управление</span></button>
+        <button class="nav-item" data-tab="settings"><i>◧</i><span>Настройки</span></button>
       </nav>
 
       <div class="sidebar-footer">
@@ -55,12 +49,71 @@
         <div class="conn" id="conn-badge">соединение…</div>
       </div>
     </aside>
+    <div id="sidebar-overlay"></div>
 
     <!-- ======================= ОСНОВНАЯ ОБЛАСТЬ ======================= -->
     <main id="main">
-      <!-- ГЛАВНАЯ -->
-      <section id="tab-home" data-page>
-        <h1>Главная</h1>
+      <!-- AI CHAT — главный экран -->
+      <section id="tab-chat" data-page>
+        <div class="chat-shell">
+          <header class="chat-header">
+            <button id="chat-menu-btn" class="icon-btn mobile-only" title="Панель">☰</button>
+            <div class="chat-title" id="chat-title">Новый чат</div>
+            <div class="chat-status">
+              <span class="dot" id="engine-dot"></span>
+              <span id="engine-state-text">проверяю…</span>
+            </div>
+          </header>
+
+          <div id="chat-log" class="chat-log">
+            <div id="chat-welcome" class="chat-welcome">
+              <div class="welcome-logo">LM</div>
+              <h2>Чем помочь?</h2>
+              <p class="muted">Локальная модель LiteMind — ответы генерируются на вашем компьютере, без интернета.</p>
+              <div class="welcome-hints">
+                <button class="hint-card" data-hint="Объясни простыми словами, что такое замыкание в JavaScript, и покажи пример.">Объясни замыкание в JS</button>
+                <button class="hint-card" data-hint="Напиши функцию на Python, которая находит дубликаты в списке, и объясни код.">Функция на Python</button>
+                <button class="hint-card" data-hint="Составь план рефакторинга для проекта с монолитной архитектурой.">План рефакторинга</button>
+              </div>
+              <p class="muted small" id="welcome-model-hint"></p>
+            </div>
+          </div>
+
+          <div class="composer-wrap">
+            <div id="attach-bar" class="attach-bar" hidden></div>
+            <div class="composer">
+              <button id="btn-attach" class="icon-btn composer-icon" title="Прикрепить файл (TXT, MD, CSV, JSON, код, PDF, DOCX)">📎</button>
+              <input id="file-input" type="file" multiple hidden
+                     accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.xml,.html,.js,.mjs,.ts,.tsx,.jsx,.py,.rb,.go,.rs,.java,.kt,.c,.h,.cpp,.hpp,.cs,.php,.sh,.ps1,.sql,.css,.log,.pdf,.docx" />
+              <textarea id="prompt" rows="1" placeholder="Спросите что-нибудь…  (Enter — отправить, Shift+Enter — новая строка)"></textarea>
+              <button id="btn-send" class="send-btn" title="Отправить">↑</button>
+              <button id="btn-stop" class="stop-btn" title="Остановить генерацию" hidden>■</button>
+            </div>
+            <div class="composer-meta">
+              <label class="composer-select" title="Активная модель для этого чата">
+                <span>Модель</span>
+                <select id="model"></select>
+              </label>
+              <label class="composer-select" title="Размер контекста">
+                <span>Контекст</span>
+                <select id="ctx">
+                  <option value="1024">1024</option>
+                  <option value="2048">2048</option>
+                  <option value="4096" selected>4096</option>
+                  <option value="8192">8192</option>
+                </select>
+              </label>
+              <span id="run-state" class="muted small"></span>
+              <span class="spacer"></span>
+              <span id="timings" class="muted small"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ГЛАВНАЯ / СОСТОЯНИЕ -->
+      <section id="tab-home" data-page hidden>
+        <h1>Состояние</h1>
         <div class="home-grid">
           <div class="card span-2">
             <h2>Состояние</h2>
@@ -154,49 +207,23 @@
         </div>
       </section>
 
-      <!-- AI CHAT -->
-      <section id="tab-chat" data-page hidden>
-        <h1>AI Chat</h1>
-        <div class="chat-wrap">
-          <div class="chat-toolbar">
-            <label>Модель <select id="model"></select></label>
-            <label>Контекст <select id="ctx">
-              <option value="1024">1024</option>
-              <option value="2048" selected>2048</option>
-              <option value="4096">4096</option>
-              <option value="8192">8192</option>
-            </select></label>
-            <label>Макс. ответ <input id="maxtok" type="number" min="64" max="8192" step="64" value="512" /></label>
-            <button id="btn-newchat">Новый чат</button>
-            <span id="run-state" class="muted"></span>
-          </div>
-          <div id="chat-log" class="chat-log"></div>
-          <div class="chat-input">
-            <textarea id="prompt" rows="3" placeholder="Спросите что-нибудь… (Enter — отправить, Shift+Enter — перенос строки)"></textarea>
-            <div class="chat-actions">
-              <button id="btn-send" class="primary">Отправить</button>
-              <button id="btn-stop">Остановить</button>
-            </div>
-          </div>
-          <p class="muted" id="timings"></p>
-        </div>
-      </section>
-
       <!-- МОИ МОДЕЛИ -->
       <section id="tab-models" data-page hidden>
         <h1>Мои модели</h1>
         <div class="card">
-          <h2>Установленные модели</h2>
+          <h2>Локальные модели (GGUF)</h2>
+          <p class="muted" id="scan-rootdir">—</p>
           <ul id="my-models" class="model-list"><li class="muted">—</li></ul>
         </div>
         <div class="card">
-          <h2>Скачанные GGUF</h2>
+          <h2>Ручная установка</h2>
           <p class="muted" id="guf-dir">—</p>
           <ul id="gguf-files" class="model-list"><li class="muted">—</li></ul>
           <div class="btns">
-            <button id="btn-install-gguf">Установить выбранный GGUF в backend</button>
+            <button id="btn-install-gguf">Применить выбранный GGUF</button>
             <span class="muted" id="install-note"></span>
           </div>
+          <p class="muted">Собственный runtime llama.cpp читает GGUF напрямую: скачанная из каталога модель уже готова к работе. Кнопка выше нужна только для опциональной интеграции с Ollama.</p>
         </div>
       </section>
 
