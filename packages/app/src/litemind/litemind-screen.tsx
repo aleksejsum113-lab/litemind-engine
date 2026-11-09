@@ -451,14 +451,57 @@ function ModelsSection() {
 
 // ---------------------------------------------------------------- Каталог
 
+type CatalogFilters = {
+  purpose: "all" | "coding" | "chat" | "russian" | "reasoning"
+  restrictions: "all" | "standard" | "reduced"
+  fit: "all" | "fit" | "great"
+  size: "all" | "lt1" | "b1to4" | "gt4"
+  quant: string
+}
+
+const QUANT_FILTERS = ["all", "Q2_K", "Q3_K_M", "Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"]
+
+const FIT_BADGE: Record<string, string> = {
+  great: "bg-green-500/15 text-green-500",
+  ok: "bg-yellow-500/15 text-yellow-600",
+  slow: "bg-amber-500/15 text-amber-500",
+  avoid: "bg-red-500/15 text-red-400",
+}
+
+function FilterChip<T extends string>(props: { active: boolean; onClick: () => void; children: any }) {
+  return (
+    <button
+      type="button"
+      onClick={props.onClick}
+      class={`rounded-full border px-3 py-1 text-xs transition-colors ${
+        props.active
+          ? "border-v2-accent-accent bg-v2-accent-accent/15 text-v2-accent-accent"
+          : "border-v2-fill-fill-hover text-v2-text-text-faint hover:text-v2-text-text-primary"
+      }`}
+    >
+      {props.children}
+    </button>
+  )
+}
+
 function CatalogSection() {
   const [catalog, { refetch }] = createResource(() => api<any>("/api/catalog"))
   const [busy, setBusy] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string | null>(null)
+  const [notice, setNotice] = createSignal<{ id: string; text: string; ok: boolean } | null>(null)
+  const [filters, setFilters] = createSignal<CatalogFilters>({
+    purpose: "all",
+    restrictions: "all",
+    fit: "all",
+    size: "all",
+    quant: "all",
+  })
+  const setF = (k: keyof CatalogFilters, v: string) => setFilters((f) => ({ ...f, [k]: v }) as CatalogFilters)
 
   const download = async (m: any) => {
     setBusy(m.id)
     setError(null)
+    setNotice(null)
     try {
       await api("/api/downloads", { method: "POST", body: JSON.stringify({ modelId: m.id, fileName: m.compatibility?.recommended?.name }) })
       refetch()
@@ -469,11 +512,33 @@ function CatalogSection() {
     }
   }
 
-  const install = async (m: any) => {
+  const verify = async (m: any) => {
     setBusy(m.id)
+    setNotice(null)
     setError(null)
     try {
-      await api("/api/install", { method: "POST", body: JSON.stringify({ modelId: m.id }) })
+      const r = await api<any>("/api/models/verify", { method: "POST", body: JSON.stringify({ modelId: m.id }) })
+      setNotice({ id: m.id, ok: r.verified, text: r.message })
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const run = async (m: any) => {
+    setBusy(m.id)
+    setNotice(null)
+    setError(null)
+    try {
+      const r = await api<any>("/api/models/run", { method: "POST", body: JSON.stringify({ modelId: m.id }) })
+      setNotice({
+        id: m.id,
+        ok: r.ok,
+        text: r.ok
+          ? `Модель запущена (${r.quant ?? r.file}). Откройте AI Chat и спросите что-нибудь.`
+          : r.message,
+      })
       refetch()
     } catch (e) {
       setError((e as Error).message)
@@ -482,20 +547,64 @@ function CatalogSection() {
     }
   }
 
-  const categories = () => {
-    const groups: Record<string, any[]> = {}
-    for (const m of catalog()?.models ?? []) {
-      ;(groups[m.category] ??= []).push(m)
+  const stop = async (m: any) => {
+    setBusy(m.id)
+    setNotice(null)
+    try {
+      await api("/api/models/stop", { method: "POST", body: JSON.stringify({ model: m.ollamaName }) })
+      setNotice({ id: m.id, ok: true, text: "Модель остановлена и выгружена из RAM." })
+      refetch()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(null)
     }
+  }
+
+  const remove = async (m: any) => {
+    const file = m.compatibility?.recommended?.name
+    if (!file) return
+    if (!confirm(`Удалить ${m.displayName} (${file}) с диска? Модель можно скачать заново.`)) return
+    setBusy(m.id)
+    setNotice(null)
+    try {
+      await api(`/api/models/delete/${encodeURIComponent(file.replace(/\.gguf$/, ""))}`, { method: "DELETE" })
+      setNotice({ id: m.id, ok: true, text: "Модель удалена с диска." })
+      refetch()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const openInChat = (m: any) => {
+    window.open(`${ENGINE}/?model=${encodeURIComponent(m.ollamaName)}`, "_blank")
+  }
+
+  const filtered = () =>
+    (catalog()?.models ?? []).filter((m: any) => {
+      const f = filters()
+      if (f.purpose !== "all" && !m.tags?.includes(f.purpose)) return false
+      if (f.restrictions !== "all" && m.restrictions !== f.restrictions) return false
+      if (f.fit === "great" && m.compatibility?.fit !== "great") return false
+      if (f.fit === "fit" && (m.compatibility?.status === "red")) return false
+      if (f.size === "lt1" && parseFloat(m.params) >= 1) return false
+      if (f.size === "b1to4" && !(parseFloat(m.params) >= 1 && parseFloat(m.params) <= 4.5)) return false
+      if (f.size === "gt4" && parseFloat(m.params) <= 4.5) return false
+      if (f.quant !== "all" && !m.files?.some((x: any) => x.quant === f.quant)) return false
+      return true
+    })
+
+  const grouped = () => {
+    const groups: Record<string, any[]> = {}
+    for (const m of filtered()) (groups[m.category] ??= []).push(m)
     return groups
   }
 
-  const categoryTitle = (cat: string) =>
-    cat === "uncensored-coding"
-      ? "Uncensored / Abliterated coding"
-      : cat === "small-coding"
-        ? "Компактные coding-модели"
-        : "Продвинутые coding-модели"
+  const chip = (k: keyof CatalogFilters, v: string, label: string) => (
+    <FilterChip active={filters()[k] === v} onClick={() => setF(k, v)}>{label}</FilterChip>
+  )
 
   return (
     <div class="flex flex-col gap-4">
@@ -507,50 +616,114 @@ function CatalogSection() {
           </span>
         </div>
       </Show>
+
+      {/* Фильтры */}
+      <div class="flex flex-col gap-2 rounded-lg border border-v2-fill-fill-hover/40 p-3">
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="mr-1 text-[11px] uppercase text-v2-text-text-faint">Задача:</span>
+          {chip("purpose", "all", "Все")}
+          {chip("purpose", "chat", "Общение")}
+          {chip("purpose", "coding", "Программирование")}
+          {chip("purpose", "russian", "Русский язык")}
+          {chip("purpose", "reasoning", "Логика и анализ")}
+        </div>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="mr-1 text-[11px] uppercase text-v2-text-text-faint">Ограничения:</span>
+          {chip("restrictions", "all", "Все")}
+          {chip("restrictions", "standard", "Обычные")}
+          {chip("restrictions", "reduced", "Ослабленные")}
+        </div>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="mr-1 text-[11px] uppercase text-v2-text-text-faint">Совместимость:</span>
+          {chip("fit", "all", "Все")}
+          {chip("fit", "fit", "Для моего ПК")}
+          {chip("fit", "great", "Только отличные")}
+        </div>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="mr-1 text-[11px] uppercase text-v2-text-text-faint">Размер:</span>
+          {chip("size", "all", "Любой")}
+          {chip("size", "lt1", "до 1B")}
+          {chip("size", "b1to4", "1–4B")}
+          {chip("size", "gt4", "5B+")}
+        </div>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="mr-1 text-[11px] uppercase text-v2-text-text-faint">Квант:</span>
+          <For each={QUANT_FILTERS}>{(q) => chip("quant", q, q === "all" ? "Любой" : q)}</For>
+        </div>
+      </div>
+
       <Show when={error()}>
         <div class="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-[13px] text-red-400">{error()}</div>
       </Show>
-      <For each={Object.entries(categories())}>
+
+      <For each={Object.entries(grouped())}>
         {([cat, models]) => (
           <div>
             <div class="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wider text-v2-text-text-faint">
-              {categoryTitle(cat)}
+              {catalog()?.categories?.[cat] ?? cat}
             </div>
             <div class="flex flex-col gap-3">
               <For each={models}>
                 {(m: any) => (
                   <Card>
-                    <div class="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <div class="text-[14px] font-semibold text-v2-text-text-primary">
-                          {m.displayName}{" "}
-                          <Show when={m.uncensored}>
-                            <span class="ml-1 rounded bg-v2-fill-fill-hover px-1.5 py-0.5 text-[10px] font-medium text-amber-500">
-                              {m.uncensoredLabel ?? "uncensored"}
+                    <div class="flex flex-wrap items-start justify-between gap-2">
+                      <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-1.5">
+                          <span class="text-[14px] font-semibold text-v2-text-text-primary">{m.displayName}</span>
+                          <Show when={m.restrictions === "reduced"}>
+                            <span class="rounded bg-v2-fill-fill-hover px-1.5 py-0.5 text-[10px] font-medium text-amber-500">
+                              {m.uncensoredLabel ?? "ослабленные ограничения"}
                             </span>
                           </Show>
+                          <span class={`rounded px-1.5 py-0.5 text-[10px] font-medium ${FIT_BADGE[m.compatibility?.fit] ?? ""}`}>
+                            {m.compatibility?.fitLabel ?? "не рекомендуется"}
+                          </span>
                         </div>
-                        <div class="mt-0.5 text-xs text-v2-text-text-faint">{m.purpose}</div>
+                        <div class="mt-1 text-xs text-v2-text-text-faint">{m.purpose}</div>
+                        <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-v2-text-text-faint">
+                          <span>{m.params}</span>
+                          <span>Контекст: {(m.contextTokens / 1024).toFixed(0)}k</span>
+                          <span>Языки: {(m.languages ?? []).join(", ")}</span>
+                          <span>Кванты: {(m.files ?? []).map((f: any) => f.quant).join(", ")}</span>
+                          <span>Лицензия: {m.license}</span>
+                          <span>Квантовал: {m.quantAuthor}</span>
+                        </div>
+                        <div class="mt-0.5 text-[11px] text-v2-text-text-faint">{m.quality}</div>
                       </div>
-                      <div class="flex items-center gap-2">
-                        <span class={`text-xs font-semibold ${COMPAT_COLOR[m.compatibility?.status] ?? ""}`}>
-                          {m.compatibility?.status === "green" ? "подходит" : m.compatibility?.status === "yellow" ? "на пределе" : "не рекомендуется"}
-                        </span>
-                        <Show when={m.installed}>
-                          <span class="text-xs text-green-500">установлена</span>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <Show when={m.compatibility?.recommended}>
+                          <span class="text-xs text-v2-text-text-faint">
+                            {m.compatibility.recommended.quant ? `${m.compatibility.recommended.quant} · ` : ""}
+                            {fmtBytes(m.compatibility.recommended.sizeBytes)}
+                          </span>
                         </Show>
-                        <Show when={!m.installed && m.downloaded}>
-                          <Btn disabled={busy() === m.id} onClick={() => install(m)}>Установить</Btn>
+                        <Show when={m.downloaded}>
+                          <span class="text-xs text-green-500">скачана</span>
                         </Show>
-                        <Show when={!m.installed && !m.downloaded}>
+                        <Show when={!m.downloaded}>
                           <Btn disabled={busy() === m.id || m.compatibility?.status === "red"} onClick={() => download(m)}>
                             {busy() === m.id ? "Скачиваю…" : "Скачать"}
                           </Btn>
                         </Show>
+                        <Btn disabled={busy() === m.id || !m.downloaded} onClick={() => verify(m)}>Проверить файл</Btn>
+                        <Btn disabled={busy() === m.id || !m.downloaded || m.compatibility?.status === "red"} onClick={() => run(m)}>
+                          Запустить
+                        </Btn>
+                        <Btn disabled={busy() === m.id || !m.downloaded} onClick={() => openInChat(m)}>Открыть в AI Chat</Btn>
+                        <Btn disabled={busy() === m.id || !m.downloaded} onClick={() => stop(m)}>Остановить</Btn>
+                        <Btn disabled={busy() === m.id || !m.downloaded} onClick={() => remove(m)}>Удалить</Btn>
                       </div>
                     </div>
+                    <Show when={m.compatibility?.speedNote}>
+                      <div class="mt-2 text-[11px] text-amber-500">{m.compatibility.speedNote}</div>
+                    </Show>
+                    <Show when={notice()?.id === m.id}>
+                      <div class={`mt-2 rounded-md border px-3 py-2 text-[12px] ${notice().ok ? "border-green-500/40 bg-green-500/10 text-green-500" : "border-amber-500/40 bg-amber-500/10 text-amber-500"}`}>
+                        {notice().text}
+                      </div>
+                    </Show>
                     <Show when={m.compatibility?.recommended}>
-                      <div class="mt-2 text-xs text-v2-text-text-faint">
+                      <div class="mt-2 text-[11px] text-v2-text-text-faint">
                         Рекомендуемый квант: {m.compatibility.recommended.name} ({fmtBytes(m.compatibility.recommended.sizeBytes)})
                         {m.compatibility?.reason ? ` · ${m.compatibility.reason}` : ""}
                       </div>
@@ -562,6 +735,11 @@ function CatalogSection() {
           </div>
         )}
       </For>
+      <Show when={catalog() && filtered().length === 0}>
+        <Card>
+          <div class="text-[13px] text-v2-text-text-faint">Ничего не найдено — ослабьте фильтры.</div>
+        </Card>
+      </Show>
     </div>
   )
 }

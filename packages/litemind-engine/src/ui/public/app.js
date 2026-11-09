@@ -326,6 +326,14 @@ function mdInline(s) {
 function fillModels(models, _current) {
   const sel = $('model');
   if (!sel) return;
+  // Пре-выбор модели из каталога: /?model=litemind-... (кнопка «Открыть в AI Chat»).
+  try {
+    const fromUrl = new URLSearchParams(location.search).get('model');
+    if (fromUrl) {
+      localStorage.setItem('litemind-selected-model', fromUrl);
+      history.replaceState(null, '', location.pathname);
+    }
+  } catch { /* ignore */ }
   const wanted = localStorage.getItem('litemind-selected-model') || sel.value;
   const ids = models.map((m) => m.id);
   if (sel.dataset.ids !== ids.join('|')) {
@@ -976,11 +984,29 @@ async function loadCatalog() {
     });
   }
 
-  const show = { 'uncensored-coding': $('f-uncensored').checked, 'small-coding': $('f-small').checked, 'advanced-coding': $('f-advanced').checked };
+  // Динамические чекбоксы категорий — каталог v2 приходит с сервера.
+  const wrap = $('catalog-filters');
+  if (wrap && wrap.dataset.filled !== '1') {
+    wrap.innerHTML = '';
+    for (const [key, title] of Object.entries(c.categories || {})) {
+      const label = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.dataset.cat = key;
+      cb.addEventListener('change', loadCatalog);
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(' ' + title));
+      wrap.appendChild(label);
+    }
+    wrap.dataset.filled = '1';
+  }
+  const show = {};
+  document.querySelectorAll('#catalog-filters input[data-cat]').forEach((cb) => { show[cb.dataset.cat] = cb.checked; });
   const list = $('catalog-list');
   list.innerHTML = '';
   for (const m of c.models) {
-    if (!show[m.category]) continue;
+    if (show[m.category] === false) continue;
     list.appendChild(catalogCard(m, c));
   }
 }
@@ -991,11 +1017,12 @@ function catalogCard(m, c) {
   const st = m.compatibility.status;
   const rec = m.compatibility.recommended;
   const installed = m.installed ? '<span class="tag ok-tag">скачана</span>' : '';
-  const unc = m.uncensored ? `<span class="tag">${esc(m.uncensoredLabel || 'Uncensored')}</span>` : '';
+  const unc = m.restrictions === 'reduced' ? `<span class="tag">${esc(m.uncensoredLabel || 'ослабленные ограничения')}</span>` : '';
+  const fit = m.compatibility?.fitLabel ? `<span class="tag muted-tag">${esc(m.compatibility.fitLabel)}</span>` : '';
   const lic = m.license === 'not specified' ? '<span class="tag muted-tag">лицензия не указана</span>' : '';
   div.innerHTML = `
     <div class="model-item-main">
-      <div class="model-item-title"><span class="dot ${st}"></span>${esc(m.displayName)} ${unc} ${installed} ${lic}</div>
+      <div class="model-item-title"><span class="dot ${st}"></span>${esc(m.displayName)} ${unc} ${fit} ${installed} ${lic}</div>
       <div class="model-item-sub">${esc(m.params)} · ${esc(c.categories[m.category])} · лицензия: ${esc(m.license)} ·
         контекст ${m.compatibility.contextTokens} ток.<br>
         ${esc(m.purpose || '')}${m.notes ? '<br>⚠ ' + esc(m.notes) : ''}<br>
@@ -1025,7 +1052,6 @@ function catalogCard(m, c) {
   return div;
 }
 
-['f-uncensored', 'f-small', 'f-advanced'].forEach((id) => $(id).addEventListener('change', loadCatalog));
 
 /* ============================ Загрузки ============================ */
 const AUTO_INSTALLED = new Set();

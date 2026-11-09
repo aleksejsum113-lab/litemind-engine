@@ -93,6 +93,24 @@ export function rateCatalogModel(model, hw, { contextTokens } = {}) {
   const yellow = rated.filter((r) => r.status === STATUS.YELLOW);
   const recommended = green.length ? green[green.length - 1] : yellow.length ? yellow[yellow.length - 1] : best;
 
+  // Пятиуровневая оценка «подходит ли именно вам» (ТЗ каталога v2):
+  //   great — отлично подходит; ok — подходит с ограничениями;
+  //   slow  — будет работать медленно; avoid — не рекомендуется.
+  const paramNum = parseFloat(String(model.params ?? '0')) || 0;
+  const modelSpeed = model.speed ?? (paramNum >= 7 ? 'slow' : paramNum >= 3 ? 'medium' : 'fast');
+  const fit =
+    overall === STATUS.GREEN
+      ? modelSpeed === 'fast' ? 'great' : modelSpeed === 'medium' ? 'ok' : 'slow'
+      : overall === STATUS.YELLOW
+        ? modelSpeed === 'fast' ? 'ok' : 'slow'
+        : 'avoid';
+  const fitLabel = {
+    great: 'Отлично подходит',
+    ok: 'Подходит с ограничениями',
+    slow: 'Будет работать медленно',
+    avoid: 'Не рекомендуется'
+  }[fit];
+
   const speedNote =
     hw.cpu.avx === false
       ? model.params === '7B' || model.params === '6.7B'
@@ -105,9 +123,11 @@ export function rateCatalogModel(model, hw, { contextTokens } = {}) {
   return {
     modelId: model.id,
     status: overall,
+    fit,
+    fitLabel,
     contextTokens: ctx,
     files: rated,
-    recommended: recommended ? { name: recommended.name, sizeBytes: recommended.sizeBytes, url: recommended.url } : null,
+    recommended: recommended ? { name: recommended.name, sizeBytes: recommended.sizeBytes, url: recommended.url, quant: recommended.quant ?? null, sha256: recommended.sha256 ?? null } : null,
     speedNote
   };
 }

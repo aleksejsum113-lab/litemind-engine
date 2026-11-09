@@ -97,14 +97,32 @@ target configuration of this project.
 
 ## Supported models
 
-The built-in catalog ships 12 curated GGUF coding models (0.5B–7B), including
-**uncensored/abliterated** variants. For every model the app shows hardware
-compatibility (green / yellow / red), recommended quantization and size:
+The built-in catalog v2 ships **42 verified models (143 GGUF files)** from
+trusted Hugging Face sources: official vendor repos (HuggingFaceTB,
+Vikhrmodels, microsoft, unsloth) and quants by reputable authors (bartowski,
+mradermacher, QuantFactory, TheBloke). Every file stores its exact size and
+the **SHA-256 from Hugging Face** — the "Verify file" button compares the
+download byte-by-byte.
 
-Qwen2.5 Coder 0.5B / 1.5B / 3B / 7B (plus Abliterated and Non-Censure
-variants), DeepSeek Coder 1.3B / 6.7B, StarCoder2 3B Instruct, Granite Code 3B
-Instruct. Your own GGUF models added to Ollama appear in the same model
-switcher.
+Families: Qwen2.5 / Qwen3 / Qwen3.5, Qwen2.5 Coder, DeepSeek Coder and
+DeepSeek R1 Distill, Microsoft Phi-3.5/Phi-4-mini, Google Gemma 2/3, Meta
+Llama 3.2, Mistral 7B and Ministral 8B, SmolLM2/SmolLM3, TinyLlama, Russian
+Vikhr and Saiga2, plus the uncensored Dolphin and Huihui (abliterated) lines.
+
+**Restriction categories are explicitly separated** ("standard" vs
+"reduced/uncensored"). Reduced refusals do not mean "no limits at all":
+behavior depends on the specific model and its training.
+
+**Compatibility is computed automatically** for your hardware (weights +
+KV-cache for the context + buffers + Windows reserve), with five statuses:
+"Great fit", "OK with limitations", "Will be slow", "Not recommended",
+"Incompatible". Filters cover purpose (chat / coding / Russian / reasoning),
+restrictions, compatibility, size (up to 1B / 1–4B / 5B+) and quantization
+(Q2_K … Q8_0). Each card offers Download / Verify file / Run / Open in AI
+Chat / Stop / Delete.
+
+Drop any GGUF into the models folder — the built-in llama.cpp runtime picks
+it up automatically. Ollama is not required.
 
 ## Adaptive Engine
 
@@ -221,7 +239,7 @@ OPENCODE_CHANNEL=prod bun run --cwd packages/desktop build
 bun run --cwd packages/desktop pack --win --x64   # NSIS installer → dist/
 ```
 
-Engine tests: `cd packages/litemind-engine && npm test` (110 tests).
+Engine tests: `cd packages/litemind-engine && npm test` (112 tests).
 More: [docs/litemind/BUILD-WINDOWS.md](docs/litemind/BUILD-WINDOWS.md).
 
 ## Author & ownership

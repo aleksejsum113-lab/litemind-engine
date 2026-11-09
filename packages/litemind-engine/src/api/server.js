@@ -2,6 +2,7 @@
 // Bind: 127.0.0.1 by default. Non-loopback clients are refused unless
 // api.allowLan is explicitly enabled AND api.auth.enabled with a token.
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -631,6 +632,82 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         });
       } catch (err) {
         return openaiError(res, 500, err.message, 'scan_error');
+      }
+    }
+
+    // --- Каталог v2: проверка целостности скачанного файла (SHA-256 из HF) ---
+    if (req.method === 'POST' && p === '/api/models/verify') {
+      let body;
+      try { body = JSON.parse((await readBody(req)) || '{}'); } catch { return openaiError(res, 400, 'Ожидался JSON: { modelId, fileName? }', 'invalid_request_error'); }
+      const model = catalogEntry(String(body.modelId || ''));
+      if (!model) return openaiError(res, 404, `Unknown catalog model: ${body.modelId}`, 'invalid_request_error');
+      const entryFile = body.fileName
+        ? model.files.find((f) => f.name === body.fileName)
+        : model.files.slice().sort((a, b) => a.sizeBytes - b.sizeBytes)[0];
+      if (!entryFile) return openaiError(res, 404, `Файл не найден в записи каталога: ${body.fileName ?? '(recommended)'}`, 'invalid_request_error');
+      const diskPath = path.join(config.models.rootDir, entryFile.name);
+      if (!fs.existsSync(diskPath)) {
+        return json(res, 200, { ok: false, verified: false, reason: 'not_downloaded', message: 'Файл ещё не скачан.', file: entryFile.name });
+      }
+      const stat = fs.statSync(diskPath);
+      const hash = crypto.createHash('sha256');
+      await new Promise((resolve, reject) => {
+        const stream = fs.createReadStream(diskPath);
+        stream.on('data', (chunk) => hash.update(chunk));
+        stream.on('end', resolve);
+        stream.on('error', reject);
+      });
+      const actualSha256 = hash.digest('hex');
+      const sizeOk = stat.size === entryFile.sizeBytes;
+      const shaOk = entryFile.sha256 ? actualSha256 === entryFile.sha256 : null;
+      const verified = sizeOk && (shaOk !== false);
+      logger?.info('model file verified', { model: model.id, file: entryFile.name, verified, sizeOk, shaOk });
+      return json(res, 200, {
+        ok: true,
+        verified,
+        file: entryFile.name,
+        sizeBytes: stat.size,
+        expectedSizeBytes: entryFile.sizeBytes,
+        sizeOk,
+        sha256: actualSha256,
+        expectedSha256: entryFile.sha256,
+        shaOk,
+        message: verified
+          ? (shaOk ? 'Файл цел: размер и SHA-256 совпадают с Hugging Face.' : 'Размер совпадает; SHA-256 эталона недоступен — сверьте сумму вручную.')
+          : 'Файл повреждён или докачан не полностью: скачайте заново.'
+      });
+    }
+
+    // --- Каталог v2: запуск скачанной модели (llama-server без генерации) ---
+    if (req.method === 'POST' && p === '/api/models/run') {
+      let body;
+      try { body = JSON.parse((await readBody(req)) || '{}'); } catch { return openaiError(res, 400, 'Ожидался JSON: { modelId }', 'invalid_request_error'); }
+      const model = catalogEntry(String(body.modelId || ''));
+      if (!model) return openaiError(res, 404, `Unknown catalog model: ${body.modelId}`, 'invalid_request_error');
+      if (typeof engine.backend.ensureServer !== 'function') {
+        return openaiError(res, 501, `Backend "${engine.backend.type}" не поддерживает прямой запуск. Переключитесь на backend "lmlama".`, 'not_supported', 'RUN_UNSUPPORTED');
+      }
+      const hw = await hardware.analyzeHardware({ candidateRoots: disksCandidateRoots() });
+      const rating = compat.rateCatalogModel(model, hw);
+      const target = rating.recommended;
+      if (!target) return openaiError(res, 409, 'Не удалось выбрать файл модели.', 'run_error');
+      const diskPath = path.join(config.models.rootDir, target.name);
+      if (!fs.existsSync(diskPath)) {
+        return json(res, 200, { ok: false, reason: 'not_downloaded', message: 'Модель ещё не скачана — нажмите «Скачать».' });
+      }
+      if (rating.status === 'red') {
+        return json(res, 200, { ok: false, reason: 'incompatible', message: `Модель не рекомендуется: ${rating.fitLabel}. ${rating.files[0]?.reason ?? ''}` });
+      }
+      try {
+        const started = await engine.backend.ensureServer({
+          file: diskPath,
+          contextTokens: rating.contextTokens,
+          threads: hw.recommendation?.threads ?? 0
+        });
+        logger?.info('catalog model started', { model: model.id, file: target.name });
+        return json(res, 200, { ok: true, model: model.id, file: target.name, quant: target.quant ?? null, contextTokens: rating.contextTokens, baseUrl: started ?? null });
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'run_error', err.code);
       }
     }
 

@@ -35,11 +35,38 @@ test('catalog: every entry is complete and internally consistent', () => {
 
 test('catalog: uncensored entries are flagged and categorised', () => {
   const uncensored = CATALOG.filter((m) => m.uncensored);
-  assert.ok(uncensored.length >= 3, 'expected at least 3 uncensored/abliterated entries');
+  assert.ok(uncensored.length >= 6, 'expected at least 6 uncensored/abliterated entries');
   for (const m of uncensored) {
-    assert.equal(m.category, 'uncensored-coding');
+    assert.ok(['uncensored-coding', 'uncensored-chat'].includes(m.category), `${m.id}: uncensored category`);
     assert.ok(m.uncensoredLabel, `${m.id}: uncensoredLabel required`);
   }
+});
+
+test('catalog v2: restrictions split is explicit and consistent', () => {
+  const reduced = CATALOG.filter((m) => m.restrictions === 'reduced');
+  const standard = CATALOG.filter((m) => m.restrictions === 'standard');
+  assert.ok(standard.length >= 20, `expected >= 20 standard models, got ${standard.length}`);
+  assert.equal(reduced.length + standard.length, CATALOG.length, 'every entry must declare restrictions');
+  for (const m of reduced) assert.equal(m.uncensored, true, `${m.id}: reduced implies uncensored flag`);
+  for (const m of standard) assert.equal(m.uncensored, false, `${m.id}: standard must not be uncensored`);
+});
+
+test('catalog v2: families, languages, tags and per-file quants/checksums', () => {
+  const families = new Set(CATALOG.map((m) => m.family));
+  for (const expected of ['qwen2.5', 'qwen3', 'llama3.2', 'gemma2', 'phi4', 'mistral', 'smollm2', 'tinyllama', 'deepseek-r1', 'vikhr', 'dolphin'])
+    assert.ok(families.has(expected), `family ${expected} must be present`);
+  for (const m of CATALOG) {
+    assert.ok(Array.isArray(m.languages) && m.languages.length >= 1, `${m.id}: languages`);
+    assert.ok(Array.isArray(m.tags) && m.tags.length >= 1, `${m.id}: tags`);
+    assert.ok(['fast', 'medium', 'slow'].includes(m.speed), `${m.id}: speed class`);
+    assert.ok(m.quantAuthor, `${m.id}: quant author`);
+    for (const f of m.files) {
+      assert.match(f.quant, /^(Q[2-8]_K(_[SML])?|Q8_0)$/, `${m.id}: quant label`);
+      if (f.sha256) assert.match(f.sha256, /^[0-9a-f]{64}$/, `${m.id}: sha256 format`);
+    }
+  }
+  const ruModels = CATALOG.filter((m) => m.languages.includes('ru'));
+  assert.ok(ruModels.length >= 8, `expected >= 8 models with Russian, got ${ruModels.length}`);
 });
 
 test('catalog: lookup by id works and unknown ids return null', () => {
