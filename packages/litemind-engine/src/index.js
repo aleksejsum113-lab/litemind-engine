@@ -8,6 +8,7 @@ import { MetricsSampler } from './resource/metrics.js';
 import { Logger, PerfRecorder } from './diagnostics/log.js';
 import { createServer } from './api/server.js';
 import { DownloadManager } from './download/manager.js';
+import { rememberModelsRoot } from './install/registry.js';
 
 /**
  * Запустить движок (API 127.0.0.1:8399 + адаптивный контроллер + менеджер моделей).
@@ -18,6 +19,9 @@ export async function startLiteMindEngine({ host = null, port = null, console: l
   const config = loadConfig(defaultConfigPath());
   if (host) config.api.host = host;
   if (port) config.api.port = port;
+
+  // Windows: сообщаем деинсталлятору, где лежат модели (HKCU\Software\LiteMind).
+  rememberModelsRoot(config.models.rootDir);
 
   const logger = new Logger({ dir: config.diagnostics.dir, level: config.diagnostics.level, console: logToConsole });
   const sampler = new MetricsSampler({ intervalMs: config.resource.pollIntervalMs });

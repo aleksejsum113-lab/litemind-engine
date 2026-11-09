@@ -1,4 +1,5 @@
 import { copyFile, readdir, stat } from "node:fs/promises"
+import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -40,11 +41,18 @@ function resolveChannel() {
   return "dev"
 }
 
+// v0.4: собственные app id — LiteMind больше не делит GUID/записи реестра и
+// протокол opencode:// с OpenCode Desktop (конфликт установки устранён).
 const APP_IDS = {
-  dev: "ai.opencode.desktop.dev",
-  beta: "ai.opencode.desktop.beta",
-  prod: "ai.opencode.desktop",
+  dev: "ai.litemind.desktop.dev",
+  beta: "ai.litemind.desktop.beta",
+  prod: "ai.litemind.desktop",
 } as const
+
+// Собственный runtime llama.cpp: в установленном приложении лежит в
+// resources\llamacpp\llama-server.exe (собирается в CI без AVX — см. workflow).
+const llamacppResourceDir = path.join(packageDir, "resources", "llamacpp")
+const hasLlamaRuntime = fs.existsSync(path.join(llamacppResourceDir, "llama-server.exe"))
 
 // libappimage (used by AppImageLauncher) resolves the .desktop entry inside an
 // AppImage by globbing `*.desktop` at the squashfs root. If the main
@@ -81,6 +89,8 @@ const getBase = (appId: string): Configuration => {
     files: [
       "out/**/*",
       "resources/**/*",
+      // Runtime кладём в extraResources (вне asar) — не дублируем его в архиве.
+      "!resources/llamacpp/**",
       "!resources/opencode-cli*",
       // Keep only the target platform's node-pty prebuild when cross-packaging with --cpu=*.
       ...CLI_BINARIES.filter((item) => item.os !== target.os || item.cpu !== target.cpu).map(
@@ -107,6 +117,9 @@ const getBase = (appId: string): Configuration => {
         to: "",
         filter: ["opencode-cli", "opencode-cli.exe", "opencode-cli.version"],
       },
+      ...(hasLlamaRuntime
+        ? [{ from: "resources/llamacpp", to: "llamacpp", filter: ["**/*"] }]
+        : []),
     ],
     afterPack: async (context) => {
       const arch = Arch[context.arch]
@@ -132,6 +145,15 @@ const getBase = (appId: string): Configuration => {
         await copyFile(path.join(packageDir, "resources/icons/icon.icns"), path.join(resources, "icon.icns"))
 
       if (context.electronPlatformName !== "win32") return
+
+      // Runtime llama.cpp обязателен в Windows-установке v0.4: без него чат не запустится.
+      if (hasLlamaRuntime) {
+        const llama = path.join(resources, "llamacpp", "llama-server.exe")
+        const llamaStat = await stat(llama)
+        if (!llamaStat.isFile() || llamaStat.size < 1_000_000) {
+          throw new Error(`Bundled llama-server.exe looks wrong: ${llama} (${llamaStat.size} bytes)`)
+        }
+      }
 
       const prebuilds = path.join(
         resources,
@@ -173,8 +195,8 @@ const getBase = (appId: string): Configuration => {
       target: ["dmg", "zip"],
     },
     protocols: {
-      name: "OpenCode",
-      schemes: ["opencode"],
+      name: "LiteMind",
+      schemes: ["litemind"],
     },
     win: {
       icon: `resources/icons/icon.ico`,
@@ -186,6 +208,9 @@ const getBase = (appId: string): Configuration => {
     nsis: {
       artifactName: "litemind-desktop-win-x64.${ext}",
       include: path.join(packageDir, "resources", "windows", "installer.nsh"),
+      // Своё имя удаления — чтобы в «Установка и удаление программ» LiteMind
+      // не смешивался с OpenCode.
+      uninstallDisplayName: "LiteMind Engine ${version}",
       // Пошаговый установщик: пользователь выбирает папку, создаются ярлыки.
       oneClick: false,
       perMachine: false,
@@ -229,13 +254,14 @@ export function getConfig() {
         appId,
         productName: "LiteMind Dev",
         publish: {
-          provider: "generic",
-          url: "https://opencode.ai/update/api/dev/desktop/opencode/",
+          provider: "github",
+          owner: "aleksejsum113-lab",
+          repo: "litemind-engine",
           channel: "latest",
         },
         deb: { fpm: [...previewCompressionFpm("deb"), metainfoFpm(appId)] },
         rpm: {
-          packageName: "opencode-dev",
+          packageName: "litemind-dev",
           fpm: [rpmNoBuildIdLinksFpm, ...previewCompressionFpm("rpm"), metainfoFpm(appId)],
         },
       }
@@ -246,15 +272,16 @@ export function getConfig() {
         ...base,
         appId,
         productName: "LiteMind Beta",
-        protocols: { name: "LiteMind Beta", schemes: ["opencode"] },
+        protocols: { name: "LiteMind Beta", schemes: ["litemind"] },
         publish: {
-          provider: "generic",
-          url: "https://opencode.ai/update/api/beta/desktop/opencode/",
+          provider: "github",
+          owner: "aleksejsum113-lab",
+          repo: "litemind-engine",
           channel: "latest",
         },
         deb: { fpm: [...previewCompressionFpm("deb"), metainfoFpm(appId)] },
         rpm: {
-          packageName: "opencode-beta",
+          packageName: "litemind-beta",
           fpm: [rpmNoBuildIdLinksFpm, ...previewCompressionFpm("rpm"), metainfoFpm(appId)],
         },
       }
@@ -265,19 +292,20 @@ export function getConfig() {
         ...base,
         appId,
         productName: "LiteMind",
-        protocols: { name: "LiteMind", schemes: ["opencode"] },
+        protocols: { name: "LiteMind", schemes: ["litemind"] },
         // An Icon Composer package compiles to Assets.car, which macOS 26 and later draw the app icon from
         // (Dock, Finder, system dialogs and the system icon styles). Older macOS keeps using the ICNS.
         mac: { ...base.mac, icon: "resources/icons/icon.icon" },
         // The DMG volume icon would otherwise use the same actool-generated ICNS.
         dmg: { icon: "resources/icons/icon.icns" },
         publish: {
-          provider: "generic",
-          url: "https://opencode.ai/update/api/latest/desktop/opencode/",
+          provider: "github",
+          owner: "aleksejsum113-lab",
+          repo: "litemind-engine",
           channel: "latest",
         },
-        deb: { fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
-        rpm: { packageName: "opencode", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId), legacyDesktopEntryFpm] },
+        deb: { fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "litemind", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId)] },
       }
     }
   }

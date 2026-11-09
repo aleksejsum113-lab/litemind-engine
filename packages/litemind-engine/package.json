@@ -1,7 +1,7 @@
 {
   "name": "litemind-engine",
-  "version": "0.3.0",
-  "description": "Lightweight local engine for managing AI models on low-spec Windows PCs (Ollama backend, OpenAI-compatible local API).",
+  "version": "0.4.0",
+  "description": "Lightweight local engine for managing AI models on low-spec Windows PCs (built-in llama.cpp runtime, OpenAI-compatible local API).",
   "type": "module",
   "license": "MIT",
   "engines": {

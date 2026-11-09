@@ -44,7 +44,7 @@ jobs:
           node-version: 20
       - name: Install dependencies
         run: bun install
-      # Версия сборки: из тега (v0.3.1 -> 0.3.1), для веток — 0.3.0 / 0.3.0-dev.
+      # Версия сборки: из тега (v0.4.0 -> 0.4.0), для веток — 0.4.0 / 0.4.0-dev.
       - name: Derive version
         id: ver
         shell: bash
@@ -52,13 +52,30 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           elif [ "$GITHUB_REF_NAME" = "dev" ]; then
-            echo "version=0.3.0-dev" >> "$GITHUB_OUTPUT"
+            echo "version=0.4.0-dev" >> "$GITHUB_OUTPUT"
           else
-            echo "version=0.3.0" >> "$GITHUB_OUTPUT"
+            echo "version=0.4.0" >> "$GITHUB_OUTPUT"
           fi
       - name: Build CLI sidecar
         working-directory: packages/cli
         run: bun run build
+      # Собственный runtime v0.4: llama-server без AVX/AVX2 (цель — Intel N5095A
+      # и другие CPU Tremont). SSE4.2 тоже выключен — сборка работает на любом x86-64.
+      - name: Build llama.cpp runtime (no AVX)
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp "$env:RUNNER_TEMP\llamacpp-src"
+          cmake -S "$env:RUNNER_TEMP\llamacpp-src" -B "$env:RUNNER_TEMP\llamacpp-build" `
+            -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_SSE42=OFF `
+            -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF `
+            -DGGML_AVX_VNNI=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF `
+            -DLLAMA_BUILD_TOOLS=ON -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF
+          cmake --build "$env:RUNNER_TEMP\llamacpp-build" --config Release --target llama-server
+          New-Item -ItemType Directory -Force packages/desktop/resources/llamacpp | Out-Null
+          $exe = Get-ChildItem "$env:RUNNER_TEMP\llamacpp-build\bin" -Recurse -Filter llama-server.exe | Select-Object -First 1
+          if (-not $exe) { throw 'llama-server.exe was not built' }
+          Copy-Item $exe.FullName packages/desktop/resources/llamacpp/llama-server.exe
+          Get-Item packages/desktop/resources/llamacpp/llama-server.exe | Select-Object Name, Length
       - name: Build desktop
         working-directory: packages/desktop
         env:

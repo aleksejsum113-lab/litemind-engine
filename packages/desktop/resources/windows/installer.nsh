@@ -57,6 +57,31 @@
   ${IfNot} ${isUpdated}
     !insertmacro removeStagedUpdates $INSTDIR
   ${EndIf}
+  ; ── Штатное удаление LiteMind (ТЗ v0.4) ──────────────────────────────────
+  ; Модели пользователя могут занимать гигабайты — удаляем только с согласия.
+  ; Движок пишет фактическую папку в HKCU\Software\LiteMind\ModelsRootDir;
+  ; без записи используем папку по умолчанию.
+  ReadRegStr $R0 HKCU "Software\LiteMind" "ModelsRootDir"
+  ${If} $R0 == ""
+    StrCpy $R0 "E:\LiteMind\models"
+  ${EndIf}
+  ${If} ${FileExists} "$R0\*.*"
+    MessageBox MB_YESNO|MB_ICONQUESTION "Удалить также загруженные модели?$\n$\n$R0$\n$\n«Да» — удалить файлы моделей с диска.$\n«Нет» — оставить модели (их увидит будущая установка LiteMind)." IDYES deleteModels IDNO modelsKept
+    deleteModels:
+      RMDir /r "$R0"
+      DeleteRegValue HKCU "Software\LiteMind" "ModelsRootDir"
+      DetailPrint "Модели удалены: $R0"
+    modelsKept:
+  ${EndIf}
+  ; Настройки и журналы — тоже только с согласия.
+  ${If} ${FileExists} "$APPDATA\LiteMind\*.*"
+    MessageBox MB_YESNO|MB_ICONQUESTION "Удалить настройки и журналы LiteMind?$\n$\n$APPDATA\LiteMind" IDYES deleteAppData IDNO appDataKept
+    deleteAppData:
+      RMDir /r "$APPDATA\LiteMind"
+      DetailPrint "Настройки удалены: $APPDATA\LiteMind"
+    appDataKept:
+  ${EndIf}
+  DeleteRegKey /ifempty HKCU "Software\LiteMind"
 !macroend
 
 ; The stock check starts Windows PowerShell up to five times per installer and again in the old
