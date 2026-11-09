@@ -566,6 +566,19 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
 
     if (req.method === 'POST' && p === '/api/install') {
       const body = JSON.parse((await readBody(req)) || '{}');
+      // v0.4: при собственном runtime «lmlama» установка не нужна — скачанный
+      // GGUF уже виден движку (сканирование папки моделей). Метод сохранён для
+      // опциональной интеграции с Ollama.
+      if (config.backend.type === 'lmlama') {
+        const targetName = body.modelId ? (catalogEntry(body.modelId)?.displayName ?? body.modelId) : (body.ggufPath ?? 'unknown');
+        logger?.info('install skipped: lmlama runtime uses GGUF files directly', { model: targetName });
+        return json(res, 200, {
+          ok: true,
+          skipped: true,
+          reason: 'Собственный runtime llama.cpp использует GGUF напрямую — установка не требуется. Модель появится в «Моих моделях» после скачивания.',
+          model: targetName
+        });
+      }
       // Форма А: ggufPath (вкладка «Мои модели») — имя модели генерируем.
       // Форма Б: modelId [+ fileName] (каталог) — фирменное имя из каталога.
       let ggufPath = null;
@@ -600,6 +613,44 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         return json(res, 200, { ok: true, ...result });
       } catch (err) {
         return openaiError(res, err.status || 500, err.message, 'install_error', err.code);
+      }
+    }
+
+    // --- Управление локальными GGUF-моделями (собственный runtime v0.4) ---
+    if (req.method === 'GET' && p === '/api/models/scan') {
+      // Полная информация для менеджера моделей: размер, формат, квант,
+      // совместимость с RAM, статус файла (включая повреждённые).
+      try {
+        const scanned = await engine.backend.scanModels();
+        return json(res, 200, {
+          rootDir: config.models.rootDir,
+          backend: engine.backend.type,
+          runtimeBinary: engine.backend.findServerBinary?.() ?? null,
+          models: scanned
+        });
+      } catch (err) {
+        return openaiError(res, 500, err.message, 'scan_error');
+      }
+    }
+
+    const deleteMatch = p.match(/^\/api\/models\/(?:delete\/([^/]+)|([^/]+))$/);
+    if ((req.method === 'DELETE' && deleteMatch) || (req.method === 'POST' && p === '/api/models/delete')) {
+      let id = null;
+      if (req.method === 'DELETE') {
+        id = decodeURIComponent(deleteMatch[1] || deleteMatch[2] || '');
+      } else {
+        try { id = String(JSON.parse((await readBody(req)) || '{}').id || ''); } catch { /* ниже */ }
+      }
+      if (!id) return openaiError(res, 400, 'Укажите id модели (имя файла без .gguf).', 'invalid_request_error');
+      if (typeof engine.backend.deleteModel !== 'function') {
+        return openaiError(res, 501, `Backend "${engine.backend.type}" не поддерживает удаление файлов. Переключитесь на backend "lmlama".`, 'not_supported', 'DELETE_UNSUPPORTED');
+      }
+      try {
+        const result = await engine.backend.deleteModel(id);
+        logger?.info('model deleted via API', { model: id, by: 'user' });
+        return json(res, 200, { ok: true, ...result });
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'delete_error', err.code);
       }
     }
 

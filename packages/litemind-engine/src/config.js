@@ -70,7 +70,13 @@ export const DEFAULT_CONFIG = {
     auth: { enabled: false, token: null }
   },
   backend: {
-    type: 'ollama',
+    // v0.4: собственный runtime llama.cpp (llama-server) — основной, без
+    // внешних сервисов. «ollama» остаётся доступным как опциональная интеграция.
+    type: 'lmlama',
+    // Путь к llama-server(.exe). null → поиск: env LITEMIND_LLAMA_SERVER →
+    // <установка>\resources\llamacpp\ → PATH.
+    serverPath: null,
+    host: '127.0.0.1',
     baseUrl: 'http://127.0.0.1:11434',
     connectTimeoutMs: 1500,
     streamIdleTimeoutMs: 60000,
@@ -156,8 +162,13 @@ export function validateConfig(config) {
     errors.push('api.allowLan requires api.auth.enabled with a token (LAN exposure without auth is refused)');
   }
   if (!DEFAULT_PROFILES[config.profile]) errors.push(`profile must be one of ${Object.keys(DEFAULT_PROFILES).join(', ')}`);
-  if (config.backend?.type !== 'ollama') errors.push(`unsupported backend.type "${config.backend?.type}" (v0.1 supports "ollama")`);
-  if (!/^https?:\/\//.test(config.backend?.baseUrl || '')) errors.push('backend.baseUrl must be an http(s) URL');
+  if (!['lmlama', 'ollama'].includes(config.backend?.type)) {
+    errors.push(`unsupported backend.type "${config.backend?.type}" (supported: "lmlama" — собственный llama.cpp runtime, "ollama" — опциональная интеграция)`);
+  }
+  // baseUrl нужен только опциональному ollama-backend'у.
+  if (config.backend?.type === 'ollama' && !/^https?:\/\//.test(config.backend?.baseUrl || '')) {
+    errors.push('backend.baseUrl must be an http(s) URL');
+  }
   if (errors.length) {
     const err = new Error(`Invalid config:\n - ${errors.join('\n - ')}`);
     err.code = 'CONFIG_INVALID';

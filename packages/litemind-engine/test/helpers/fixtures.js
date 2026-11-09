@@ -33,6 +33,9 @@ export function fakeSampler(initial = fakeMetrics()) {
 export function makeEngine({ baseUrl, overrides = {}, sampler = fakeSampler(), configMutator = null, logLevel = 'error', backend: backendOverride = null } = {}) {
   const config = loadConfig('this-path-does-not-exist.json'); // pure defaults
   config.backend.baseUrl = baseUrl;
+  // Тесты с baseUrl целятся в мок Ollama — выбираем ollama-backend явно
+  // (дефолт v0.4 — собственный runtime lmlama, ему baseUrl не нужен).
+  if (baseUrl) config.backend.type = 'ollama';
   // Изолируем путь сохранения: persist движка (профиль производительности,
   // автооптимизация) не должен писать мусор в CWD и между тестами.
   config.paths = { configPath: path.join(os.tmpdir(), `litemind-test-${process.pid}-${Date.now()}.json`), existed: false };

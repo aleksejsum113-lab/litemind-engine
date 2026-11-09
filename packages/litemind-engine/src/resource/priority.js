@@ -8,8 +8,9 @@ import { execFile } from 'node:child_process';
 const WIN_PRIORITY = { low: 'BelowNormal', balanced: 'Normal', high: 'Normal' };
 
 function winCommand(priority) {
+  // llama-server — наш собственный процесс (v0.4), ollama_* — опциональная интеграция.
   const ps =
-    `Get-Process -Name ollama,ollama_llama_server -ErrorAction SilentlyContinue | ` +
+    `Get-Process -Name llama-server,ollama,ollama_llama_server -ErrorAction SilentlyContinue | ` +
     `ForEach-Object { try { $_.PriorityClass = '${priority}' } catch {} }`;
   return process.platform === 'win32' ? ps : null;
 }
@@ -24,7 +25,7 @@ export function applyBackendPriority({ profile, log = null } = {}) {
         (err) => { if (err) log?.debug?.('priority apply failed', { error: err.message }); });
     } else {
       const nice = profile === 'low' ? 10 : 0;
-      execFile('sh', ['-c', `pgrep -f 'ollama' | xargs -r renice -n ${nice} -p`], { timeout: 5000 },
+      execFile('sh', ['-c', `pgrep -f 'llama-server|ollama' | xargs -r renice -n ${nice} -p`], { timeout: 5000 },
         () => {});
     }
     log?.info?.('backend priority applied', { profile, priority });
