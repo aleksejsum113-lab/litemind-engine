@@ -107,15 +107,28 @@ export class DownloadManager {
     }
 
     let res;
+    // ТЗ-обеспечение: сеть может «зависнуть» (blackhole/обрыв) — лимитируем
+    // этап connect/headers 30 с, иначе задание висит вечно. Свой controller,
+    // чтобы не путать паузу/отмену пользователя с сетевым таймаутом.
+    const netCtrl = new AbortController();
+    const netSignal = typeof AbortSignal.any === 'function'
+      ? AbortSignal.any([job._ctrl.signal, netCtrl.signal])
+      : job._ctrl.signal;
+    const connectTimer = setTimeout(() => netCtrl.abort(new Error('нет ответа сервера за 30 с')), 30000);
     try {
-      res = await this.fetch(job.url, { headers, signal: job._ctrl.signal, redirect: 'follow' });
+      res = await this.fetch(job.url, { headers, signal: netSignal, redirect: 'follow' });
     } catch (err) {
       if (job._pauseRequested) {
         job.state = 'paused';
         this._emit({ type: 'paused', ...this._snapshot(job) });
         return;
       }
+      if (netCtrl.signal.aborted && !job._ctrl.signal.aborted) {
+        throw new DownloadError(`Сеть: ${err.message || 'таймаут соединения'} (30 с)`, { code: 'NETWORK_TIMEOUT' });
+      }
       throw new DownloadError(`Сеть недоступна: ${err.message}`, { code: 'NETWORK' });
+    } finally {
+      clearTimeout(connectTimer);
     }
 
     if (job.received > 0 && res.status === 200) {
@@ -133,6 +146,16 @@ export class DownloadManager {
     const source = Readable.fromWeb(res.body);
     const out = fs.createWriteStream(job.partPath, { flags: job.received > 0 ? 'a' : 'w' });
 
+    // Watchdog бездействия: если данные не идут 60 с — рвём задание с
+    // кодом NETWORK_TIMEOUT (можно возобновить через resume).
+    job._lastDataAt = Date.now();
+    const idleWatchdog = setInterval(() => {
+      if (Date.now() - job._lastDataAt > 60000) {
+        netCtrl.abort(new Error('нет данных 60 с'));
+      }
+    }, 5000);
+    idleWatchdog.unref?.();
+
     let lastTick = Date.now();
     let lastBytes = job.received;
 
@@ -141,6 +164,7 @@ export class DownloadManager {
     const counter = new Transform({
       transform(chunk, _enc, cb) {
         job.received += chunk.length;
+        job._lastDataAt = Date.now();
         const now = Date.now();
         if (now - lastTick >= 500) {
           const dt = (now - lastTick) / 1000;
@@ -160,11 +184,16 @@ export class DownloadManager {
 
     try {
       await pipeline(source, counter, out);
+      clearInterval(idleWatchdog);
     } catch (err) {
+      clearInterval(idleWatchdog);
       if (job._pauseRequested) {
         job.state = 'paused';
         this._emit({ type: 'paused', ...this._snapshot(job) });
         return;
+      }
+      if (netCtrl.signal.aborted && !job._ctrl.signal.aborted) {
+        throw new DownloadError(`Загрузка остановлена: ${err.message || 'нет данных от сервера'} (60 с) — можно продолжить`, { code: 'NETWORK_TIMEOUT' });
       }
       if (job._ctrl.signal.aborted) {
         job.state = 'cancelled';
