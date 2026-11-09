@@ -4,6 +4,16 @@
   "description": "Lightweight local engine for managing AI models on low-spec Windows PCs (built-in llama.cpp runtime, OpenAI-compatible local API).",
   "type": "module",
   "license": "MIT",
+  "author": {
+    "name": "aleksejsum113-lab",
+    "url": "https://github.com/aleksejsum113-lab"
+  },
+  "homepage": "https://github.com/aleksejsum113-lab/litemind-engine#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aleksejsum113-lab/litemind-engine.git"
+  },
+  "bugs": "https://github.com/aleksejsum113-lab/litemind-engine/issues",
   "engines": {
     "node": ">=18.17"
   },

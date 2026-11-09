@@ -6,7 +6,7 @@
 
 **Local AI coding chat for low-end Windows PCs — no cloud, no subscription, no AVX required.**
 
-[![Download for Windows](https://img.shields.io/badge/%E2%AC%87%EF%B8%8F%20Download%20Windows%20x64-v0.3.0-2ea44f?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)
+[![Download for Windows](https://img.shields.io/badge/%E2%AC%87%EF%B8%8F%20Download%20Windows%20x64-v0.4.0-2ea44f?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **[⬇️ Download LiteMind Engine for Windows x64](https://github.com/aleksejsum113-lab/litemind-engine/releases/latest)**
@@ -32,6 +32,23 @@ you need.
 The key feature is the **Adaptive Engine**: the engine analyzes your hardware
 (including weak CPUs without AVX/AVX2, e.g. Intel Celeron N5095A), picks safe
 model settings, monitors memory and prevents generation from freezing Windows.
+
+## What's new in v0.4.0
+
+- **Built-in llama.cpp runtime** — the engine finds and launches `llama-server`
+  on its own (a no-AVX build shipped inside the installer). Ollama is no longer
+  required: GGUF files are read directly, no intermediate model installs.
+- **Modern AI chat** — a full-screen conversation in the spirit of contemporary
+  AI apps (LiteMind's own design): chat history and "New chat", Markdown with
+  code highlighting, model picker next to the input box, file attachments
+  (PDF, DOCX, text, code — real content is sent to the model), streaming
+  answers with a Stop button.
+- **Model manager** — scans the models folder and shows size, format and
+  quantization from the GGUF header, rates RAM compatibility honestly, and
+  actually deletes model files to free disk space.
+- **Own Windows identity** — dedicated app id (`ai.litemind.desktop`), the
+  `litemind://` protocol and a separate entry in "Apps & Features": no
+  conflicts with OpenCode or other applications.
 
 ## What it solves
 
@@ -178,12 +195,18 @@ close heavy programs.
 `E:\LiteMind\models`). Uninstalling LiteMind Engine does **not** delete this
 folder or Ollama models.
 
-**Why no speculative decoding / KV-cache Q8?** These require direct llama.cpp
-access; LiteMind talks to the Ollama API, which does not expose them. The
-engine reports this honestly instead of faking speedups.
+**Why no speculative decoding / KV-cache Q8?** Since v0.4 the engine talks to
+its own llama.cpp runtime directly; these accelerations are being rolled in
+gradually, and until a speedup is actually enabled the capabilities map
+(`/api/capabilities`) reports it honestly instead of faking it.
 
-**Can I add my own model?** Yes — any GGUF model added to Ollama appears in the
-chat model switcher.
+**Can I add my own model?** Yes — drop any GGUF file into the models folder:
+it appears in "My models" and in the chat model switcher. Format, quantization
+and RAM compatibility are detected automatically from the GGUF header.
+
+**How do I delete a model and free space?** Click "Delete" in "My models" —
+LiteMind shows the size and quantization and, after confirmation, really
+deletes the GGUF file from disk.
 
 **Where are chats and settings stored?** In the Windows user profile
 (`%APPDATA%`); back it up before uninstalling.
@@ -198,10 +221,32 @@ OPENCODE_CHANNEL=prod bun run --cwd packages/desktop build
 bun run --cwd packages/desktop pack --win --x64   # NSIS installer → dist/
 ```
 
-Engine tests: `cd packages/litemind-engine && npm test` (87 tests).
+Engine tests: `cd packages/litemind-engine && npm test` (110 tests).
 More: [docs/litemind/BUILD-WINDOWS.md](docs/litemind/BUILD-WINDOWS.md).
+
+## Author & ownership
+
+- **Creator and owner** — GitHub account
+  [**aleksejsum113-lab**](https://github.com/aleksejsum113-lab): author of the
+  idea, requirements and architecture of LiteMind Engine, owner of the
+  repository and publications.
+- Versions v0.3–v0.4 were developed **with the assistance of AI agents**
+  (code and test generation to the author's specifications); task definition,
+  all architectural decisions, acceptance and release remain with the project
+  author.
+- LiteMind Engine is **not affiliated** with OpenAI, OpenCode, LM Studio or any
+  other model/tool vendors.
+- Historical basis: the project grew out of a fork of **OpenCode V2** (MIT);
+  inherited components keep their upstream authorship and license.
 
 ## License
 
-MIT. OpenCode © its authors (MIT). Catalog models are distributed under their
-authors' licenses (see each model card in the catalog).
+The project code is distributed under the **MIT** license:
+
+- new development and changes of LiteMind Engine (v0.1–v0.4) — © 2026
+  [aleksejsum113-lab](https://github.com/aleksejsum113-lab);
+- components inherited from OpenCode V2 — MIT, © their authors (the
+  [LICENSE](LICENSE) file is kept unchanged and remains in effect).
+
+Catalog models are distributed under their authors' licenses (see each model
+card in the catalog).
