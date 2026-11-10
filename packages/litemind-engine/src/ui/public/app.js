@@ -1043,6 +1043,13 @@ $('ctl-quit').addEventListener('click', quitApp);
 
 /* ============================ Мои модели ============================ */
 async function loadMyModels() {
+  // Какие модели прямо сейчас в памяти (llama-server запущен) — для честного
+  // статуса «в памяти» и кнопки «Остановить» вместо «Запустить».
+  const loadedIds = new Set();
+  try {
+    const st = await api('/api/engine/state');
+    for (const x of (st.models || [])) if (['loaded', 'running'].includes(x.state)) loadedIds.add(x.id);
+  } catch { /* движок может быть offline */ }
   try {
     const s = await api('/api/models/scan');
     $('scan-rootdir').textContent = `Папка моделей: ${s.rootDir} · runtime: ${s.runtimeBinary ?? 'llama-server не найден'}`;
@@ -1051,28 +1058,96 @@ async function loadMyModels() {
     if (!(s.models || []).length) {
       ul.innerHTML = '<li class="muted">В папке пока нет GGUF. Скачайте модель из каталога — она появится здесь автоматически.</li>';
     } else {
+      const canShell = !!bridge();
       for (const m of s.models) {
         const li = document.createElement('li');
-        const status = m.ok
-          ? (m.compatible ? '<span class="tag ok-tag">готова</span>' : '<span class="tag warn-tag">может не хватить RAM</span>')
-          : '<span class="tag bad-tag">повреждён</span>';
-        const loadedNow = state.streaming ? '' : '';
+        const loaded = loadedIds.has(m.id);
+        const status = !m.ok
+          ? '<span class="tag bad-tag">повреждён</span>'
+          : loaded
+            ? '<span class="tag ok-tag">в памяти</span>'
+            : (m.compatible ? '<span class="tag ok-tag">готова</span>' : '<span class="tag warn-tag">может не хватить RAM</span>');
         li.innerHTML = `<div class="model-item-main"><div class="model-item-title">${esc(m.id)} ${status}</div>
           <div class="model-item-sub">${fmtSize(m.sizeBytes)} · ${esc(m.architecture ?? '?')} · ${esc(m.quant ?? 'квант не определён')} · контекст ${m.contextLength ?? '—'} · ≈${m.memoryEstimateMb} МБ RAM</div>
-          ${m.error ? `<div class="model-item-sub" style="color:var(--bad)">${esc(m.error)}</div>` : ''}</div>
+          <div class="model-item-sub muted" title="${esc(m.file ?? '')}">файл: ${esc(m.file ?? '—')}</div>
+          ${m.error ? `<div class="model-item-sub" style="color:var(--bad)">${esc(m.error)}</div>` : ''}
+          <div class="model-item-result" hidden></div></div>
           <div class="model-item-actions">
             <button data-use="${esc(m.id)}" ${m.ok ? '' : 'disabled'}>Открыть в чате</button>
+            ${loaded
+              ? `<button data-stop="${esc(m.id)}">Остановить</button>`
+              : `<button data-run="${esc(m.id)}" ${m.ok && s.runtimeBinary ? '' : 'disabled'} title="${s.runtimeBinary ? 'Запустить llama-server с этой моделью' : 'runtime llama-server не найден'}">Запустить</button>`}
+            <button data-verify="${esc(m.id)}">Проверить файл</button>
+            ${canShell ? `<button data-folder="${esc(m.file ?? '')}">Открыть папку</button>` : ''}
+            <button data-info="${esc(m.id)}">Сведения</button>
             <button data-del="${esc(m.id)}" class="danger">Удалить файл</button>
           </div>`;
+        const resultEl = li.querySelector('.model-item-result');
+        const showResult = (text, ok) => { resultEl.hidden = false; resultEl.textContent = text; resultEl.className = `model-item-result ${ok ? 'res-ok' : 'res-bad'}`; };
         li.querySelector('[data-use]')?.addEventListener('click', () => {
           const sel = $('model');
           if ([...sel.options].some((o) => o.value === m.id)) {
             sel.value = m.id;
             localStorage.setItem('litemind-selected-model', m.id);
+            setTitlebarModel(m.id);
             openTab('chat');
           } else {
             showError('Модель ещё не видна движку — подождите пару секунд или обновите вкладку.');
           }
+        });
+        li.querySelector('[data-run]')?.addEventListener('click', async (e) => {
+          e.target.disabled = true;
+          try {
+            const r = await api('/api/models/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: m.file }) });
+            if (r.ok) {
+              showResult(`Модель запущена (${r.contextTokens ?? '—'} токенов контекста). Открыта в чате — можно писать.`, true);
+              event(`модель запущена из менеджера: ${m.id}`);
+              loadMyModels();
+              refreshStatus();
+            } else {
+              showResult(r.message || 'Не удалось запустить модель.', false);
+              e.target.disabled = false;
+            }
+          } catch (err) {
+            showResult('Запуск: ' + err.message, false);
+            e.target.disabled = false;
+          }
+        });
+        li.querySelector('[data-stop]')?.addEventListener('click', async () => {
+          try {
+            await api('/api/unload', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
+            event(`модель выгружена из памяти: ${m.id}`);
+            loadMyModels();
+            refreshStatus();
+          } catch (err) { showError('остановка: ' + err.message); }
+        });
+        li.querySelector('[data-verify]').addEventListener('click', async (e) => {
+          e.target.disabled = true;
+          showResult('Проверяю файл (считаю SHA-256)…', true);
+          try {
+            const r = await api('/api/models/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: m.file }) });
+            if (r.verified) showResult(`Файл цел: ${fmtSize(r.sizeBytes)} · SHA-256: ${String(r.sha256).slice(0, 16)}…`, true);
+            else showResult(r.message || 'Файл повреждён — скачайте модель заново.', false);
+          } catch (err) { showResult('Проверка: ' + err.message, false); }
+          e.target.disabled = false;
+        });
+        li.querySelector('[data-folder]')?.addEventListener('click', async () => {
+          const b = bridge();
+          if (!b) return;
+          const r = await b.shellShowItemInFolder(m.file).catch(() => ({ ok: false }));
+          if (r && r.ok === false) showError('Не удалось открыть папку в проводнике.');
+        });
+        li.querySelector('[data-info]').addEventListener('click', () => {
+          alert([
+            `Модель: ${m.id}`,
+            m.file ? `Файл: ${m.file}` : null,
+            `Размер: ${fmtSize(m.sizeBytes)}`,
+            `Архитектура: ${m.architecture ?? '—'}`,
+            `Квантование: ${m.quant ?? '—'}`,
+            `Контекст: ${m.contextLength ?? '—'}`,
+            `Оценка RAM: ≈${m.memoryEstimateMb} МБ`,
+            loadedIds.has(m.id) ? 'Статус: в памяти (llama-server запущен)' : (m.ok ? 'Статус: готова к запуску' : `Статус: повреждён${m.error ? ' — ' + m.error : ''}`)
+          ].filter(Boolean).join('\n'));
         });
         li.querySelector('[data-del]').addEventListener('click', async () => {
           if (!confirm(`Удалить файл «${m.id}.gguf» с диска безвозвратно?`)) return;
