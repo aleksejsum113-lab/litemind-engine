@@ -13,6 +13,7 @@ name: LiteMind Windows smoke test
 #      внутри GUI, генерация, остановка llama-server.
 #
 # Запуск: вручную (workflow_dispatch) со ссылкой на прогон сборки.
+# Файл перезаписан для регистрации workflow в GitHub Actions.
 
 on:
   workflow_dispatch:
