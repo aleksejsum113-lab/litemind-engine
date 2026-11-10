@@ -14,7 +14,12 @@
 //        --server /tmp/llamacpp-build-A/bin/llama-server --model Qwen3-0.6B-Q8_0 \
 //        --label "до (движок 1В + baseline-сборка)" --out /tmp/bench-old-A.json
 //
+// Короткий безопасный режим (минимум нагрузки, для запуска пользователем):
+//   node scripts/bench-stage2.mjs --quick --port 8397 --out /tmp/bench-quick.json
+//
 // Никаких моков: реальный llama-server, реальный GGUF, реальный стрим.
+// Дополнительно (Этап 2 §4/§13): выборочный замер RAM процессов
+// (llama-server + движок) и загрузки CPU по фазам (холодный/тёплые/длинный).
 
 const args = {};
 for (let i = 2; i < process.argv.length; i += 2) {
@@ -30,8 +35,15 @@ const LABEL = args.label ?? `engine=${path.basename(ENGINE_DIR)} server=${path.b
 const OUT = args.out ?? `/tmp/bench-${Date.now()}.json`;
 const WARM_RUNS = Number(args.warm ?? 3);
 const LONG_TOKENS = Number(args.long ?? 160);
+// Короткий режим: 1 тёплый прогон, короткие ответы — нужен, чтобы пользователь
+// мог безопасно проверить производительность без длительной нагрузки на своей машине.
+const QUICK = process.argv.includes('--quick');
+const WARM_RUNS_EFF = QUICK ? 1 : WARM_RUNS;
+const LONG_TOKENS_EFF = QUICK ? Math.min(LONG_TOKENS, 64) : LONG_TOKENS;
+const COLD_TOKENS = QUICK ? 16 : 24;
+const WARM_TOKENS = QUICK ? 32 : 48;
 
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -155,6 +167,92 @@ child.stdout.on('data', (d) => engineLog.push(String(d)));
 child.stderr.on('data', (d) => engineLog.push(String(d)));
 child.on('exit', (code) => log(`движок завершился: код ${code}`));
 
+// ── Наблюдение за процессами: RAM (RSS) llama-server и движка + загрузка CPU ──
+const mem = { serverPeakMb: 0, enginePeakMb: 0, phases: {} };
+let currentPhase = 'startup';
+let serverPid = null;
+let cpuPrev = os.cpus();
+let cpuAccum = { busy: 0, total: 0, n: 0 };
+
+function setPhase(name) {
+  currentPhase = name;
+  cpuAccum = { busy: 0, total: 0, n: 0 };
+}
+
+function findServerPid() {
+  if (process.platform === 'win32') {
+    return new Promise((resolve) => {
+      execFile('tasklist', ['/fi', 'IMAGENAME eq llama-server.exe', '/fo', 'CSV', '/nh'],
+        { windowsHide: true }, (err, out) => {
+          if (err) return resolve(null);
+          const m = String(out).match(/"llama-server\.exe","(\d+)"/i);
+          resolve(m ? Number(m[1]) : null);
+        });
+    });
+  }
+  try {
+    for (const d of fs.readdirSync('/proc')) {
+      if (!/^\d+$/.test(d)) continue;
+      let cmd = '';
+      try { cmd = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8'); } catch { continue; }
+      if (cmd.includes('llama-server')) return Promise.resolve(Number(d));
+    }
+  } catch { /* не linux */ }
+  return Promise.resolve(null);
+}
+
+async function rssMb(pid) {
+  if (!pid) return null;
+  if (process.platform !== 'win32') {
+    try {
+      const st = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+      const m = st.match(/VmRSS:\s+(\d+)\s+kB/);
+      return m ? Math.round(Number(m[1]) / 1024) : null;
+    } catch { return null; }
+  }
+  return new Promise((resolve) => {
+    execFile('tasklist', ['/fi', `PID eq ${pid}`, '/fo', 'CSV', '/nh'],
+      { windowsHide: true }, (err, out) => {
+        if (err) return resolve(null);
+        const m = String(out).match(/"([^\"]*K)"\s*\r?\n?$/);
+        resolve(m ? Math.round(Number(String(m[1]).replace(/\D/g, '')) / 1024) || null : null);
+      });
+  });
+}
+
+function cpuTick() {
+  const now = os.cpus();
+  for (let i = 0; i < now.length && i < cpuPrev.length; i++) {
+    const a = cpuPrev[i].times, b = now[i].times;
+    const t = b.user + b.nice + b.sys + b.idle + b.irq;
+    const at = a.user + a.nice + a.sys + a.idle + a.irq;
+    cpuAccum.total += t - at;
+    cpuAccum.busy += t - at - (b.idle - a.idle);
+  }
+  cpuAccum.n++;
+  cpuPrev = now;
+}
+
+const sampler = setInterval(() => {
+  (async () => {
+    try {
+      if (!serverPid) serverPid = await findServerPid();
+      const s = await rssMb(serverPid);
+      const e = await rssMb(child.pid);
+      if (s != null) mem.serverPeakMb = Math.max(mem.serverPeakMb, s);
+      if (e != null) mem.enginePeakMb = Math.max(mem.enginePeakMb, e);
+      cpuTick();
+      const ph = (mem.phases[currentPhase] = mem.phases[currentPhase] || { serverMb: null, engineMb: null, cpuBusyPct: null, cpuSamples: 0 });
+      if (s != null) ph.serverMb = s;
+      if (e != null) ph.engineMb = e;
+      if (cpuAccum.total > 0) {
+        ph.cpuBusyPct = Math.round((cpuAccum.busy / cpuAccum.total) * 100);
+        ph.cpuSamples = cpuAccum.n;
+      }
+    } catch { /* наблюдение не должно ронять бенчмарк */ }
+  })();
+}, 1500);
+
 const up = await waitForHealth();
 if (!up) {
   log('движок не поднялся');
@@ -166,19 +264,22 @@ try {
   // 1. ХОЛОДНЫЙ запрос: llama-server не запущен, модель не в RAM.
   //    Примечание честности: файловый кэш ОС не сбрасываем (нужен root) —
   //    «холодный» здесь означает «процесс runtime не запущен».
+  setPhase('cold');
   log('холодный запрос (spawn llama-server + загрузка модели)');
-  const cold = await runOnce({ maxTokens: 24 });
+  const cold = await runOnce({ maxTokens: COLD_TOKENS });
   results.cold = cold;
 
   // 2. ТЁПЛЫЕ запросы: модель уже в RAM.
-  for (let i = 0; i < WARM_RUNS; i++) {
-    log(`тёплый запрос ${i + 1}/${WARM_RUNS}`);
-    await runOnce({ maxTokens: 48 });
+  setPhase('warm');
+  for (let i = 0; i < WARM_RUNS_EFF; i++) {
+    log(`тёплый запрос ${i + 1}/${WARM_RUNS_EFF}`);
+    await runOnce({ maxTokens: WARM_TOKENS });
   }
 
   // 3. ДЛИННАЯ генерация: проверка регрессии «обрыв на 60-й секунде».
-  log(`длинная генерация (${LONG_TOKENS} ток) — регрессия 60-секундного обрыва`);
-  const long = await runOnce({ maxTokens: LONG_TOKENS, prompt: 'Напиши связный рассказ из десяти предложений о путешествии вдоль берега.' });
+  setPhase('long');
+  log(`длинная генерация (${LONG_TOKENS_EFF} ток) — регрессия 60-секундного обрыва`);
+  const long = await runOnce({ maxTokens: LONG_TOKENS_EFF, prompt: 'Напиши связный рассказ из десяти предложений о путешествии вдоль берега.' });
   results.long = long;
 
   // 4. Метрики движка (новый движок): стадии, серверные тайминги, runtime.
@@ -190,7 +291,10 @@ try {
       runtime: perf.runtime ? { params: perf.runtime.params, loadMs: perf.runtime.loadMs, restarts: perf.runtime.restarts, gpu: perf.runtime.gpu } : null
     };
   } catch { results.perf = null; }
+  results.quickMode = QUICK;
+  results.ram = mem;
 } finally {
+  clearInterval(sampler);
   await stopEngine();
   child.kill('SIGKILL');
 }
