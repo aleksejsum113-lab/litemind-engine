@@ -1,15 +1,24 @@
-// LiteMind Model Catalog v2 — только проверенные записи.
+// LiteMind Model Catalog v3 — только проверенные записи.
 //
-// Источник данных: официальный Hugging Face API (2026-11-09):
-//  - репозиторий существует, не gated (гem-gated в каталог не попадают);
+// Источник данных: официальный Hugging Face API (последняя проверка: 2026-11-10):
+//  - репозиторий существует и публичен (gated-репозитории не попадают или помечены);
 //  - размер и LFS SHA-256 каждого GGUF сняты с /api/models/<repo>/tree/main;
-//  - лицензия — из тегов репозитория, сомнительные помечены licenseNote.
-// Сгенерировано scripts/gen-catalog.mjs (curated config). Никаких фиктивных ссылок.
+//  - лицензия — из тегов репозитория, сомнительные помечены licenseNote;
+//  - developer — автор модели (или «дообучение», если модель производная);
+//  - purposes — назначения по ТЗ Этапа 1Б §2.1 (одна модель может иметь несколько);
+//  - verifiedAt — дата последней проверки сведений записи.
+// Сгенерировано scripts/gen-catalog-v3.mjs. Никаких фиктивных ссылок.
 //
 // Категории ограничений (ТЗ):
 //  - restrictions: 'standard' — обычные встроенные ограничения разработчика;
 //  - restrictions: 'reduced'  — uncensored/abliterated: отказы ослаблены обучением,
 //    но «абсолютной свободы» не существует — поведение зависит от модели.
+//
+// Расширяемость (ТЗ §8): сервер может дополнять каталог файлом-оверрайдом
+// (catalog-override.json в папке конфигурации) и опциональным удалённым JSON.
+// Без интернета каталог работает в полном объёме — данные вшиты в приложение.
+
+export const CATALOG_VERSION = { version: 3, verifiedAt: '2026-11-10', generatedBy: 'scripts/gen-catalog-v3.mjs' };
 
 export const CATEGORIES = {
   "chat-tiny": "Общение · до 1B (сверхлёгкие)",
@@ -22,6 +31,30 @@ export const CATEGORIES = {
   "uncensored-coding": "Ослабленные ограничения · Coding",
   "uncensored-chat": "Ослабленные ограничения · Общение"
 };
+
+// Назначения моделей (Этап 1Б §2.1). Ключи используются в поле purposes записей.
+export const PURPOSES = {
+  "coding": "Программирование и разработка",
+  "chat": "Общение и универсальные задачи",
+  "writing": "Написание текстов",
+  "analysis": "Анализ документов",
+  "translation": "Перевод",
+  "math": "Математика и логика",
+  "long-context": "Работа с длинным контекстом",
+  "creative": "Творческие задачи",
+  "multilingual": "Мультиязычные модели"
+};
+
+// Семейства, проверенные на собственном runtime LiteMind (llama.cpp сборка
+// без AVX-требований). Модели с неизвестным семейством не помечаются как
+// гарантированно совместимые — см. compat.js.
+export const RUNTIME_VERIFIED_FAMILIES = new Set([
+  "smollm2", "smollm3", "qwen2.5", "qwen2.5-coder", "qwen3", "qwen3.5",
+  "vikhr", "gemma2", "gemma3", "llama3.2", "tinyllama", "mistral",
+  "ministral", "phi4", "phi3.5", "deepseek-r1", "deepseek-coder",
+  "saiga", "starcoder2", "granite-code", "dolphin",
+  "huihui-qwen2.5", "huihui-qwen3", "huihui-qwen3.5", "huihui-llama3.2"
+]);
 
 export const CATALOG = [
   {
@@ -83,7 +116,14 @@ export const CATALOG = [
         "sizeBytes": 386405376,
         "sha256": "0e9edf66381198c0a2710fd1ef46309c6e812ef60ae339d9037bb5b13fcad5b7"
       }
-    ]
+    ],
+    "developer": "HuggingFaceTB",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen3-0.6b",
@@ -147,7 +187,18 @@ export const CATALOG = [
         "sizeBytes": 804753824,
         "sha256": "c159d1518f16bc42533d9a09f034eb598b670341adc2b08b9a9751614aea71eb"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "math",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "vikhr-qwen-0.5b",
@@ -209,7 +260,15 @@ export const CATALOG = [
         "sizeBytes": 530803968,
         "sha256": "43df3b688d17f68321648bbf55c871ee9674350417b630994fa41b73a7557352"
       }
-    ]
+    ],
+    "developer": "Vikhrmodels",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen2.5-1.5b-instruct",
@@ -271,7 +330,17 @@ export const CATALOG = [
         "sizeBytes": 1272740096,
         "sha256": "1b01b4ea4ccdd5aa6a5972790002e120a5d500a5175be571114d642a8db4d14e"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen3-1.7b",
@@ -334,7 +403,18 @@ export const CATALOG = [
         "sizeBytes": 1673007520,
         "sha256": "95aec3c8e76caf949b5a7a3b02adbb7e307eb0aa55880f6a6f9fb5f46abe6d4f"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "math",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen3.5-4b",
@@ -397,7 +477,19 @@ export const CATALOG = [
         "sizeBytes": 3443763168,
         "sha256": "21c4643259ce62ffd979848e5819ce03823fd9e9902279ab54cc0d572d83d33e"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "math",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen3-4b",
@@ -460,7 +552,19 @@ export const CATALOG = [
         "sizeBytes": 2889513920,
         "sha256": "3e6002bee4457c8061c04bfb742c3b23aca976606dfe0e0963cbfd434a370eac"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "math",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "gemma-3-1b-it",
@@ -523,7 +627,17 @@ export const CATALOG = [
         "sizeBytes": 1069306624,
         "sha256": "375e12a4a18929a641f9744b060d4a7cf4e279530750555828ec0c117870bc96"
       }
-    ]
+    ],
+    "developer": "Google DeepMind",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "gemma-2-2b-it",
@@ -585,7 +699,16 @@ export const CATALOG = [
         "sizeBytes": 2151393120,
         "sha256": "f82c5c2230a8b452221706461eb93203443373625d96a05912d4f96c845c2775"
       }
-    ]
+    ],
+    "developer": "Google DeepMind",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "multilingual",
+      "translation"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "llama-3.2-1b-instruct",
@@ -647,7 +770,17 @@ export const CATALOG = [
         "sizeBytes": 1021800576,
         "sha256": "0f4c510daf16e0d1b3bc94931fd9296c28936bebdda2593687d4eb70c5b70628"
       }
-    ]
+    ],
+    "developer": "Meta",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "llama-3.2-3b-instruct",
@@ -708,7 +841,18 @@ export const CATALOG = [
         "sizeBytes": 2643853856,
         "sha256": "1771887c15fc3d327cfee6fd593553b2126e88834bf48eae50e709d3f70dd998"
       }
-    ]
+    ],
+    "developer": "Meta",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen2.5-3b-instruct",
@@ -770,7 +914,18 @@ export const CATALOG = [
         "sizeBytes": 2224815264,
         "sha256": "e4180cbad78d8848bd10839e7fd07edd573c4a5b01148c2b3f7ce2763a2a0938"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "phi-4-mini-instruct",
@@ -832,7 +987,19 @@ export const CATALOG = [
         "sizeBytes": 3155622880,
         "sha256": "72b8446a3db55617950bef48d296659050867cca41bd7a7be4622010c9589400"
       }
-    ]
+    ],
+    "developer": "Microsoft",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "math",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "smollm2-1.7b-instruct",
@@ -871,7 +1038,14 @@ export const CATALOG = [
         "sizeBytes": 1055609536,
         "sha256": "decd2598bc2c8ed08c19adc3c8fdd461ee19ed5708679d1c54ef54a5a30d4f33"
       }
-    ]
+    ],
+    "developer": "HuggingFaceTB",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "smollm3-3b",
@@ -934,7 +1108,19 @@ export const CATALOG = [
         "sizeBytes": 2213756736,
         "sha256": "65a6490c29a728d1bde5b6a6858418715e773e061433386dbbc39b3f0a088f3d"
       }
-    ]
+    ],
+    "developer": "HuggingFaceTB",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "math",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "tinyllama-1.1b-chat",
@@ -988,7 +1174,14 @@ export const CATALOG = [
         "sizeBytes": 1170781568,
         "sha256": "a4c9bb1dbaa372f6381a035fa5c02ef087aaa1ff1f843a56a22328114f03fc59"
       }
-    ]
+    ],
+    "developer": "TinyLlama project",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen2.5-7b-instruct",
@@ -1043,7 +1236,18 @@ export const CATALOG = [
         "sizeBytes": 4683074240,
         "sha256": "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "mistral-7b-instruct-v0.3",
@@ -1097,7 +1301,18 @@ export const CATALOG = [
         "sizeBytes": 4372812000,
         "sha256": "1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6"
       }
-    ]
+    ],
+    "developer": "Mistral AI",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "ministral-8b-instruct-2410",
@@ -1151,7 +1366,18 @@ export const CATALOG = [
         "sizeBytes": 4911500096,
         "sha256": "bbe8d91c196491b1802b20aba121d2ef38945a8e6c6c6a8710bfd2ef393fe73f"
       }
-    ]
+    ],
+    "developer": "Mistral AI",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "phi-3.5-mini-instruct",
@@ -1213,7 +1439,18 @@ export const CATALOG = [
         "sizeBytes": 3135853344,
         "sha256": "cc4f0d756eb82447035314dbd247809a564189c20583e1d6fb926f9b6e1eb890"
       }
-    ]
+    ],
+    "developer": "Microsoft",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "math",
+      "multilingual",
+      "translation"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "gemma-2-9b-it",
@@ -1268,7 +1505,17 @@ export const CATALOG = [
         "sizeBytes": 6843425696,
         "sha256": "0452e54ba9b6c5b2e466fbd7f28c089fefb7c3dceddcc2b75becab6b16cae523"
       }
-    ]
+    ],
+    "developer": "Google DeepMind",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "multilingual",
+      "translation"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "deepseek-r1-distill-qwen-1.5b",
@@ -1329,7 +1576,15 @@ export const CATALOG = [
         "sizeBytes": 1464178784,
         "sha256": "c9c8aff5a84e2e9c1fd6ea57af5ab52cf5d7272d34460403d82880075e611039"
       }
-    ]
+    ],
+    "developer": "DeepSeek",
+    "purposes": [
+      "math",
+      "analysis",
+      "chat",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "deepseek-r1-distill-qwen-7b",
@@ -1383,7 +1638,15 @@ export const CATALOG = [
         "sizeBytes": 4683073504,
         "sha256": "731ece8d06dc7eda6f6572997feb9ee1258db0784827e642909d9b565641937b"
       }
-    ]
+    ],
+    "developer": "DeepSeek",
+    "purposes": [
+      "math",
+      "analysis",
+      "chat",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "vikhr-gemma-2b",
@@ -1444,7 +1707,13 @@ export const CATALOG = [
         "sizeBytes": 2151393216,
         "sha256": "4d3d34c055cd3c4bfa84294aeac94d53ea2353098af34b61f6095beb5e5843b3"
       }
-    ]
+    ],
+    "developer": "Vikhrmodels",
+    "purposes": [
+      "chat",
+      "writing"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "vikhr-qwen-1.5b",
@@ -1505,7 +1774,14 @@ export const CATALOG = [
         "sizeBytes": 1272392320,
         "sha256": "48733fdb79be6aa0e5032818d802643d0cb5898d0056f4d228eae262d71bcf5f"
       }
-    ]
+    ],
+    "developer": "Vikhrmodels",
+    "purposes": [
+      "chat",
+      "writing",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "saiga2-7b",
@@ -1566,7 +1842,14 @@ export const CATALOG = [
         "sizeBytes": 4783156800,
         "sha256": "149862753771f3a096e05b3732c520d37d8a2b099b795a4434b813fe989d1f58"
       }
-    ]
+    ],
+    "developer": "Илья Гусев (Saiga)",
+    "purposes": [
+      "chat",
+      "writing",
+      "analysis"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen2.5-coder-0.5b",
@@ -1613,7 +1896,15 @@ export const CATALOG = [
         "sizeBytes": 420086432,
         "sha256": "88ff6e9e6ef96f06dc134e4adcdfbd7e2412bcb1acb1dcebaabf141ea20a0bc6"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "coding",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen2.5-coder-1.5b",
@@ -1667,7 +1958,15 @@ export const CATALOG = [
         "sizeBytes": 986048800,
         "sha256": "f530705d447660a4336c329981af164b471b60b974b1d808d57e8ec9fe23b239"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "coding",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen2.5-coder-3b",
@@ -1721,7 +2020,15 @@ export const CATALOG = [
         "sizeBytes": 1929903360,
         "sha256": "3da3afe6cf5c674ac195803ea0dd6fee7e1c228c2105c1ce8c66890d1d4ab460"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "coding",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "deepseek-coder-1.3b",
@@ -1773,7 +2080,12 @@ export const CATALOG = [
         "sizeBytes": 873582624,
         "sha256": "04cebb6fafa40ae628cf6bfeb76032ec792852f54020c559ad0a56b9f2839118"
       }
-    ]
+    ],
+    "developer": "DeepSeek",
+    "purposes": [
+      "coding"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "starcoder2-3b",
@@ -1826,7 +2138,14 @@ export const CATALOG = [
         "sizeBytes": 1887905472,
         "sha256": "8a5832f519083dd689e5cf0e16b6e93922253b0eb8ac3771416782d40985bbf8"
       }
-    ]
+    ],
+    "developer": "BigCode",
+    "purposes": [
+      "coding",
+      "multilingual",
+      "translation"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "granite-code-3b",
@@ -1879,7 +2198,14 @@ export const CATALOG = [
         "sizeBytes": 2132498848,
         "sha256": "b80229ef971a0acce252f3d7db3e30f2ed8c29ad0f5b4cb26e4c9631c853c539"
       }
-    ]
+    ],
+    "developer": "IBM",
+    "purposes": [
+      "coding",
+      "multilingual",
+      "translation"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen2.5-coder-7b",
@@ -1933,7 +2259,15 @@ export const CATALOG = [
         "sizeBytes": 4683074336,
         "sha256": "1664fccab734674a50763490a8c6931b70e3f2f8ec10031b54806d30e5f956b6"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "coding",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "deepseek-coder-6.7b",
@@ -1985,7 +2319,12 @@ export const CATALOG = [
         "sizeBytes": 4080009216,
         "sha256": null
       }
-    ]
+    ],
+    "developer": "DeepSeek",
+    "purposes": [
+      "coding"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen2.5-coder-1.5b-abliterated",
@@ -2039,7 +2378,15 @@ export const CATALOG = [
         "sizeBytes": 1117321696,
         "sha256": "389b8172028c874b79a11358d258222dbce272b56ab3512ccc743893a25e06b4"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "coding",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen2.5-coder-3b-abliterated",
@@ -2093,7 +2440,15 @@ export const CATALOG = [
         "sizeBytes": 1929903488,
         "sha256": "d5c108dfbdac44c738e45a84d5624716cfb8522d1410f46a7108167ee4bd0cac"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "coding",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen2.5-coder-7b-abliterated",
@@ -2147,7 +2502,15 @@ export const CATALOG = [
         "sizeBytes": 4683074400,
         "sha256": "fdf02c16fb654ff60b2c30f1e91573ebc603a7084df3449df89120dca2b18170"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "coding",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "qwen2.5-coder-1.5b-noncensure",
@@ -2186,7 +2549,13 @@ export const CATALOG = [
         "sizeBytes": 1117321856,
         "sha256": "e3a3e812128b3499a36982841720f52827ea1c315ebd152a17778b3a121b230d"
       }
-    ]
+    ],
+    "developer": "Qwen Team (Alibaba)",
+    "purposes": [
+      "coding",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "dolphin3.0-llama3.2-3b",
@@ -2247,7 +2616,17 @@ export const CATALOG = [
         "sizeBytes": 2322158720,
         "sha256": "6d80400d2354e95966e324fe0840ce3d0d4f6f72b16f4bea940baa4aa1be4a86"
       }
-    ]
+    ],
+    "developer": "Cognitive Computations",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "dolphin-2.9.3-mistral-7b",
@@ -2301,7 +2680,18 @@ export const CATALOG = [
         "sizeBytes": 4372823296,
         "sha256": "91ae62516b835a06ece6cee2c20b66c34647287175d2dfb13bc4dcf119ac0bbe"
       }
-    ]
+    ],
+    "developer": "Cognitive Computations",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "llama-3.2-1b-abliterated",
@@ -2361,7 +2751,15 @@ export const CATALOG = [
         "sizeBytes": 1600168000,
         "sha256": "e3074a9e9ddd88234106791e2aed3da9fc58d50ec327cb2bbce7de68fc0fa311"
       }
-    ]
+    ],
+    "developer": "Meta",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
   },
   {
     "id": "llama-3.2-3b-abliterated",
@@ -2420,8 +2818,527 @@ export const CATALOG = [
         "sizeBytes": 2593030624,
         "sha256": "d44d400b3abfde73a6fa2dab8df3226b71ed08be360ddc96e08d58136b81554a"
       }
+    ],
+    "developer": "Meta",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10"
+  },
+  {
+    "id": "huihui-qwen2.5-0.5b-abliterated-v3",
+    "ollamaName": "litemind-huihui-qwen2.5-0.5b-abliterated-v3",
+    "displayName": "Huihui Qwen2.5 0.5B Abliterated v3",
+    "category": "uncensored-chat",
+    "restrictions": "reduced",
+    "uncensored": true,
+    "uncensoredLabel": "Abliterated",
+    "tags": [
+      "chat",
+      "uncensored",
+      "tiny"
+    ],
+    "languages": [
+      "ru",
+      "en",
+      "multi"
+    ],
+    "params": "0.5B",
+    "family": "huihui-qwen2.5",
+    "purpose": "Ослабленная (abliterated) версия Qwen2.5 0.5B от Huihui-ai: отвечает в свободном стиле, отказов даёт заметно меньше базовой модели. Самая лёгкая из линейки Huihui.",
+    "quality": "Для своих 0.5B — живой и быстрый собеседник; сложные рассуждения не потянет. Работает даже на слабом ПК.",
+    "speed": "fast",
+    "license": "apache-2.0",
+    "licenseNote": null,
+    "source": "https://huggingface.co/mradermacher/Qwen2.5-0.5B-Instruct-abliterated-v3-GGUF",
+    "repo": "mradermacher/Qwen2.5-0.5B-Instruct-abliterated-v3-GGUF",
+    "quantAuthor": "mradermacher (кванты; модель — huihui-ai)",
+    "contextTokens": 32768,
+    "tools": false,
+    "vision": false,
+    "notes": "Оригинальные веса: huihui-ai/Qwen2.5-0.5B-Instruct-abliterated-v3 (Apache-2.0).",
+    "developer": "Qwen Team (Alibaba) · дообучение Huihui-ai",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10",
+    "files": [
+      {
+        "quant": "Q4_K_M",
+        "name": "Qwen2.5-0.5B-Instruct-abliterated-v3.Q4_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Qwen2.5-0.5B-Instruct-abliterated-v3-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-abliterated-v3.Q4_K_M.gguf",
+        "sizeBytes": 397808544,
+        "sha256": "675532c67ddb159b2148c6389933ac9cae78af1527d0cdfcd82b95f85071bfa2"
+      },
+      {
+        "quant": "Q5_K_M",
+        "name": "Qwen2.5-0.5B-Instruct-abliterated-v3.Q5_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Qwen2.5-0.5B-Instruct-abliterated-v3-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-abliterated-v3.Q5_K_M.gguf",
+        "sizeBytes": 420086688,
+        "sha256": "b336eefdc5d81f2b70539fff5475a0f4571847738356bd0229ea9788fdc4b260"
+      },
+      {
+        "quant": "Q6_K",
+        "name": "Qwen2.5-0.5B-Instruct-abliterated-v3.Q6_K.gguf",
+        "url": "https://huggingface.co/mradermacher/Qwen2.5-0.5B-Instruct-abliterated-v3-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-abliterated-v3.Q6_K.gguf",
+        "sizeBytes": 505737120,
+        "sha256": "a80988434b665fb4fb703827765120f44572fe1070528ffb11844da2507e739e"
+      },
+      {
+        "quant": "Q8_0",
+        "name": "Qwen2.5-0.5B-Instruct-abliterated-v3.Q8_0.gguf",
+        "url": "https://huggingface.co/mradermacher/Qwen2.5-0.5B-Instruct-abliterated-v3-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-abliterated-v3.Q8_0.gguf",
+        "sizeBytes": 531068832,
+        "sha256": "9b29389f734f8d263fe456f6c65b65511bf1628634de6a1fd9a10631e38deadc"
+      }
     ]
   },
+  {
+    "id": "huihui-qwen3-1.7b-abliterated",
+    "ollamaName": "litemind-huihui-qwen3-1.7b-abliterated",
+    "displayName": "Huihui Qwen3 1.7B Abliterated",
+    "category": "uncensored-chat",
+    "restrictions": "reduced",
+    "uncensored": true,
+    "uncensoredLabel": "Abliterated",
+    "tags": [
+      "chat",
+      "uncensored",
+      "small"
+    ],
+    "languages": [
+      "ru",
+      "en",
+      "multi"
+    ],
+    "params": "1.7B",
+    "family": "huihui-qwen3",
+    "purpose": "Abliterated-версия Qwen3 1.7B от Huihui-ai: свободный стиль ответов при сохранении навыков Qwen3 (режим thinking наследуется).",
+    "quality": "Заметно умнее 0.5–0.6B моделей, при этом остаётся достаточно быстрой на CPU без AVX.",
+    "speed": "fast",
+    "license": "apache-2.0",
+    "licenseNote": null,
+    "source": "https://huggingface.co/mradermacher/Qwen3-1.7B-abliterated-GGUF",
+    "repo": "mradermacher/Qwen3-1.7B-abliterated-GGUF",
+    "quantAuthor": "mradermacher (кванты; модель — huihui-ai)",
+    "contextTokens": 32768,
+    "tools": false,
+    "vision": false,
+    "notes": "Репозиторий модели у huihui-ai помечен gated:auto — кванты взяты из публичного рерайта mradermacher.",
+    "developer": "Qwen Team (Alibaba) · дообучение Huihui-ai",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10",
+    "files": [
+      {
+        "quant": "Q4_K_M",
+        "name": "Qwen3-1.7B-abliterated.Q4_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Qwen3-1.7B-abliterated-GGUF/resolve/main/Qwen3-1.7B-abliterated.Q4_K_M.gguf",
+        "sizeBytes": 1107409024,
+        "sha256": "6fb5977ef935e2a54c0bd5ec45e841d5ba4256b2223c25b4f707553abac8f448"
+      },
+      {
+        "quant": "Q5_K_M",
+        "name": "Qwen3-1.7B-abliterated.Q5_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Qwen3-1.7B-abliterated-GGUF/resolve/main/Qwen3-1.7B-abliterated.Q5_K_M.gguf",
+        "sizeBytes": 1257879680,
+        "sha256": "0997547ff78893ecd8311a8a91883c31cad59331238764f485f67cc6a5ec8ce5"
+      },
+      {
+        "quant": "Q6_K",
+        "name": "Qwen3-1.7B-abliterated.Q6_K.gguf",
+        "url": "https://huggingface.co/mradermacher/Qwen3-1.7B-abliterated-GGUF/resolve/main/Qwen3-1.7B-abliterated.Q6_K.gguf",
+        "sizeBytes": 1417754752,
+        "sha256": "b6681fb38d1a2691ffaa9aec9b8704fd2038f5bab463594963105165e6639f76"
+      },
+      {
+        "quant": "Q8_0",
+        "name": "Qwen3-1.7B-abliterated.Q8_0.gguf",
+        "url": "https://huggingface.co/mradermacher/Qwen3-1.7B-abliterated-GGUF/resolve/main/Qwen3-1.7B-abliterated.Q8_0.gguf",
+        "sizeBytes": 1834426496,
+        "sha256": "e75ff8310f03905a255b114e1c5d9225a40bc3021def4d4055b220e903b3019f"
+      }
+    ]
+  },
+  {
+    "id": "huihui-qwen3.5-0.8b-abliterated",
+    "ollamaName": "litemind-huihui-qwen3.5-0.8b-abliterated",
+    "displayName": "Huihui Qwen3.5 0.8B Abliterated",
+    "category": "uncensored-chat",
+    "restrictions": "reduced",
+    "uncensored": true,
+    "uncensoredLabel": "Abliterated",
+    "tags": [
+      "chat",
+      "uncensored",
+      "tiny"
+    ],
+    "languages": [
+      "ru",
+      "en",
+      "multi"
+    ],
+    "params": "0.8B",
+    "family": "huihui-qwen3.5",
+    "purpose": "Ослабленная версия Qwen3.5 0.8B от Huihui-ai: минимальные требования, свободный стиль, русский от семейства Qwen.",
+    "quality": "Сверхлёгкая: мгновенный отклик на N5095A. Интеллект скромный — простые вопросы и черновики.",
+    "speed": "fast",
+    "license": "apache-2.0",
+    "licenseNote": null,
+    "source": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-0.8B-abliterated-GGUF",
+    "repo": "mradermacher/Huihui-Qwen3.5-0.8B-abliterated-GGUF",
+    "quantAuthor": "mradermacher (кванты; модель — huihui-ai)",
+    "contextTokens": 32768,
+    "tools": false,
+    "vision": false,
+    "notes": "В репозитории есть mmproj (зрение) — LiteMind скачивает только текстовую GGUF.",
+    "developer": "Qwen Team (Alibaba) · дообучение Huihui-ai",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10",
+    "files": [
+      {
+        "quant": "Q4_K_M",
+        "name": "Huihui-Qwen3.5-0.8B-abliterated.Q4_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-0.8B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-0.8B-abliterated.Q4_K_M.gguf",
+        "sizeBytes": 527503840,
+        "sha256": "411e0f945a5d57c63f33bcb5bfa4d5c2711d1ce28cb7635201ac0c311a7dfdf0"
+      },
+      {
+        "quant": "Q5_K_M",
+        "name": "Huihui-Qwen3.5-0.8B-abliterated.Q5_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-0.8B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-0.8B-abliterated.Q5_K_M.gguf",
+        "sizeBytes": 584823264,
+        "sha256": "f20fe2718de7d7414ae4121b35a5943c8e3cdd0af6355025d0fe0f24b2a1db38"
+      },
+      {
+        "quant": "Q6_K",
+        "name": "Huihui-Qwen3.5-0.8B-abliterated.Q6_K.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-0.8B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-0.8B-abliterated.Q6_K.gguf",
+        "sizeBytes": 629744608,
+        "sha256": "631e126473dcd1452145cb4c203f873b3c3b3eb02e10f198fc1e2471ff225693"
+      },
+      {
+        "quant": "Q8_0",
+        "name": "Huihui-Qwen3.5-0.8B-abliterated.Q8_0.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-0.8B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-0.8B-abliterated.Q8_0.gguf",
+        "sizeBytes": 811844064,
+        "sha256": "54e2a3903cbd0ff264b770f29ac59c1fc547d2865db2b42e4e3ef36700767946"
+      }
+    ]
+  },
+  {
+    "id": "huihui-qwen3.5-2b-abliterated",
+    "ollamaName": "litemind-huihui-qwen3.5-2b-abliterated",
+    "displayName": "Huihui Qwen3.5 2B Abliterated",
+    "category": "uncensored-chat",
+    "restrictions": "reduced",
+    "uncensored": true,
+    "uncensoredLabel": "Abliterated",
+    "tags": [
+      "chat",
+      "uncensored",
+      "small"
+    ],
+    "languages": [
+      "ru",
+      "en",
+      "multi"
+    ],
+    "params": "2B",
+    "family": "huihui-qwen3.5",
+    "purpose": "Средний размер линейки Huihui Qwen3.5: свободный стиль ответов, приемлемая скорость на слабом CPU.",
+    "quality": "Баланс ума и скорости в линейке Qwen3.5; в Q4_K_M занимает ~1,2 ГБ и ~2 ГБ RAM с контекстом.",
+    "speed": "medium",
+    "license": "apache-2.0",
+    "licenseNote": null,
+    "source": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF",
+    "repo": "mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF",
+    "quantAuthor": "mradermacher (кванты; модель — huihui-ai)",
+    "contextTokens": 32768,
+    "tools": false,
+    "vision": false,
+    "notes": null,
+    "developer": "Qwen Team (Alibaba) · дообучение Huihui-ai",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10",
+    "files": [
+      {
+        "quant": "Q4_K_M",
+        "name": "Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf",
+        "sizeBytes": 1270809024,
+        "sha256": "aa25eea787afe56a097268f7ed3460cb623e1901d2e89cd2b654cabb42f80636"
+      },
+      {
+        "quant": "Q5_K_M",
+        "name": "Huihui-Qwen3.5-2B-abliterated.Q5_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-2B-abliterated.Q5_K_M.gguf",
+        "sizeBytes": 1424769472,
+        "sha256": "f6b5287dcce25d3ac331e1f13ad295c31b4c339dfa70dc2bf6852bcf9d776944"
+      },
+      {
+        "quant": "Q6_K",
+        "name": "Huihui-Qwen3.5-2B-abliterated.Q6_K.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-2B-abliterated.Q6_K.gguf",
+        "sizeBytes": 1556391360,
+        "sha256": "7774b240ec1e14990baa58ca844019778d130953b6db8c905b6b230961e3d96c"
+      },
+      {
+        "quant": "Q8_0",
+        "name": "Huihui-Qwen3.5-2B-abliterated.Q8_0.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-2B-abliterated.Q8_0.gguf",
+        "sizeBytes": 2012012992,
+        "sha256": "fb724dfeb9c268e4752b944d35213e959b525cab39db021cc2bdf439901d4deb"
+      }
+    ]
+  },
+  {
+    "id": "huihui-qwen3.5-4b-abliterated",
+    "ollamaName": "litemind-huihui-qwen3.5-4b-abliterated",
+    "displayName": "Huihui Qwen3.5 4B Abliterated",
+    "category": "uncensored-chat",
+    "restrictions": "reduced",
+    "uncensored": true,
+    "uncensoredLabel": "Abliterated",
+    "tags": [
+      "chat",
+      "uncensored",
+      "small"
+    ],
+    "languages": [
+      "ru",
+      "en",
+      "multi"
+    ],
+    "params": "4B",
+    "family": "huihui-qwen3.5",
+    "purpose": "Старшая компактная abliterated-модель Qwen3.5 от Huihui-ai: свободный стиль при заметном уме для своего размера.",
+    "quality": "Один из лучших вариантов «свободного общения» для 16 ГБ RAM: ум на уровне 4B, скорость средняя.",
+    "speed": "medium",
+    "license": "apache-2.0",
+    "licenseNote": null,
+    "source": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF",
+    "repo": "mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF",
+    "quantAuthor": "mradermacher (кванты; модель — huihui-ai)",
+    "contextTokens": 32768,
+    "tools": false,
+    "vision": false,
+    "notes": null,
+    "developer": "Qwen Team (Alibaba) · дообучение Huihui-ai",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10",
+    "files": [
+      {
+        "quant": "Q4_K_M",
+        "name": "Huihui-Qwen3.5-4B-abliterated.Q4_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-4B-abliterated.Q4_K_M.gguf",
+        "sizeBytes": 2707514688,
+        "sha256": "423f10b6ec2d99c3378143d7cd3b80eb4887b3ed92103103ac59173b404f4f7c"
+      },
+      {
+        "quant": "Q5_K_M",
+        "name": "Huihui-Qwen3.5-4B-abliterated.Q5_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-4B-abliterated.Q5_K_M.gguf",
+        "sizeBytes": 3108758848,
+        "sha256": "a93fe75df87619da6f28bef8faf895799a8bbda238c29bc0dbb40ae418054ad4"
+      },
+      {
+        "quant": "Q6_K",
+        "name": "Huihui-Qwen3.5-4B-abliterated.Q6_K.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-4B-abliterated.Q6_K.gguf",
+        "sizeBytes": 3464056128,
+        "sha256": "8deb9dcea61455b5c2ca5523e08c41c5c5d884c6180e4536dd85f6b51c37c7c6"
+      },
+      {
+        "quant": "Q8_0",
+        "name": "Huihui-Qwen3.5-4B-abliterated.Q8_0.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-4B-abliterated.Q8_0.gguf",
+        "sizeBytes": 4482403648,
+        "sha256": "1e78f9b48c8b69242fa45bbbbeb439ed818a71381a6362130d62a38561c3756d"
+      }
+    ]
+  },
+  {
+    "id": "huihui-llama-3.2-3b-abliterated",
+    "ollamaName": "litemind-huihui-llama-3.2-3b-abliterated",
+    "displayName": "Huihui Llama 3.2 3B Abliterated",
+    "category": "uncensored-chat",
+    "restrictions": "reduced",
+    "uncensored": true,
+    "uncensoredLabel": "Abliterated",
+    "tags": [
+      "chat",
+      "uncensored",
+      "small"
+    ],
+    "languages": [
+      "en",
+      "multi"
+    ],
+    "params": "3.2B",
+    "family": "huihui-llama3.2",
+    "purpose": "Abliterated-версия Llama 3.2 3B от Huihui-ai: свободный стиль, английский и основные европейские языки.",
+    "quality": "Крепкая 3B-модель для общения и текстов; русский слабее, чем у Qwen-семейства.",
+    "speed": "medium",
+    "license": "llama3.2",
+    "licenseNote": null,
+    "source": "https://huggingface.co/mradermacher/Llama-3.2-3B-Instruct-abliterated-GGUF",
+    "repo": "mradermacher/Llama-3.2-3B-Instruct-abliterated-GGUF",
+    "quantAuthor": "mradermacher (кванты; модель — huihui-ai)",
+    "contextTokens": 32768,
+    "tools": false,
+    "vision": false,
+    "notes": "Лицензия Llama 3.2 Community — используйте по условиям Meta.",
+    "developer": "Meta · дообучение Huihui-ai",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10",
+    "files": [
+      {
+        "quant": "Q4_K_M",
+        "name": "Llama-3.2-3B-Instruct-abliterated.Q4_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Llama-3.2-3B-Instruct-abliterated-GGUF/resolve/main/Llama-3.2-3B-Instruct-abliterated.Q4_K_M.gguf",
+        "sizeBytes": 2241004512,
+        "sha256": "3a8ad1732ca90048bc5ecf44dcb3b789469e8a68d389ab79516853bf0d27ad34"
+      },
+      {
+        "quant": "Q5_K_M",
+        "name": "Llama-3.2-3B-Instruct-abliterated.Q5_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Llama-3.2-3B-Instruct-abliterated-GGUF/resolve/main/Llama-3.2-3B-Instruct-abliterated.Q5_K_M.gguf",
+        "sizeBytes": 2593031136,
+        "sha256": "76a4a06bf7a868b7e3c4f83afc224b5dc635c659282d1292e56dc3300c63a1e1"
+      },
+      {
+        "quant": "Q6_K",
+        "name": "Llama-3.2-3B-Instruct-abliterated.Q6_K.gguf",
+        "url": "https://huggingface.co/mradermacher/Llama-3.2-3B-Instruct-abliterated-GGUF/resolve/main/Llama-3.2-3B-Instruct-abliterated.Q6_K.gguf",
+        "sizeBytes": 2967059424,
+        "sha256": "7eba702b4d42fb0c911b51c1c707d984f991786dbbb4cf6831bb4adb286eb19c"
+      },
+      {
+        "quant": "Q8_0",
+        "name": "Llama-3.2-3B-Instruct-abliterated.Q8_0.gguf",
+        "url": "https://huggingface.co/mradermacher/Llama-3.2-3B-Instruct-abliterated-GGUF/resolve/main/Llama-3.2-3B-Instruct-abliterated.Q8_0.gguf",
+        "sizeBytes": 3840527328,
+        "sha256": "c803fb4103282db1a60a9256dbc482bb69b3033eb77ede6324cd725cd44ef04c"
+      }
+    ]
+  },
+  {
+    "id": "huihui-qwen3-8b-abliterated-v2",
+    "ollamaName": "litemind-huihui-qwen3-8b-abliterated-v2",
+    "displayName": "Huihui Qwen3 8B Abliterated v2",
+    "category": "uncensored-chat",
+    "restrictions": "reduced",
+    "uncensored": true,
+    "uncensoredLabel": "Abliterated",
+    "tags": [
+      "chat",
+      "uncensored",
+      "mid"
+    ],
+    "languages": [
+      "ru",
+      "en",
+      "multi"
+    ],
+    "params": "8B",
+    "family": "huihui-qwen3",
+    "purpose": "Старшая abliterated-модель Huihui в каталоге: максимум свободы и ума, но тяжёлая для слабого CPU.",
+    "quality": "Заметно умнее 4B, однако на CPU без AVX скорость — единицы токенов в секунду. Каталог честно пометит «не рекомендуется».",
+    "speed": "slow",
+    "license": "apache-2.0",
+    "licenseNote": null,
+    "source": "https://huggingface.co/mradermacher/Huihui-Qwen3-8B-abliterated-v2-GGUF",
+    "repo": "mradermacher/Huihui-Qwen3-8B-abliterated-v2-GGUF",
+    "quantAuthor": "mradermacher (кванты; модель — huihui-ai)",
+    "contextTokens": 32768,
+    "tools": false,
+    "vision": false,
+    "notes": "Для этой модели желательна дискретная видеокарта; на N5095A запуск возможен, но медленный.",
+    "developer": "Qwen Team (Alibaba) · дообучение Huihui-ai",
+    "purposes": [
+      "chat",
+      "writing",
+      "creative",
+      "analysis",
+      "multilingual",
+      "translation",
+      "long-context"
+    ],
+    "verifiedAt": "2026-11-10",
+    "files": [
+      {
+        "quant": "Q4_K_M",
+        "name": "Huihui-Qwen3-8B-abliterated-v2.Q4_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3-8B-abliterated-v2-GGUF/resolve/main/Huihui-Qwen3-8B-abliterated-v2.Q4_K_M.gguf",
+        "sizeBytes": 5027780352,
+        "sha256": "0bdba3b32d450374b3c404d9ad531703db139b33798149efc84e2bce45eedbb5"
+      },
+      {
+        "quant": "Q5_K_M",
+        "name": "Huihui-Qwen3-8B-abliterated-v2.Q5_K_M.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3-8B-abliterated-v2-GGUF/resolve/main/Huihui-Qwen3-8B-abliterated-v2.Q5_K_M.gguf",
+        "sizeBytes": 5851109120,
+        "sha256": "2334bb2c7c2dd76cbd48da98a095c269dbe5a449124214a6456d5768f6114159"
+      },
+      {
+        "quant": "Q6_K",
+        "name": "Huihui-Qwen3-8B-abliterated-v2.Q6_K.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3-8B-abliterated-v2-GGUF/resolve/main/Huihui-Qwen3-8B-abliterated-v2.Q6_K.gguf",
+        "sizeBytes": 6725895936,
+        "sha256": "c0d17e9a0523ae14fdfab98ec8289201349113f4bfb6062597958eebb891e8bf"
+      },
+      {
+        "quant": "Q8_0",
+        "name": "Huihui-Qwen3-8B-abliterated-v2.Q8_0.gguf",
+        "url": "https://huggingface.co/mradermacher/Huihui-Qwen3-8B-abliterated-v2-GGUF/resolve/main/Huihui-Qwen3-8B-abliterated-v2.Q8_0.gguf",
+        "sizeBytes": 8709515008,
+        "sha256": "b8769fc34d064ccb52667504931bb4ae997eab5d8a22842f18dc55eea378b9b8"
+      }
+    ]
+  }
 ];
 
 export function catalogEntry(id) {
