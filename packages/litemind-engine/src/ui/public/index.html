@@ -481,12 +481,25 @@
             </dl>
           </div>
           <div class="card">
-            <h2>Генерация (последний запрос)</h2>
+            <h2>Генерация (средние)</h2>
             <dl class="kv">
               <dt>tokens/sec</dt><dd id="mon-tps">—</dd>
               <dt>Время до первого токена</dt><dd id="mon-ttft">—</dd>
+              <dt>Первый токен без загрузки модели</dt><dd id="mon-ttft-pure">—</dd>
+              <dt>Загрузка модели (холодный старт)</dt><dd id="mon-load">—</dd>
               <dt>Активных / в очереди</dt><dd id="mon-queue">—</dd>
             </dl>
+            <p class="muted" style="margin:6px 0 0">«Время до первого токена» включает холодный запуск; ниже — то же самое без загрузки весов. Так загрузка модели не выдаётся за медленную генерацию.</p>
+          </div>
+          <div class="card">
+            <h2>Стадии последнего запроса</h2>
+            <dl class="kv" id="mon-stages"><dt>Данных пока нет</dt><dd>—</dd></dl>
+            <p class="muted" style="margin:6px 0 0">Замер по стадиям: очередь → память → запуск runtime → промпт → первый токен → генерация. «недоступно» означает, что стадию нельзя измерить с этой стороны.</p>
+          </div>
+          <div class="card">
+            <h2>Runtime — фактически применённые параметры</h2>
+            <dl class="kv" id="mon-runtime"><dt>Движок не отвечает</dt><dd>—</dd></dl>
+            <p class="muted" style="margin:6px 0 0" id="mon-runtime-note">Параметры берутся из профиля и применяются при запуске модели; смена профиля перестраивает runtime при следующем запросе.</p>
           </div>
           <div class="card">
             <h2>Adaptive Engine</h2>
@@ -507,6 +520,7 @@
               <button data-profile="balanced">Сбалансированный</button>
               <button data-profile="high">Производительный</button>
             </div>
+            <dl class="kv" id="mon-profile-params"><dt>Загрузка…</dt><dd>—</dd></dl>
             <p class="muted" id="mon-profile-note">—</p>
           </div>
         </div>

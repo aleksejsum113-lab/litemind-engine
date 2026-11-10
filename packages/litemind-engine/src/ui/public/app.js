@@ -208,11 +208,97 @@ function setConn(ok) {
   if (!ok) event('связь с движком потеряна');
 }
 
+const STAGE_LABELS = {
+  request_received: 'Запрос получен от UI',
+  queued: 'Ожидание в очереди',
+  memory_gate: 'Проверка памяти',
+  server_start: 'Запуск/переиспользование runtime',
+  prompt_submit: 'Отправка промпта',
+  first_token: 'Первый токен (без загрузки)',
+  generation: 'Генерация токенов',
+  total: 'Весь запрос'
+};
+const STAGE_ORDER = ['request_received', 'queued', 'memory_gate', 'server_start', 'prompt_submit', 'first_token', 'generation', 'total'];
+
+const fmtMs = (v) => (v != null && Number.isFinite(v) ? `${Math.round(v)} мс` : 'недоступно');
+
+function kvRow(dt, dd) {
+  return `<dt>${dt}</dt><dd>${dd}</dd>`;
+}
+
+/** Runtime-карточка: фактические параметры llama-server (Этап 2 §8/§12). */
+function fillRuntimePanel(rt, limits) {
+  const el = $('mon-runtime');
+  if (!el) return;
+  if (!rt || !rt.params) {
+    el.innerHTML = kvRow('Модель', 'не запущена') + kvRow('Бинарник', rt?.binary ? 'найден' : 'не найден');
+    const note = $('mon-runtime-note');
+    if (note) note.textContent = 'Модель не запущена: параметры будут применены при первом запросе.';
+    return;
+  }
+  const p = rt.params;
+  const rows = [
+    kvRow('Модель', p.file || rt.modelId || '—'),
+    kvRow('Потоков генерации', `${p.threads} (prefill: ${p.threadsBatch})`),
+    kvRow('Batch / ubatch', `${p.batchSize} / ${p.ubatchSize}`),
+    kvRow('Контекст (KV)', `${p.contextTokens} ток.`),
+    kvRow('mmap', p.useMmap ? 'включён' : 'выключен (веса в RAM)'),
+    kvRow('cache-reuse', p.cacheReuse > 0 ? `${p.cacheReuse} ток.` : 'выключен'),
+    kvRow('Приоритет процесса', p.priority === 'below_normal' ? 'ниже обычного' : 'обычный'),
+    kvRow('Загрузка модели', rt.loadMs != null ? fmtMs(rt.loadMs) : 'недоступно'),
+    kvRow('Перезапусков параметров', String(rt.restarts ?? 0))
+  ];
+  if (rt.gpu?.probed) {
+    rows.push(kvRow('GPU-устройства runtime', rt.gpu.devices.length ? rt.gpu.devices.join('; ') : 'нет (CPU-only сборка)'));
+  }
+  el.innerHTML = rows.join('');
+  const note = $('mon-runtime-note');
+  if (note) {
+    const reason = rt.lastRestartReason?.changed;
+    note.textContent = reason
+      ? `Последний перезапуск: ${Object.entries(reason).map(([k, v]) => `${k}: ${v.was}→${v.became}`).join(', ')}.`
+      : 'Параметры применены при запуске модели; смена профиля перестроит runtime при следующем запросе.';
+  }
+}
+
+/** Карточка стадий: сводка по последним запросам (Этап 2 §2/§12). */
+function fillStagesPanel(stages) {
+  const el = $('mon-stages');
+  if (!el) return;
+  if (!stages || !Object.keys(stages).length) {
+    el.innerHTML = '<dt>Данных пока нет</dt><dd>отправьте сообщение в чате</dd>';
+    return;
+  }
+  el.innerHTML = STAGE_ORDER
+    .filter((k) => stages[k])
+    .map((k) => kvRow(STAGE_LABELS[k] ?? k, fmtMs(stages[k].avgMs) + (stages[k].count > 1 ? ` (n=${stages[k].count})` : '')))
+    .join('');
+}
+
+/** Карточка профиля: параметры активного профиля + пометка активной кнопки. */
+function fillProfilePanel(s) {
+  const l = s.limits ?? {};
+  const rows = [
+    kvRow('Потоков CPU (генерация)', l.cpuThreads > 0 ? String(l.cpuThreads) : 'авто (по ядрам)'),
+    kvRow('Контекст / лимит ответа', `${l.contextTokens} / ${l.maxOutputTokens} ток.`),
+    kvRow('Batch', l.numBatch > 0 ? String(l.numBatch) : 'авто'),
+    kvRow('Резерв RAM для Windows', `${l.memoryReserveMb} МБ (динамический)`),
+    kvRow('Таймаут запроса', `${Math.round((l.requestTimeoutMs ?? 0) / 1000)} с`),
+    kvRow('Автовыгрузка модели', l.idleUnloadSeconds > 0 ? `после ${Math.round(l.idleUnloadSeconds / 60)} мин простоя` : 'выключена'),
+    kvRow('cache-reuse', l.cacheReuse > 0 ? `${l.cacheReuse} ток.` : 'выключен')
+  ];
+  const el = $('mon-profile-params');
+  if (el) el.innerHTML = rows.join('');
+  document.querySelectorAll('[data-profile]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.profile === s.engine.profile);
+  });
+}
+
 function monFill(s) {
   const m = s.metrics;
   if (m) {
     const ramPct = m.totalRamMb ? (m.usedRamMb / m.totalRamMb) * 100 : 0;
-    bar('mon-cpu', m.cpuPercent, `${Math.round(m.cpuPercent)} %`);
+    bar('mon-cpu', m.cpuPercent ?? 0, m.cpuPercent != null ? `${Math.round(m.cpuPercent)} %` : 'замер…');
     bar('mon-ram', ramPct, `${Math.round(m.usedRamMb)} / ${Math.round(m.totalRamMb)} МБ`);
     $('mon-avail').textContent = fmtSize((m.availableRamMb ?? 0) * 1024 * 1024);
     $('mon-gpu').textContent = (m.gpuNames && m.gpuNames.length) ? m.gpuNames.join(', ') : 'не определена';
@@ -220,20 +306,28 @@ function monFill(s) {
   const perf = s.perf;
   $('mon-tps').textContent = perf?.tokensPerSecond?.avg != null ? Number(perf.tokensPerSecond.avg).toFixed(1) : '—';
   $('mon-ttft').textContent = perf?.ttftMs?.avg != null ? `${Math.round(perf.ttftMs.avg)} мс` : '—';
+  // Этап 2: TTFT без загрузки модели — честная скорость готового runtime.
+  $('mon-ttft-pure').textContent = perf?.ttftAfterServerMs?.avg != null ? `${Math.round(perf.ttftAfterServerMs.avg)} мс` : '—';
+  $('mon-load').textContent = perf?.modelLoadMs?.avg != null ? `${Math.round(perf.modelLoadMs.avg)} мс` : '—';
   $('mon-queue').textContent = `${s.queue.active} / ${s.queue.waiting}`;
   $('mon-compact').textContent = s.adaptive?.compacted ?? 0;
   $('mon-saved').textContent = s.adaptive?.tokensSaved ?? 0;
   $('mon-opts').textContent = Object.keys(s.optimizations ?? {}).length;
   $('mon-profile-note').textContent = `Текущий профиль: ${s.engine.profileLabel}`;
+  fillRuntimePanel(s.runtime, s.limits);
+  fillStagesPanel(s.stages);
+  fillProfilePanel(s);
 }
 
 function monOffline() {
   bar('mon-cpu', 0, '—');
   bar('mon-ram', 0, '—');
-  for (const id of ['mon-avail', 'mon-gpu', 'mon-tps', 'mon-ttft', 'mon-queue', 'mon-compact', 'mon-saved', 'mon-opts']) {
+  for (const id of ['mon-avail', 'mon-gpu', 'mon-tps', 'mon-ttft', 'mon-ttft-pure', 'mon-load', 'mon-queue', 'mon-compact', 'mon-saved', 'mon-opts']) {
     const el = $(id); if (el) el.textContent = '—';
   }
   $('mon-profile-note').textContent = 'Движок не отвечает.';
+  fillRuntimePanel(null, null);
+  fillStagesPanel(null);
 }
 
 $('saver').addEventListener('change', async (e) => {
@@ -860,6 +954,8 @@ async function runCompletion(chat) {
   const t0 = performance.now();
   let ttft = null;
   let lastRender = 0;
+  let lastTimings = null;
+  let serverTimingLine = null;
   currentAbort = new AbortController();
 
   const renderMd = (final = false) => {
@@ -909,6 +1005,15 @@ async function runCompletion(chat) {
           let obj;
           try { obj = JSON.parse(payload); } catch { continue; }
           if (obj.error) throw new Error(obj.error.message);
+          // Этап 2 §7/§12: финальный чанк несёт честные замеры движка.
+          if (obj.litemind?.timings) {
+            lastTimings = obj.litemind.timings;
+            const t = lastTimings;
+            const load = t.modelLoadMs != null ? ` · загрузка модели: ${(t.modelLoadMs / 1000).toFixed(1)} с` : '';
+            const gen = t.tokensPerSecond ? ` · генерация: ${t.tokensPerSecond} т/с` : '';
+            const prompt = t.usage?.promptTokens != null ? ` · промпт: ${t.usage.promptTokens} ток.` : '';
+            serverTimingLine = `первый токен: ${ttft ?? '—'} мс (UI)${load}${gen}${prompt}`;
+          }
           const delta = obj.choices?.[0]?.delta?.content;
           if (delta) {
             if (ttft === null) {
@@ -923,7 +1028,9 @@ async function runCompletion(chat) {
     }
     renderMd(true);
     const total = Math.round(performance.now() - t0);
-    $('timings').textContent = `первый токен: ${ttft ?? '—'} мс · всего: ${total} мс`;
+    // Этап 2: если движок прислал замеры — показываем их (загрузка/генерация/промпт),
+    // иначе честное UI-время без выдуманных цифр.
+    $('timings').textContent = serverTimingLine || `первый токен: ${ttft ?? '—'} мс · всего: ${total} мс`;
     event(`чат: ответ получен (${total} мс)`);
   } catch (err) {
     if (err.name === 'AbortError') {

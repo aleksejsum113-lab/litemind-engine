@@ -229,6 +229,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.danger { color: var(--bad); border-color: var(--bad); }
 button.danger:hover { background: rgba(224, 92, 92, 0.12); }
 button:disabled { opacity: 0.5; cursor: default; }
+/* Этап 2 §8: активный профиль производительности подсвечивается. */
+.btns button.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 
 .muted { color: var(--text-dim); font-size: 13px; }
 .small { font-size: 12px; }
