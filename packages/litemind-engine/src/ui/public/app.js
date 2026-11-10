@@ -1287,17 +1287,107 @@ function catalogCard(m, c) {
       </select>
       ${m.installed ? '' : `<button class="btn-download">${m.downloaded ? 'Перекачать' : 'Скачать'}</button>`}
     </div>`;
-  div.querySelector('.btn-download')?.addEventListener('click', async () => {
-    const fileName = div.querySelector('.quant-select').value;
-    const targetDir = $('f-dir').value.trim();
-    try {
-      await api('/api/downloads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: m.id, fileName, targetDir: targetDir || undefined }) });
-      event(`загрузка начата: ${m.displayName} · ${fileName}`);
-      openTab('downloads');
-    } catch (err) { showError('ошибка загрузки: ' + err.message); }
-  });
+  div.querySelector('.btn-download')?.addEventListener('click', () => openDownloadDialog(m, div.querySelector('.quant-select').value));
   return div;
 }
+
+/* ============================ диалог загрузки модели ============================ */
+/* ТЗ: перед загрузкой — название, размер, источник, полный путь сохранения,
+   свободное место и предупреждение при нехватке; выбор папки стандартным
+   диалогом Windows (в Desktop) или вручную; после скачивания — автопроверка. */
+let dlPending = null; // { model, fileName }
+const AUTO_VERIFIED = new Set(); // «modelId/имя файла» — автопроверка уже сделана
+
+const pathSep = () => (navigator.platform?.toLowerCase().includes('win') ? '\\' : '/');
+
+function openDownloadDialog(m, fileName) {
+  dlPending = { model: m, fileName };
+  const file = m.files.find((f) => f.name === fileName) ?? m.files[0];
+  const dir = $('f-dir').value.trim() || (state.catalog?.modelsRootDir ?? '');
+  $('dl-title').textContent = `Загрузка: ${m.displayName}`;
+  const st = m.compatibility?.status;
+  const rows = [
+    ['Файл', esc(fileName)],
+    ['Размер', fmtSize(file.sizeBytes)],
+    ['Источник', `<a href="${esc(m.source)}" target="_blank" rel="noopener noreferrer">${esc(m.source)}</a>`],
+    ['Совместимость', st === 'green' ? 'зелёная — подходит' : st === 'yellow' ? 'жёлтая — с ограничениями' : 'красная — не рекомендуется'],
+    ['Сохранить в', `<span id="dl-fullpath">${esc(joinPath(dir, fileName))}</span>`]
+  ];
+  $('dl-info').innerHTML = rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
+  $('dl-dir').value = dir;
+  updateDlSpace();
+  $('dl-dialog').hidden = false;
+  $('dl-go').focus();
+}
+
+function joinPath(dir, name) {
+  if (!dir) return name;
+  return dir.replace(/[\\/]+$/, '') + pathSep() + name;
+}
+
+function closeDownloadDialog() { dlPending = null; $('dl-dialog').hidden = true; }
+
+/* Свободное место под выбранной папкой: /api/hardware отдаёт диски (root, freeBytes).
+   Место — по диску, на котором лежит папка; предупреждение — честное, по фактическому размеру файла. */
+async function updateDlSpace() {
+  const el = $('dl-space');
+  if (!dlPending) return;
+  const file = dlPending.model.files.find((f) => f.name === dlPending.fileName) ?? dlPending.model.files[0];
+  const dir = $('dl-dir').value.trim();
+  const full = joinPath(dir, dlPending.fileName);
+  const fp = $('dl-fullpath');
+  if (fp) fp.textContent = full;
+  let disk = null;
+  try {
+    const hw = await api('/api/hardware');
+    const d = (dir || '').replace(/[\\/]+$/, '').toLowerCase();
+    disk = (hw.disks || []).filter((x) => x.exists && x.freeBytes != null)
+      .find((x) => d.startsWith(String(x.root).toLowerCase())) ?? null;
+  } catch { /* движок offline */ }
+  if (!disk) {
+    el.className = 'dl-space';
+    el.textContent = `Полный путь: ${full}. Свободное место на диске определить не удалось — проверьте вручную.`;
+    return;
+  }
+  const free = disk.freeBytes;
+  const enough = file.sizeBytes && free > file.sizeBytes;
+  el.className = 'dl-space ' + (enough ? '' : 'bad');
+  el.textContent = enough
+    ? `Диск ${disk.root}: свободно ${fmtSize(free)} — достаточно для ${fmtSize(file.sizeBytes)}.`
+    : `Диск ${disk.root}: свободно только ${fmtSize(free)} — НЕ ХВАТИТ на ${fmtSize(file.sizeBytes)}. Выберите другой диск.`;
+  $('dl-go').disabled = !enough;
+}
+
+$('dl-dir').addEventListener('input', () => updateDlSpace());
+$('dl-cancel').addEventListener('click', closeDownloadDialog);
+$('dl-dialog').addEventListener('click', (e) => { if (e.target === $('dl-dialog')) closeDownloadDialog(); });
+$('dl-pick').addEventListener('click', async () => {
+  const b = bridge();
+  if (!b?.pickFolder) { showError('Стандартный диалог выбора папки доступен в LiteMind Desktop. В браузере введите путь вручную.'); return; }
+  const r = await b.pickFolder('Папка для моделей', $('dl-dir').value.trim() || undefined).catch(() => null);
+  if (r?.ok && r.path) {
+    $('dl-dir').value = r.path;
+    $('f-dir').value = r.path; // запоминаем и для следующих загрузок
+    updateDlSpace();
+  }
+});
+$('dl-go').addEventListener('click', async () => {
+  if (!dlPending) return;
+  const { model: m, fileName } = dlPending;
+  const targetDir = $('dl-dir').value.trim();
+  if (!targetDir) { showError('Укажите папку сохранения.'); return; }
+  $('dl-go').disabled = true;
+  try {
+    await api('/api/downloads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: m.id, fileName, targetDir }) });
+    event(`загрузка начата: ${m.displayName} · ${fileName} → ${targetDir}`);
+    closeDownloadDialog();
+    openTab('downloads');
+  } catch (err) {
+    showError('ошибка загрузки: ' + err.message); // 507 (нет места) остаётся в диалоге
+    $('dl-go').disabled = false;
+    updateDlSpace();
+  }
+});
 
 
 /* ============================ Загрузки ============================ */
@@ -1335,6 +1425,7 @@ async function refreshDownloads() {
         <div class="model-item-sub">${esc(d.state)} · ${fmtSize(d.receivedBytes)} / ${fmtSize(d.sizeBytes)}${speed}${eta}
           ${d.error ? '<br><span style="color:var(--bad)">' + esc(d.error) + '</span>' : ''}</div>
         <div class="progress"><i style="width:${pct}%"></i></div>
+        ${d.state === 'done' ? `<div class="dl-verify" data-key="${esc(d.modelId ?? '')}/${esc(d.name)}">проверяю целостность файла…</div>` : ''}
       </div>
       <div class="model-item-actions">
         ${d.state === 'downloading' ? '<button class="act-pause">Пауза</button>' : ''}
@@ -1362,6 +1453,22 @@ async function refreshDownloads() {
       api('/api/install', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: d.modelId, fileName: d.name, targetDir: d.targetDir }) })
         .then((r) => event(`${r.skipped ? 'модель готова к чату' : 'автоустановка завершена'}: ${r.model}`))
         .catch((err) => event(`(${d.name}): ${err.message}`));
+    }
+    // Автопроверка целостности после скачивания (ТЗ Этап 1 §7): сверка с
+    // эталоном HF по размеру и SHA-256 — результат прямо в списке загрузок.
+    const vKey = `${d.modelId ?? ''}/${d.name}`;
+    if (d.state === 'done' && d.modelId && !AUTO_VERIFIED.has(vKey)) {
+      AUTO_VERIFIED.add(vKey);
+      api('/api/models/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: d.modelId, fileName: d.name }) })
+        .then((r) => {
+          const el = ul.querySelector(`.dl-verify[data-key="${CSS.escape(vKey)}"]`);
+          const text = r.verified
+            ? (r.shaOk ? `✓ целостность подтверждена: размер и SHA-256 совпадают с Hugging Face` : `✓ размер совпадает; SHA-256 эталона недоступен — сверьте вручную (${String(r.sha256).slice(0, 12)}…)`)
+            : `⚠ ${r.message ?? 'файл повреждён'}`;
+          if (el) { el.textContent = text; el.className = 'dl-verify ' + (r.verified ? 'ok' : 'bad'); }
+          event(`проверка ${d.name}: ${r.verified ? 'цел' : 'повреждён'}`);
+        })
+        .catch(() => {});
     }
   }
   refreshDlBadge();

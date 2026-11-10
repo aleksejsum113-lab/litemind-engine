@@ -415,6 +415,26 @@
       </section>
     </main>
   </div>
+
+  <!-- ======================= ДИАЛОГ ЗАГРУЗКИ МОДЕЛИ ======================= -->
+  <div id="dl-dialog" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="dl-title">
+      <h3 id="dl-title">Загрузка модели</h3>
+      <div id="dl-info" class="dl-info"></div>
+      <label class="field">Папка сохранения
+        <span class="dir-row">
+          <input id="dl-dir" type="text" class="dir-input" spellcheck="false" />
+          <button id="dl-pick" type="button">Выбрать…</button>
+        </span>
+      </label>
+      <div id="dl-space" class="dl-space"></div>
+      <div class="btns">
+        <button id="dl-go" class="primary">Скачать</button>
+        <button id="dl-cancel" type="button">Отмена</button>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>
