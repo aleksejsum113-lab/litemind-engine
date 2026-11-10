@@ -9,6 +9,26 @@ const bridge = () => (typeof window !== 'undefined' && window.electron?.litemind
 
 const state = { streaming: false, engineOnline: null, catalog: null, wsDir: null, wsFile: null, projDir: null, stickBottom: true };
 
+/* ============================ title bar окна ============================ */
+// В Desktop (frame:false + titleBarOverlay) резервируем справа место под
+// системные кнопки окна и обновляем имя раздела; активная модель — в updateWelcomeHint.
+if (bridge()) document.body.classList.add('in-electron');
+const TAB_TITLES = {
+  chat: 'Чат', models: 'Мои модели', catalog: 'Каталог моделей', downloads: 'Загрузки',
+  projects: 'Проекты', workspace: 'Workspace', terminal: 'AI Terminal', home: 'Состояние',
+  hardware: 'Железо', monitor: 'Мониторинг', control: 'Управление', settings: 'Настройки'
+};
+function setTitlebarPage(name) {
+  const el = $('tb-page');
+  if (el) el.textContent = TAB_TITLES[name] || 'LiteMind';
+}
+function setTitlebarModel(name) {
+  const el = $('tb-model');
+  if (!el) return;
+  el.textContent = name || '';
+  el.hidden = !name;
+}
+
 /* ============================ утилиты ============================ */
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmtSize = (b) => (b == null ? '—' : b >= 1024 ** 3 ? (b / 1024 ** 3).toFixed(2) + ' ГБ' : b >= 1024 ** 2 ? (b / 1024 ** 2).toFixed(1) + ' МБ' : Math.round(b / 1024) + ' КБ');
@@ -88,6 +108,7 @@ function switchTab(name) {
   const hash = '#' + name;
   if (location.hash !== hash) history.replaceState(null, '', hash);
   document.getElementById('app').classList.remove('sidebar-open');
+  setTitlebarPage(name);
   $('main').scrollTop = 0;
 }
 document.querySelectorAll('.nav-item').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
@@ -166,13 +187,15 @@ async function refreshStatus() {
 
 function updateWelcomeHint(models, healthy) {
   const el = $('welcome-model-hint');
+  const active = $('model')?.value || (models && models.length ? models[0].id : '');
+  setTitlebarModel(active);
   if (!el) return;
   if (!models || !models.length) {
     el.innerHTML = 'Модель не установлена — <a href="#catalog" onclick="openTab(\'catalog\');return false">откройте каталог</a> и скачайте GGUF.';
   } else if (!healthy) {
     el.textContent = 'Модели найдены, но runtime не готов. Проверьте вкладку «Мои модели».';
   } else {
-    el.textContent = `Активная модель: ${$('model')?.value || models[0].id}`;
+    el.textContent = `Активная модель: ${active}`;
   }
 }
 
@@ -354,7 +377,7 @@ function fillModels(models, _current) {
     sel.appendChild(o);
   }
 }
-$('model')?.addEventListener('change', () => localStorage.setItem('litemind-selected-model', $('model').value));
+$('model')?.addEventListener('change', () => { localStorage.setItem('litemind-selected-model', $('model').value); setTitlebarModel($('model').value); });
 
 /* ============================ AI Chat — сессии ============================ */
 const CHATS_KEY = 'litemind-chats-v2';

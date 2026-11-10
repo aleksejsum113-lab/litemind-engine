@@ -53,16 +53,28 @@
 
     <!-- ======================= ОСНОВНАЯ ОБЛАСТЬ ======================= -->
     <main id="main">
+      <!-- TITLE BAR окна: перетаскивание, статус движка и активная модель
+           по центру (видны на всех вкладках). Справа в Desktop — резерв под
+           системные кнопки окна (frame:false + titleBarOverlay). -->
+      <header id="titlebar">
+        <div class="tb-brand">
+          <span class="tb-logo">LM</span>
+          <span class="tb-name">LiteMind</span>
+          <span class="tb-page" id="tb-page">Чат</span>
+        </div>
+        <div class="tb-center">
+          <span class="dot" id="engine-dot"></span>
+          <span id="engine-state-text">проверяю…</span>
+          <span class="tb-model" id="tb-model" hidden></span>
+        </div>
+      </header>
+
       <!-- AI CHAT — главный экран -->
       <section id="tab-chat" data-page>
         <div class="chat-shell">
           <header class="chat-header">
             <button id="chat-menu-btn" class="icon-btn mobile-only" title="Панель">☰</button>
             <div class="chat-title" id="chat-title">Новый чат</div>
-            <div class="chat-status">
-              <span class="dot" id="engine-dot"></span>
-              <span id="engine-state-text">проверяю…</span>
-            </div>
           </header>
 
           <div id="chat-log" class="chat-log">
