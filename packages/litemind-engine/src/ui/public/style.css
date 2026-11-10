@@ -499,3 +499,51 @@ body.in-electron #titlebar { padding-right: 148px; }
   .model-list > li, .catalog-item { flex-direction: column; }
   .model-item-actions { flex-direction: row; flex-wrap: wrap; }
 }
+
+/* ==================== Этап 1Б: каталог v3 и менеджер ==================== */
+/* Выбор модели по задаче (quick-picks) */
+.task-picks { display: flex; flex-wrap: wrap; gap: 8px; }
+.task-picks button {
+  padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); cursor: pointer; font-size: 13px;
+}
+.task-picks button:hover { border-color: var(--accent); color: var(--accent); }
+.task-picks .muted-btn { opacity: 0.6; }
+
+/* Уровни совместимости (4 уровня) */
+.tag.lv-ok { background: rgba(46, 160, 67, 0.16); color: #3fb950; }
+.tag.lv-limited { background: rgba(210, 153, 34, 0.16); color: #d29922; }
+.tag.lv-warn { background: rgba(229, 116, 20, 0.16); color: #e57420; }
+.tag.lv-bad { background: rgba(218, 54, 51, 0.18); color: #f85149; }
+[data-theme="light"] .tag.lv-ok { color: #1a7f37; }
+[data-theme="light"] .tag.lv-limited { color: #9a6700; }
+[data-theme="light"] .tag.lv-warn { color: #bc4c00; }
+[data-theme="light"] .tag.lv-bad { color: #cf222e; }
+
+/* Фильтры и поиск каталога */
+.cat-search { flex: 1; min-width: 220px; }
+.filters label { white-space: nowrap; font-size: 12px; color: var(--text-dim); }
+.filters select { font-size: 12px; }
+
+/* Глоссарий терминов */
+details.glossary { margin: 10px 0 14px; border: 1px dashed var(--border); border-radius: 10px; padding: 8px 12px; }
+details.glossary summary { cursor: pointer; font-size: 13px; color: var(--text-dim); user-select: none; }
+details.glossary summary:hover { color: var(--accent); }
+details.glossary .glossary-body { margin-top: 8px; font-size: 13px; line-height: 1.55; display: grid; gap: 6px; }
+
+/* Таблица квантов в деталях модели */
+.quant-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 6px 0 10px; }
+.quant-table th, .quant-table td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; }
+.quant-table th { color: var(--text-dim); font-weight: 600; }
+
+/* Сетка «ключ-значение» диалогов */
+.dl-info { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 5px 14px; font-size: 13px; margin-bottom: 10px; }
+.dl-info b { color: var(--text-dim); font-weight: 500; }
+.dl-info span { overflow-wrap: anywhere; }
+
+/* Статусы менеджера моделей */
+.tag.muted-tag { background: rgba(128, 128, 128, 0.14); color: var(--text-dim); }
+.res-ok { color: #3fb950; font-size: 12.5px; margin-top: 4px; }
+.res-bad { color: #f85149; font-size: 12.5px; margin-top: 4px; }
+[data-theme="light"] .res-ok { color: #1a7f37; }
+[data-theme="light"] .res-bad { color: #cf222e; }

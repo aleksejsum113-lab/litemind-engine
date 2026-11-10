@@ -1041,46 +1041,86 @@ $('ctl-stop-models').addEventListener('click', stopAllModels);
 $('ctl-stop-engine').addEventListener('click', stopEngine);
 $('ctl-quit').addEventListener('click', quitApp);
 
-/* ============================ Мои модели ============================ */
+/* ============================ Менеджер моделей (Этап 1Б §4) ============================ */
+/* Статусы отражают действительное состояние: «запущена» — только если runtime
+   реально держит модель в памяти; «загружается» — есть активная загрузка этого
+   файла; «проверяется» — идёт проверка SHA-256; «повреждена» — проверка не
+   пройдена; «несовместима» — не поместится в память. SHA-256 показывается
+   после проверки (или из реестра пользовательских моделей). */
+const VERIFY_CACHE = new Map(); // id -> { sha256, verified, at }
+const VERIFYING = new Set();    // id моделей, которые проверяются прямо сейчас
+const STOPPED_NOW = new Set();  // остановлены в этой сессии (для статуса «остановлена»)
+let myModelsCache = [];
+
+function myModelStatus(m, loadedIds, downloadNames) {
+  if (VERIFYING.has(m.id)) return { text: 'проверяется', cls: 'warn-tag' };
+  if (downloadNames.has((m.file ?? '').split(/[\\/]/).pop())) return { text: 'загружается', cls: 'warn-tag' };
+  if (loadedIds.has(m.id)) return { text: 'запущена', cls: 'ok-tag' };
+  if (STOPPED_NOW.has(m.id)) return { text: 'остановлена', cls: 'muted-tag' };
+  if (!m.ok) return { text: 'повреждена', cls: 'bad-tag' };
+  if (m.sizeBytes === 0) return { text: 'отсутствует файл', cls: 'bad-tag' };
+  if (!m.compatible) return { text: 'несовместима', cls: 'warn-tag' };
+  return { text: 'готова', cls: 'ok-tag' };
+}
+
 async function loadMyModels() {
   // Какие модели прямо сейчас в памяти (llama-server запущен) — для честного
-  // статуса «в памяти» и кнопки «Остановить» вместо «Запустить».
+  // статуса «запущена» и кнопки «Остановить» вместо «Запустить».
   const loadedIds = new Set();
   try {
     const st = await api('/api/engine/state');
-    for (const x of (st.models || [])) if (['loaded', 'running'].includes(x.state)) loadedIds.add(x.id);
+    for (const x of (st.models || [])) {
+      if (['loaded', 'running'].includes(x.state)) { loadedIds.add(x.id); STOPPED_NOW.delete(x.id); }
+      else if (x.state === 'stopped' || x.state === 'unloaded') STOPPED_NOW.add(x.id);
+    }
   } catch { /* движок может быть offline */ }
+  // Активные загрузки — статус «загружается» по имени файла.
+  const downloadNames = new Set();
+  try {
+    const d = await api('/api/downloads');
+    for (const j of d.downloads || []) if (['downloading', 'paused'].includes(j.state)) downloadNames.add(j.name);
+  } catch { /* — */ }
+
   try {
     const s = await api('/api/models/scan');
     $('scan-rootdir').textContent = `Папка моделей: ${s.rootDir} · runtime: ${s.runtimeBinary ?? 'llama-server не найден'}`;
     const ul = $('my-models');
     ul.innerHTML = '';
-    if (!(s.models || []).length) {
-      ul.innerHTML = '<li class="muted">В папке пока нет GGUF. Скачайте модель из каталога — она появится здесь автоматически.</li>';
+    const query = ($('mym-search')?.value || '').toLowerCase();
+    let models = s.models || [];
+    if (query) models = models.filter((m) => (m.id + ' ' + (m.file ?? '')).toLowerCase().includes(query));
+    myModelsCache = models;
+    if (!models.length) {
+      ul.innerHTML = '<li class="muted">' + (query
+        ? 'По запросу ничего не найдено.'
+        : 'В папке пока нет GGUF. Скачайте модель из каталога или добавьте свою модель — они появятся здесь.') + '</li>';
     } else {
       const canShell = !!bridge();
-      for (const m of s.models) {
+      for (const m of models) {
         const li = document.createElement('li');
-        const loaded = loadedIds.has(m.id);
-        const status = !m.ok
-          ? '<span class="tag bad-tag">повреждён</span>'
-          : loaded
-            ? '<span class="tag ok-tag">в памяти</span>'
-            : (m.compatible ? '<span class="tag ok-tag">готова</span>' : '<span class="tag warn-tag">может не хватить RAM</span>');
-        li.innerHTML = `<div class="model-item-main"><div class="model-item-title">${esc(m.id)} ${status}</div>
-          <div class="model-item-sub">${fmtSize(m.sizeBytes)} · ${esc(m.architecture ?? '?')} · ${esc(m.quant ?? 'квант не определён')} · контекст ${m.contextLength ?? '—'} · ≈${m.memoryEstimateMb} МБ RAM</div>
+        const status = myModelStatus(m, loadedIds, downloadNames);
+        const sha = VERIFY_CACHE.get(m.id)?.sha256 ?? m.sha256 ?? null;
+        const shaNote = sha
+          ? `<div class="model-item-sub muted" title="${esc(sha)}">SHA-256: ${esc(String(sha).slice(0, 24))}… · вычислен локально (проверка целостности, не подтверждение источника)</div>`
+          : '';
+        const registeredNote = m.registered ? '<span class="tag">своя модель</span>' : '';
+        li.innerHTML = `<div class="model-item-main"><div class="model-item-title">${esc(m.id)} <span class="tag ${status.cls}">${status.text}</span> ${registeredNote}</div>
+          <div class="model-item-sub">${fmtSize(m.sizeBytes)} · ${esc(m.architecture ?? '?')} · ${esc(m.quant ?? 'квант не определён')} · контекст ${m.contextLength ?? 'неизвестен'} · ≈${m.memoryEstimateMb} МБ RAM</div>
           <div class="model-item-sub muted" title="${esc(m.file ?? '')}">файл: ${esc(m.file ?? '—')}</div>
+          ${shaNote}
           ${m.error ? `<div class="model-item-sub" style="color:var(--bad)">${esc(m.error)}</div>` : ''}
           <div class="model-item-result" hidden></div></div>
           <div class="model-item-actions">
             <button data-use="${esc(m.id)}" ${m.ok ? '' : 'disabled'}>Открыть в чате</button>
-            ${loaded
+            ${loadedIds.has(m.id)
               ? `<button data-stop="${esc(m.id)}">Остановить</button>`
               : `<button data-run="${esc(m.id)}" ${m.ok && s.runtimeBinary ? '' : 'disabled'} title="${s.runtimeBinary ? 'Запустить llama-server с этой моделью' : 'runtime llama-server не найден'}">Запустить</button>`}
             <button data-verify="${esc(m.id)}">Проверить файл</button>
             ${canShell ? `<button data-folder="${esc(m.file ?? '')}">Открыть папку</button>` : ''}
             <button data-info="${esc(m.id)}">Сведения</button>
-            <button data-del="${esc(m.id)}" class="danger">Удалить файл</button>
+            ${m.registered
+              ? `<button data-unreg="${esc(m.id)}" title="Убрать из списка; файл на диске останется">Убрать из списка</button>`
+              : `<button data-del="${esc(m.id)}" class="danger">Удалить файл</button>`}
           </div>`;
         const resultEl = li.querySelector('.model-item-result');
         const showResult = (text, ok) => { resultEl.hidden = false; resultEl.textContent = text; resultEl.className = `model-item-result ${ok ? 'res-ok' : 'res-bad'}`; };
@@ -1102,6 +1142,7 @@ async function loadMyModels() {
             if (r.ok) {
               showResult(`Модель запущена (${r.contextTokens ?? '—'} токенов контекста). Открыта в чате — можно писать.`, true);
               event(`модель запущена из менеджера: ${m.id}`);
+              STOPPED_NOW.delete(m.id);
               loadMyModels();
               refreshStatus();
             } else {
@@ -1116,20 +1157,26 @@ async function loadMyModels() {
         li.querySelector('[data-stop]')?.addEventListener('click', async () => {
           try {
             await api('/api/unload', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
-            event(`модель выгружена из памяти: ${m.id}`);
+            STOPPED_NOW.add(m.id);
+            event(`модель остановлена: ${m.id}`);
             loadMyModels();
             refreshStatus();
           } catch (err) { showError('остановка: ' + err.message); }
         });
         li.querySelector('[data-verify]').addEventListener('click', async (e) => {
           e.target.disabled = true;
+          VERIFYING.add(m.id);
+          loadMyModels();
           showResult('Проверяю файл (считаю SHA-256)…', true);
           try {
             const r = await api('/api/models/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: m.file }) });
-            if (r.verified) showResult(`Файл цел: ${fmtSize(r.sizeBytes)} · SHA-256: ${String(r.sha256).slice(0, 16)}…`, true);
+            VERIFY_CACHE.set(m.id, { sha256: r.sha256, verified: r.verified, at: Date.now() });
+            if (r.verified) showResult(`Файл цел: ${fmtSize(r.sizeBytes)} · SHA-256 (локально вычисленный): ${String(r.sha256).slice(0, 16)}…`, true);
             else showResult(r.message || 'Файл повреждён — скачайте модель заново.', false);
           } catch (err) { showResult('Проверка: ' + err.message, false); }
+          VERIFYING.delete(m.id);
           e.target.disabled = false;
+          loadMyModels();
         });
         li.querySelector('[data-folder]')?.addEventListener('click', async () => {
           const b = bridge();
@@ -1138,25 +1185,37 @@ async function loadMyModels() {
           if (r && r.ok === false) showError('Не удалось открыть папку в проводнике.');
         });
         li.querySelector('[data-info]').addEventListener('click', () => {
+          const c = VERIFY_CACHE.get(m.id);
           alert([
             `Модель: ${m.id}`,
+            m.registered ? 'Тип: пользовательская модель (вне папки моделей)' : null,
             m.file ? `Файл: ${m.file}` : null,
-            `Размер: ${fmtSize(m.sizeBytes)}`,
-            `Архитектура: ${m.architecture ?? '—'}`,
-            `Квантование: ${m.quant ?? '—'}`,
-            `Контекст: ${m.contextLength ?? '—'}`,
+            `Размер файла: ${fmtSize(m.sizeBytes)}`,
+            `Архитектура: ${m.architecture ?? 'неизвестно'}`,
+            `Квантование: ${m.quant ?? 'неизвестно'}`,
+            `Контекст: ${m.contextLength ?? 'неизвестно'}`,
             `Оценка RAM: ≈${m.memoryEstimateMb} МБ`,
-            loadedIds.has(m.id) ? 'Статус: в памяти (llama-server запущен)' : (m.ok ? 'Статус: готова к запуску' : `Статус: повреждён${m.error ? ' — ' + m.error : ''}`)
+            sha ? `SHA-256: ${sha}` : 'SHA-256: не вычислялся — нажмите «Проверить файл»',
+            c && !c.verified ? '⚠ Последняя проверка не пройдена' : null,
+            `Статус: ${status.text}`
           ].filter(Boolean).join('\n'));
         });
         li.querySelector('[data-del]').addEventListener('click', async () => {
-          if (!confirm(`Удалить файл «${m.id}.gguf» с диска безвозвратно?`)) return;
+          if (!confirm(`Удалить файл «${m.id}.gguf» с диска безвозвратно? Файл нельзя будет восстановить — для повторного использования придётся скачивать модель заново.`)) return;
           try {
             await api(`/api/models/${encodeURIComponent(m.id)}`, { method: 'DELETE' });
             event(`модель удалена: ${m.id}`);
             loadMyModels();
             refreshStatus();
           } catch (err) { showError('удаление: ' + err.message); }
+        });
+        li.querySelector('[data-unreg]')?.addEventListener('click', async () => {
+          if (!confirm(`Убрать «${m.id}» из списка моделей? Сам файл на диске останется на месте.`)) return;
+          try {
+            await api(`/api/models/registered/${encodeURIComponent(m.id)}`, { method: 'DELETE' });
+            event(`модель убрана из списка (файл сохранён): ${m.id}`);
+            loadMyModels();
+          } catch (err) { showError('убрать из списка: ' + err.message); }
         });
         ul.appendChild(li);
       }
@@ -1175,6 +1234,33 @@ async function loadMyModels() {
     }
   } catch { /* — */ }
 }
+
+/* §6: «Добавить свою модель» — выбор GGUF через проводник Windows (Desktop)
+   или ввод пути вручную. Проверка формата и SHA-256 выполняются движком;
+   метаданные — только из заголовка GGUF, ничего не придумывается. */
+$('mym-search')?.addEventListener('input', () => loadMyModels());
+$('btn-add-own').addEventListener('click', async () => {
+  let file = null;
+  const b = bridge();
+  if (b?.pickGgufFile) {
+    const r = await b.pickGgufFile('Выберите GGUF-модель').catch(() => null);
+    if (r?.ok && r.path) file = r.path;
+    else if (r?.canceled) return;
+  }
+  if (!file) {
+    file = prompt('Полный путь к GGUF-файлу (например D:\\models\\my-model.gguf):');
+    if (!file) return;
+  }
+  event('регистрирую модель: ' + file);
+  try {
+    const r = await api('/api/models/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file }) });
+    event(r.message || `модель добавлена: ${r.model?.id}`);
+    loadMyModels();
+    refreshStatus();
+  } catch (err) {
+    showError('добавление модели: ' + err.message);
+  }
+});
 
 async function optimizeModel(id, reportEl) {
   reportEl.textContent = 'измеряю… (короткая генерация, занимает несколько секунд)';
@@ -1201,100 +1287,271 @@ $('btn-install-gguf').addEventListener('click', async () => {
 });
 
 /* ============================ Каталог ============================ */
+/* ============================ Каталог v3 (Этап 1Б §2/§3/§7) ============================ */
+/* Поиск, фильтры (назначение/размер/квант/язык/контекст/RAM/CPU/тип/разработчик),
+   сортировка (название/размер/специализация/дата проверки), выбор по задаче
+   (quick-picks), подробная карточка с честными пометками «неизвестно». */
+
+const catFilters = { search: '', task: '', purpose: '', dev: '', type: '', size: '', quant: '', lang: '', ctx: '', ram: '', cpuok: false, sort: 'name' };
+
+// Быстрый выбор по задаче (§3): какие purposes ищем и как объясняем.
+const TASKS = {
+  coding: {
+    purposes: ['coding'],
+    why: 'Это модели, обученные для кода: Qwen Coder, DeepSeek Coder, StarCoder и их ослабленные варианты. Они понимают запросы на естественном языке и пишут/объясняют код.'
+  },
+  chat: {
+    purposes: ['chat'],
+    why: 'Универсальные собеседники: диалоги, вопросы, объяснения. Для свободного стиля ответов смотрите модели с пометкой «ослабленные ограничения».'
+  },
+  writing: {
+    purposes: ['writing'],
+    why: 'Модели с сильным русским/английским языком для писем, текстов и черновиков. Универсальные чат-модели тоже подходят.'
+  },
+  analysis: {
+    purposes: ['analysis'],
+    why: 'Модели, которые уверенно работают с длинными текстами (вставьте документ или выдержку в чат). Учитывайте контекст: чем он больше, тем больше текст поместится.'
+  },
+  universal: {
+    purposes: ['chat', 'writing', 'analysis'],
+    all: true,
+    why: 'Универсальные модели: общение, тексты и анализ документов в одной. Компромисс по скорости — выбирайте размер по своей памяти (подсказка в карточке).'
+  }
+};
+
+const LEVEL_CLASS = { ok: 'lv-ok', limited: 'lv-limited', not_recommended: 'lv-warn', incompatible: 'lv-bad' };
+
+const purposeLabel = (c, key) => (c?.purposes && c.purposes[key]) || key;
+
+function minFileSize(m) { return Math.min(...m.files.map((f) => f.sizeBytes)); }
+
+function catalogMatches(m, c) {
+  const F = catFilters;
+  if (F.search) {
+    const q = F.search.toLowerCase();
+    const hay = `${m.displayName} ${m.developer ?? ''} ${m.purpose ?? ''} ${m.quality ?? ''} ${m.params ?? ''}`.toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  if (F.task) {
+    const t = TASKS[F.task];
+    if (!m.purposes?.length) return false;
+    if (t.all) { if (!t.purposes.every((p) => m.purposes.includes(p))) return false; }
+    else if (!m.purposes.includes(t.purposes[0])) return false;
+  }
+  if (F.purpose && !(m.purposes || []).includes(F.purpose)) return false;
+  if (F.dev && m.developer !== F.dev) return false;
+  if (F.type && m.restrictions !== F.type) return false;
+  const minSize = minFileSize(m);
+  if (F.size === '500' && !(minSize <= 500 * 1024 * 1024)) return false;
+  if (F.size === '1500' && !(minSize > 500 * 1024 * 1024 && minSize <= 1500 * 1024 * 1024)) return false;
+  if (F.size === '3000' && !(minSize > 1500 * 1024 * 1024 && minSize <= 3000 * 1024 * 1024)) return false;
+  if (F.size === '6000' && !(minSize > 3000 * 1024 * 1024 && minSize <= 6000 * 1024 * 1024)) return false;
+  if (F.size === 'big' && !(minSize > 6000 * 1024 * 1024)) return false;
+  if (F.quant && !m.files.some((f) => f.quant === F.quant)) return false;
+  if (F.lang && !(m.languages || []).includes(F.lang)) return false;
+  if (F.ctx) {
+    // Неизвестный контекст при фильтре скрываем — не обещаем того, чего не знаем.
+    if (m.contextTokens == null || m.contextTokens < Number(F.ctx)) return false;
+  }
+  if (F.ram) {
+    const smallest = m.compatibility?.files?.[0];
+    if (!smallest || smallest.estimatedMb > Number(F.ram)) return false;
+  }
+  if (F.cpuok && !['ok', 'limited'].includes(m.compatibility?.level)) return false;
+  return true;
+}
+
+function catalogSort(models, c) {
+  const arr = [...models];
+  switch (catFilters.sort) {
+    case 'size': arr.sort((a, b) => minFileSize(a) - minFileSize(b) || a.displayName.localeCompare(b.displayName, 'ru')); break;
+    case 'purpose': arr.sort((a, b) => String(c.categories[a.category] ?? a.category).localeCompare(String(c.categories[b.category] ?? b.category), 'ru') || a.displayName.localeCompare(b.displayName, 'ru')); break;
+    case 'verified': arr.sort((a, b) => String(b.verifiedAt ?? '').localeCompare(String(a.verifiedAt ?? '')) || a.displayName.localeCompare(b.displayName, 'ru')); break;
+    default: arr.sort((a, b) => a.displayName.localeCompare(b.displayName, 'ru'));
+  }
+  return arr;
+}
+
+function fillCatalogControls(c) {
+  // Назначения — из данных каталога (Этап 1Б §2.1).
+  const purposeSel = $('f-purpose');
+  if (purposeSel.dataset.filled !== '1') {
+    purposeSel.innerHTML = '<option value="">любое</option>' +
+      Object.entries(c.purposes || {}).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join('');
+    purposeSel.dataset.filled = '1';
+  }
+  const devSel = $('f-dev');
+  if (devSel.dataset.filled !== '1') {
+    const devs = [...new Set(c.models.map((m) => m.developer).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+    devSel.innerHTML = '<option value="">любой</option>' + devs.map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+    devSel.dataset.filled = '1';
+  }
+  const quantSel = $('f-quant');
+  if (quantSel.dataset.filled !== '1') {
+    const quants = [...new Set(c.models.flatMap((m) => m.files.map((f) => f.quant).filter(Boolean)))].sort();
+    quantSel.innerHTML = '<option value="">любое</option>' + quants.map((q) => `<option value="${esc(q)}">${esc(q)}</option>`).join('');
+    quantSel.dataset.filled = '1';
+  }
+  const langSel = $('f-lang');
+  if (langSel.dataset.filled !== '1') {
+    const names = { ru: 'русский', en: 'английский', multi: 'мультиязычные', zh: 'китайский' };
+    const langs = [...new Set(c.models.flatMap((m) => m.languages || []))].sort();
+    langSel.innerHTML = '<option value="">любой</option>' + langs.map((l) => `<option value="${esc(l)}">${esc(names[l] ?? l)}</option>`).join('');
+    langSel.dataset.filled = '1';
+  }
+}
+
 async function loadCatalog() {
   if (!state.catalog) {
     try { state.catalog = await api('/api/catalog'); } catch (err) { event('каталог: ' + err.message); return; }
   }
   const c = state.catalog;
   $('hw-hint').textContent =
-    `CPU: ${c.hardware.cpu.model || '—'} · AVX/AVX2: ${c.hardware.cpu.avx === null ? 'неизвестно' : `${c.hardware.cpu.avx}/${c.hardware.cpu.avx2}`} · ` +
+    `Ваш компьютер: CPU: ${c.hardware.cpu.model || '—'} · AVX/AVX2: ${c.hardware.cpu.avx === null ? 'неизвестно' : `${c.hardware.cpu.avx}/${c.hardware.cpu.avx2}`} · ` +
     `RAM: ${(c.hardware.totalRamMb / 1024).toFixed(1)} ГБ (свободно ${(c.hardware.freeRamMb / 1024).toFixed(1)}) · ` +
-    `рекомендация: профиль «${c.hardware.recommendation.profile === 'low' ? 'Умеренный' : 'Сбалансированный'}», контекст ≤ ${c.hardware.recommendation.maxContextTokens} ток.` +
-    (c.hardware.cpu.avx === false ? ' · CPU без AVX/AVX2 — выбраны совместимые сборки' : '');
+    `доступно для моделей ≈ ${(c.hardware.recommendation.usableModelRamMb / 1024).toFixed(1)} ГБ · контекст по умолчанию ≤ ${c.hardware.recommendation.maxContextTokens} ток.` +
+    (c.hardware.cpu.avx === false ? ' · CPU без AVX/AVX2 — сборка LiteMind совместима, пометки «не рекомендуется» учитывают скорость.' : '') +
+    (c.overrideSource ? ` · каталог дополнен (${c.overrideSource === 'remote' ? 'удалённый источник' : 'локальный файл-оверрайд'})` : '');
 
-  const driveSel = $('f-drive');
-  if (!driveSel.dataset.filled) {
-    driveSel.innerHTML = '';
-    for (const d of c.hardware.disks || []) {
-      const o = document.createElement('option');
-      o.value = d.root;
-      o.textContent = d.exists ? `${d.root} (свободно ${fmtSize(d.freeBytes)})` : `${d.root} — недоступен`;
-      o.disabled = !d.exists;
-      driveSel.appendChild(o);
-    }
-    driveSel.dataset.filled = '1';
-    $('f-dir').value = c.modelsRootDir || $('f-dir').value;
-    driveSel.addEventListener('change', () => {
-      const dir = $('f-dir').value;
-      const cur = dir.split(/[\\/]/).pop() || '';
-      $('f-dir').value = driveSel.value + (dir.includes('\\') ? `LiteMind\\models\\${cur}` : `LiteMind/models/${cur}`);
-    });
-  }
+  fillCatalogControls(c);
+  renderCatalog();
+}
 
-  // Динамические чекбоксы категорий — каталог v2 приходит с сервера.
-  const wrap = $('catalog-filters');
-  if (wrap && wrap.dataset.filled !== '1') {
-    wrap.innerHTML = '';
-    for (const [key, title] of Object.entries(c.categories || {})) {
-      const label = document.createElement('label');
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = true;
-      cb.dataset.cat = key;
-      cb.addEventListener('change', loadCatalog);
-      label.appendChild(cb);
-      label.appendChild(document.createTextNode(' ' + title));
-      wrap.appendChild(label);
-    }
-    wrap.dataset.filled = '1';
-  }
-  const show = {};
-  document.querySelectorAll('#catalog-filters input[data-cat]').forEach((cb) => { show[cb.dataset.cat] = cb.checked; });
+function renderCatalog() {
+  const c = state.catalog;
   const list = $('catalog-list');
   list.innerHTML = '';
-  for (const m of c.models) {
-    if (show[m.category] === false) continue;
-    list.appendChild(catalogCard(m, c));
+  const matched = catalogSort(c.models.filter((m) => catalogMatches(m, c)), c);
+  $('cat-count').textContent = `показано ${matched.length} из ${c.models.length} моделей`;
+  if (!matched.length) {
+    list.innerHTML = '<div class="muted" style="padding:12px">Ничего не найдено — ослабьте фильтры или измените запрос поиска.</div>';
+    return;
   }
+  for (const m of matched) list.appendChild(catalogCard(m, c));
+}
+
+function levelBadge(m) {
+  const lvl = m.compatibility?.level ?? 'not_recommended';
+  const label = m.compatibility?.levelLabel ?? '—';
+  return `<span class="tag ${LEVEL_CLASS[lvl]}">${esc(label)}</span>`;
+}
+
+function fmtCtx(m) {
+  if (m.contextTokens == null) return 'контекст: неизвестно';
+  return `контекст ${m.contextTokens >= 1024 ? Math.round(m.contextTokens / 1024) + 'К' : m.contextTokens} ток.`;
 }
 
 function catalogCard(m, c) {
   const div = document.createElement('div');
   div.className = 'catalog-item';
-  const st = m.compatibility.status;
   const rec = m.compatibility.recommended;
-  const installed = m.installed ? '<span class="tag ok-tag">скачана</span>' : '';
+  const smallest = m.compatibility?.files?.[0];
+  const installed = m.installed || m.downloaded ? '<span class="tag ok-tag">скачана</span>' : '';
   const unc = m.restrictions === 'reduced' ? `<span class="tag">${esc(m.uncensoredLabel || 'ослабленные ограничения')}</span>` : '';
-  const fit = m.compatibility?.fitLabel ? `<span class="tag muted-tag">${esc(m.compatibility.fitLabel)}</span>` : '';
-  const lic = m.license === 'not specified' ? '<span class="tag muted-tag">лицензия не указана</span>' : '';
+  const purposes = (m.purposes || []).map((p) => purposeLabel(c, p)).join(' · ');
+  const reason = (m.compatibility?.levelReasons || [])[0] ? esc(m.compatibility.levelReasons[0]) : '';
   div.innerHTML = `
     <div class="model-item-main">
-      <div class="model-item-title"><span class="dot ${st}"></span>${esc(m.displayName)} ${unc} ${fit} ${installed} ${lic}</div>
-      <div class="model-item-sub">${esc(m.params)} · ${esc(c.categories[m.category])} · лицензия: ${esc(m.license)} ·
-        контекст ${m.compatibility.contextTokens} ток.<br>
-        ${esc(m.purpose || '')}${m.notes ? '<br>⚠ ' + esc(m.notes) : ''}<br>
-        <a href="${esc(m.source)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">${esc(m.source)}</a>
+      <div class="model-item-title"><span class="dot ${m.compatibility.status}"></span>${esc(m.displayName)} ${unc} ${levelBadge(m)} ${installed}</div>
+      <div class="model-item-sub">${esc(m.developer ?? 'разработчик неизвестен')} · ${esc(m.params)} · ${esc(c.categories[m.category])} · ${fmtCtx(m)} · лицензия: ${esc(m.license || 'не указана')}<br>
+        Назначение: ${esc(purposes || '—')}<br>
+        ${esc(m.purpose || '')}
+        ${reason ? `<br>${m.compatibility.level === 'ok' ? '' : '⚠ '}${reason}` : ''}
       </div>
-      <div class="model-item-sub">Совместимость: ${st === 'green' ? 'зелёная — подходит' : st === 'yellow' ? 'жёлтая — с ограничениями' : 'красная — не рекомендуется'}.
-        ${m.compatibility.speedNote ? esc(m.compatibility.speedNote) : ''}
-        ${rec ? `<br>Рекомендуемый квант: <b>${esc(rec.name.replace(/\.gguf$/i, ''))}</b> (${fmtSize(rec.sizeBytes)})` : ''}
-      </div>
+      <div class="model-item-sub muted">Файл от ${fmtSize(minFileSize(m))}, займёт в памяти ≈ ${smallest ? fmtSize(smallest.estimatedMb * 1024 * 1024) : '—'} (при контексте ${m.compatibility?.contextTokens ?? '—'} ток.) · проверено каталогом: ${esc(m.verifiedAt ?? 'дата неизвестна')}</div>
     </div>
     <div class="model-item-actions">
-      <select class="quant-select" aria-label="Квантование">
+      <select class="quant-select" aria-label="Квантование" title="Квантование — степень сжатия модели (см. подсказку терминов выше)">
         ${m.files.map((f) => `<option value="${esc(f.name)}" ${rec && f.name === rec.name ? 'selected' : ''}>
-          ${esc(f.name.replace(/\.gguf$/i, '').split('.').pop())} · ${fmtSize(f.sizeBytes)}</option>`).join('')}
+          ${esc(f.quant ?? f.name)} · файл ${fmtSize(f.sizeBytes)} · RAM ≈ ${fmtSize((f.estimatedMb ?? 0) * 1024 * 1024)}</option>`).join('')}
       </select>
-      ${m.installed ? '' : `<button class="btn-download">${m.downloaded ? 'Перекачать' : 'Скачать'}</button>`}
+      <button class="btn-details">Подробнее</button>
+      <button class="btn-download">${m.downloaded ? 'Перекачать' : 'Скачать'}</button>
     </div>`;
   div.querySelector('.btn-download')?.addEventListener('click', () => openDownloadDialog(m, div.querySelector('.quant-select').value));
+  div.querySelector('.btn-details')?.addEventListener('click', () => openModelDetails(m, c));
   return div;
 }
 
+/* Подробная страница модели (§7): все подтверждённые сведения; чего нет —
+   честно «неизвестно». Открывается по кнопке «Подробнее». */
+function openModelDetails(m, c) {
+  const comp = m.compatibility ?? {};
+  const fileRows = (comp.files || []).map((f) =>
+    `<tr><td>${esc(f.quant ?? '—')}</td><td>${fmtSize(f.sizeBytes)}</td><td>≈ ${fmtSize((f.estimatedMb ?? 0) * 1024 * 1024)}</td><td>${f.status === 'green' ? 'зелёная' : f.status === 'yellow' ? 'жёлтая' : 'красная'}</td></tr>`
+  ).join('');
+  const na = 'неизвестно';
+  const rows = [
+    ['Разработчик', esc(m.developer ?? na)],
+    ['Описание', esc(m.purpose ?? na)],
+    ['Качество', esc(m.quality ?? na)],
+    ['Назначение', esc((m.purposes || []).map((p) => purposeLabel(c, p)).join(' · ') || na)],
+    ['Языки', esc((m.languages || []).join(', ') || na)],
+    ['Лицензия', esc(m.license ?? na) + (m.licenseNote ? ` — ${esc(m.licenseNote)}` : '')],
+    ['Формат', 'GGUF' + (m.files.length ? ` · доступно вариантов квантования: ${m.files.length}` : '')],
+    ['Контекст', m.contextTokens == null ? 'неизвестно (оценка памяти дана для контекста по умолчанию)' : `${m.contextTokens} токенов`],
+    ['Источник', `<a href="${esc(m.source)}" target="_blank" rel="noopener noreferrer">${esc(m.repo ?? m.source)}</a>`],
+    ['Автор квантования', esc(m.quantAuthor ?? na)],
+    ['Требования CPU', esc(comp.hwRequirements?.cpu ?? na)],
+    ['Требования GPU', esc(comp.hwRequirements?.gpu ?? na)],
+    ['Требования RAM', esc(comp.hwRequirements?.ram ?? na)],
+    ['Windows', esc(comp.hwRequirements?.windows ?? 'Windows 10/11 x64')],
+    ['Совместимость', `${esc(comp.levelLabel ?? '—')}${(comp.levelReasons || []).length ? '<br>' + comp.levelReasons.map((r) => '• ' + esc(r)).join('<br>') : ''}`],
+    ['Проверено каталогом', esc(m.verifiedAt ?? na)]
+  ];
+  if (m.notes) rows.push(['Примечание', esc(m.notes)]);
+  const html = `
+    ${rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('')}
+    <b>Файлы GGUF</b>
+    <table class="quant-table"><thead><tr><th>Квант</th><th>Файл</th><th>В RAM</th><th>Совместимость</th></tr></thead><tbody>${fileRows}</tbody></table>
+    <p class="muted small">«В RAM» — оценка памяти при запуске с контекстом ${comp.contextTokens ?? '—'} ток. (веса × 1,15 + KV-кэш); размер файла и память — разные величины. Инструменты (tool-calling) и работа с интернетом не обещаются: runtime LiteMind не предоставляет их для GGUF.</p>`;
+  $('model-dialog-title').textContent = `О модели: ${m.displayName}`;
+  $('model-dialog-body').innerHTML = html;
+  $('model-dialog').hidden = false;
+}
+$('model-dialog-close').addEventListener('click', () => { $('model-dialog').hidden = true; });
+$('model-dialog').addEventListener('click', (e) => { if (e.target === $('model-dialog')) $('model-dialog').hidden = true; });
+
+/* Выбор модели по задаче (§3): фильтрует каталог и объясняет, почему
+   модели подходят. Автопереключение активной модели чата не выполняется. */
+document.querySelectorAll('#task-picks button[data-task]').forEach((b) =>
+  b.addEventListener('click', () => {
+    const task = b.dataset.task;
+    catFilters.task = task;
+    const explain = $('task-explain');
+    if (task) {
+      explain.hidden = false;
+      explain.textContent = TASKS[task].why + ' Модель в чате не переключается автоматически: после скачивания выберите её во вкладке «Установленные модели» или в списке под полем ввода чата.';
+    } else {
+      explain.hidden = true;
+    }
+    renderCatalog();
+  }));
+
+const bindCatFilter = (id, key, ev = 'change') => {
+  const el = $(id);
+  el.addEventListener(ev, () => {
+    catFilters[key] = el.type === 'checkbox' ? el.checked : el.value;
+    renderCatalog();
+  });
+};
+bindCatFilter('cat-search', 'search', 'input');
+bindCatFilter('f-purpose', 'purpose');
+bindCatFilter('f-dev', 'dev');
+bindCatFilter('f-type', 'type');
+bindCatFilter('f-size', 'size');
+bindCatFilter('f-quant', 'quant');
+bindCatFilter('f-lang', 'lang');
+bindCatFilter('f-ctx', 'ctx');
+bindCatFilter('f-ram', 'ram');
+bindCatFilter('f-cpuok', 'cpuok');
+bindCatFilter('f-sort', 'sort');
+
 /* ============================ диалог загрузки модели ============================ */
-/* ТЗ: перед загрузкой — название, размер, источник, полный путь сохранения,
-   свободное место и предупреждение при нехватке; выбор папки стандартным
-   диалогом Windows (в Desktop) или вручную; после скачивания — автопроверка. */
+/* ТЗ §5.1–§5.3: перед загрузкой — название, файл+квант, размер, источник,
+   лицензия, полный путь сохранения, свободное место и оценка RAM; при первой
+   загрузке — нативный диалог выбора папки с рекомендацией диска E:; выбранная
+   папка сохраняется как папка по умолчанию. */
 let dlPending = null; // { model, fileName }
 const AUTO_VERIFIED = new Set(); // «modelId/имя файла» — автопроверка уже сделана
 
@@ -1303,14 +1560,29 @@ const pathSep = () => (navigator.platform?.toLowerCase().includes('win') ? '\\' 
 function openDownloadDialog(m, fileName) {
   dlPending = { model: m, fileName };
   const file = m.files.find((f) => f.name === fileName) ?? m.files[0];
-  const dir = $('f-dir').value.trim() || (state.catalog?.modelsRootDir ?? '');
+  const comp = m.compatibility ?? {};
+  let dir = $('dl-dir').value.trim() || localStorage.getItem('litemind-dl-last-dir') || (state.catalog?.modelsRootDir ?? '');
+  // §5.1: при первой загрузке рекомендуем диск E:, если он доступен.
+  const firstTime = !localStorage.getItem('litemind-dl-dir-chosen');
+  if (firstTime) {
+    const disks = state.catalog?.hardware?.disks || [];
+    const eDisk = disks.find((d) => d.root?.toUpperCase().startsWith('E') && d.exists);
+    if (eDisk) dir = eDisk.root + (dir.includes('\\') ? 'LiteMind\\models' : 'LiteMind/models');
+  }
   $('dl-title').textContent = `Загрузка: ${m.displayName}`;
-  const st = m.compatibility?.status;
+  const lvl = comp.level ?? comp.status;
+  const levelText = { ok: 'подходит', limited: 'подходит с ограничениями', not_recommended: 'не рекомендуется', incompatible: 'несовместима' }[lvl]
+    ?? (comp.status === 'green' ? 'зелёная — подходит' : comp.status === 'yellow' ? 'жёлтая — с ограничениями' : 'красная — не рекомендуется');
+  const kvMb = (comp.contextTokens ?? 4096) * 64 / 1024;
+  const ramAfter = Math.round((file.sizeBytes / 1048576) * 1.15 + kvMb + 256);
   const rows = [
-    ['Файл', esc(fileName)],
-    ['Размер', fmtSize(file.sizeBytes)],
-    ['Источник', `<a href="${esc(m.source)}" target="_blank" rel="noopener noreferrer">${esc(m.source)}</a>`],
-    ['Совместимость', st === 'green' ? 'зелёная — подходит' : st === 'yellow' ? 'жёлтая — с ограничениями' : 'красная — не рекомендуется'],
+    ['Разработчик', esc(m.developer ?? 'неизвестно')],
+    ['Файл', `${esc(fileName)} · квантование ${esc(file.quant ?? '—')}`],
+    ['Размер файла', fmtSize(file.sizeBytes)],
+    ['Займёт в памяти после загрузки', `≈ ${fmtSize(ramAfter * 1024 * 1024)} (веса + KV-кэш при контексте ${comp.contextTokens ?? 4096} ток.) — размер файла ≠ память`],
+    ['Лицензия', esc(m.license ?? 'неизвестно') + (m.licenseNote ? ` — ${esc(m.licenseNote)}` : '')],
+    ['Источник', `<a href="${esc(m.source)}" target="_blank" rel="noopener noreferrer">${esc(m.repo ?? m.source)}</a>`],
+    ['Совместимость', esc(levelText) + (comp.speedNote ? ` — ${esc(comp.speedNote)}` : '')],
     ['Сохранить в', `<span id="dl-fullpath">${esc(joinPath(dir, fileName))}</span>`]
   ];
   $('dl-info').innerHTML = rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
@@ -1318,6 +1590,12 @@ function openDownloadDialog(m, fileName) {
   updateDlSpace();
   $('dl-dialog').hidden = false;
   $('dl-go').focus();
+  // §5.1: при первой загрузке сразу открываем нативный диалог выбора папки —
+  // пользователь сразу видит и может изменить место хранения.
+  if (firstTime && bridge()?.pickFolder && !$('dl-pick').dataset.autoOpened) {
+    $('dl-pick').dataset.autoOpened = '1';
+    $('dl-pick').click();
+  }
 }
 
 function joinPath(dir, name) {
@@ -1367,22 +1645,43 @@ $('dl-pick').addEventListener('click', async () => {
   const r = await b.pickFolder('Папка для моделей', $('dl-dir').value.trim() || undefined).catch(() => null);
   if (r?.ok && r.path) {
     $('dl-dir').value = r.path;
-    $('f-dir').value = r.path; // запоминаем и для следующих загрузок
+    localStorage.setItem('litemind-dl-last-dir', r.path); // §5.1: папка по умолчанию для следующих загрузок
+    localStorage.setItem('litemind-dl-dir-chosen', '1'); // §5.1: больше не подсказываем
     updateDlSpace();
   }
 });
-$('dl-go').addEventListener('click', async () => {
+$('dl-go').addEventListener('click', async (e) => {
   if (!dlPending) return;
   const { model: m, fileName } = dlPending;
   const targetDir = $('dl-dir').value.trim();
   if (!targetDir) { showError('Укажите папку сохранения.'); return; }
   $('dl-go').disabled = true;
+  const overwrite = e.detail?.overwrite === true;
   try {
-    await api('/api/downloads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: m.id, fileName, targetDir }) });
+    // §5.1: выбранная папка становится папкой по умолчанию для следующих загрузок.
+    await api('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelsRootDir: targetDir }) }).catch(() => {});
+    localStorage.setItem('litemind-dl-dir-chosen', '1');
+    const r = await api('/api/downloads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: m.id, fileName, targetDir, overwrite }) });
+    if (r.alreadyDownloaded) {
+      // §5.5: проверенный файл уже существует — повторная загрузка не нужна.
+      event(`${m.displayName}: ${r.message}`);
+      showError(r.message);
+      closeDownloadDialog();
+      return;
+    }
     event(`загрузка начата: ${m.displayName} · ${fileName} → ${targetDir}`);
     closeDownloadDialog();
     openTab('downloads');
   } catch (err) {
+    if (err.message.includes('Подтвердите замену') && !overwrite) {
+      // §5.5: существующий файл не перезаписываем без явного подтверждения.
+      closeDownloadDialog();
+      if (confirm(`В выбранной папке уже есть файл «${fileName}» с другим размером. Перезаписать его?`)) {
+        openDownloadDialog(m, fileName);
+        $('dl-go').dispatchEvent(new CustomEvent('click', { detail: { overwrite: true } }));
+      }
+      return;
+    }
     showError('ошибка загрузки: ' + err.message); // 507 (нет места) остаётся в диалоге
     $('dl-go').disabled = false;
     updateDlSpace();
@@ -1462,10 +1761,12 @@ async function refreshDownloads() {
       api('/api/models/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: d.modelId, fileName: d.name }) })
         .then((r) => {
           const el = ul.querySelector(`.dl-verify[data-key="${CSS.escape(vKey)}"]`);
-          const text = r.verified
-            ? (r.shaOk ? `✓ целостность подтверждена: размер и SHA-256 совпадают с Hugging Face` : `✓ размер совпадает; SHA-256 эталона недоступен — сверьте вручную (${String(r.sha256).slice(0, 12)}…)`)
-            : `⚠ ${r.message ?? 'файл повреждён'}`;
-          if (el) { el.textContent = text; el.className = 'dl-verify ' + (r.verified ? 'ok' : 'bad'); }
+          const shaNote = r.shaOk
+            ? `✓ целостность подтверждена: размер и SHA-256 совпадают с эталоном Hugging Face`
+            : r.verified
+              ? `✓ размер совпадает; SHA-256 ${esc(String(r.sha256).slice(0, 12))}… вычислен локально — это проверка целостности, а не подтверждение источника`
+              : `⚠ ${r.message ?? 'файл повреждён'}`;
+          if (el) { el.textContent = shaNote; el.className = 'dl-verify ' + (r.verified ? 'ok' : 'bad'); }
           event(`проверка ${d.name}: ${r.verified ? 'цел' : 'повреждён'}`);
         })
         .catch(() => {});
@@ -1824,7 +2125,101 @@ async function loadSettings() {
     $('set-compaction').checked = a.config?.contextCompaction !== false;
   } catch { /* — */ }
   loadAboutApp();
+  loadStorage();
 }
+
+/* Хранение моделей (Этап 1Б §5.2): текущая папка, свободное место, общий
+   размер установленных моделей, изменение папки с безопасным переносом,
+   открытие папки и проверка существующих путей. */
+let storePickDir = null;
+
+async function loadStorage() {
+  const kv = $('storage-kv');
+  if (!kv) return;
+  try {
+    const s = await api('/api/storage');
+    const rows = [
+      ['Текущая папка', s.rootDir + (s.exists ? '' : ' (папка ещё не создана)')],
+      ['Свободно на диске', s.disk?.freeBytes != null ? `${fmtSize(s.disk.freeBytes)} из ${fmtSize(s.disk.totalBytes)}` : 'неизвестно'],
+      ['Установленные модели', `${s.models.length} шт. · всего ${fmtSize(s.totalBytes)}`],
+      ['Недокачанные файлы (.part)', s.partBytes ? fmtSize(s.partBytes) : 'нет'],
+      ['Пользовательские модели (вне папки)', s.registered.length ? `${s.registered.length} шт.` : 'нет'],
+      ['Активные загрузки', s.activeDownloads ? `${s.activeDownloads} шт. — перенос недоступен` : 'нет']
+    ];
+    kv.innerHTML = '';
+    for (const [k, v] of rows) {
+      const dt = document.createElement('dt'); dt.textContent = k;
+      const dd = document.createElement('dd'); dd.textContent = v; dd.className = 'mono';
+      kv.append(dt, dd);
+    }
+    $('store-note').textContent = storePickDir
+      ? `Выбрана новая папка: ${storePickDir}. Нажмите «Перенести модели и переключиться».`
+      : `Перенос — это копирование со сверкой SHA-256. Старые файлы не удаляются (кроме случая, когда вы сняли галочку ниже), при ошибке всё остаётся на месте.`;
+  } catch (err) {
+    kv.innerHTML = '<dt>Хранилище</dt><dd>—</dd>';
+  }
+}
+
+$('btn-store-pick')?.addEventListener('click', async () => {
+  const b = bridge();
+  if (!b?.pickFolder) { showError('Нативный выбор папки доступен в LiteMind Desktop.'); return; }
+  const s = await api('/api/storage').catch(() => null);
+  const r = await b.pickFolder('Новая папка для моделей', s?.rootDir || undefined).catch(() => null);
+  if (r?.ok && r.path) {
+    storePickDir = r.path;
+    loadStorage();
+  }
+});
+
+$('btn-store-move')?.addEventListener('click', async () => {
+  if (!storePickDir) { showError('Сначала выберите новую папку («Выбрать новую папку…»).'); return; }
+  const s = await api('/api/storage').catch(() => null);
+  const keep = $('store-keepsrc').checked;
+  const n = s?.models?.length ?? 0;
+  if (!confirm(`Перенести ${n} моделей из\n${s?.rootDir}\nв\n${storePickDir}\n\n${keep ? 'Старые копии ОСТАНУТСЯ на месте (рекомендуется).' : 'Старые файлы будут удалены после проверки SHA-256.'}`)) return;
+  const note = $('store-note');
+  note.textContent = 'Переношу и проверяю SHA-256… это может занять несколько минут при больших моделях.';
+  try {
+    const r = await api('/api/storage/move', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ toDir: storePickDir, keepSource: keep }) });
+    const moved = r.results.filter((x) => x.status === 'moved').length;
+    const failed = r.results.filter((x) => x.status === 'failed').length;
+    const part = r.results.filter((x) => x.status === 'moved_part').length;
+    note.textContent = `Готово: перенесено ${moved} моделей${part ? `, недокачанных файлов ${part}` : ''}${failed ? `, ошибок ${failed} (файлы остались в старой папке)` : ''}. Новая папка: ${r.rootDir}.`;
+    event(`папка моделей изменена: ${r.rootDir} (перенесено ${moved})`);
+    storePickDir = null;
+    state.catalog = null; // перечитать каталог с новой папкой
+    loadStorage();
+    loadSettings();
+  } catch (err) {
+    note.textContent = '';
+    showError('перенос: ' + err.message);
+    loadStorage();
+  }
+});
+
+$('btn-store-check')?.addEventListener('click', async () => {
+  const note = $('store-note');
+  note.textContent = 'Проверяю пути…';
+  try {
+    const r = await api('/api/storage/check', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    note.textContent = r.ok
+      ? `Проверено ${r.checked} моделей — проблем не найдено.`
+      : `Проблемы (${r.problems.length} из ${r.checked}): ` + r.problems.map((p) => `${p.file} — ${p.issue}`).join('; ');   
+  } catch (err) {
+    note.textContent = '';
+    showError('проверка путей: ' + err.message);
+  }
+});
+
+$('btn-store-open')?.addEventListener('click', async () => {
+  const b = bridge();
+  try {
+    const s = await api('/api/storage');
+    if (!b?.shellOpenPath) { showError(`Папка моделей: ${s.rootDir}. Открытие папки доступно в LiteMind Desktop.`); return; }
+    const r = await b.shellOpenPath(s.rootDir).catch(() => ({ ok: false }));
+    if (r?.ok === false) showError('Не удалось открыть папку: ' + (r.error ?? '— возможно, папка ещё не создана.'));
+  } catch (err) { showError('хранилище: ' + err.message); }
+});
 
 /* «О приложении» (ТЗ Этап 1 §12): версии и пути из Electron appInfo,
    диагностика состояния — из /api/engine/state; в браузере показываем,

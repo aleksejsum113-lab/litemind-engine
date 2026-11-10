@@ -220,16 +220,20 @@
         </div>
       </section>
 
-      <!-- МОИ МОДЕЛИ -->
+      <!-- МОИ МОДЕЛИ (менеджер моделей, Этап 1Б §4) -->
       <section id="tab-models" data-page hidden>
-        <h1>Мои модели</h1>
+        <h1>Установленные модели</h1>
         <div class="card">
-          <h2>Локальные модели (GGUF)</h2>
+          <div class="filters">
+            <input id="mym-search" type="search" class="dir-input" placeholder="Поиск по названию…" autocomplete="off" />
+            <button id="btn-add-own" class="primary">＋ Добавить свою модель</button>
+          </div>
+          <p class="muted">Статусы показывают реальное состояние: «запущена» — runtime держит модель в памяти; «готова» — файл проверен и может быть запущен; «повреждена» — проверка не пройдена; «несовместима» — модель не поместится в память.</p>
           <p class="muted" id="scan-rootdir">—</p>
           <ul id="my-models" class="model-list"><li class="muted">—</li></ul>
         </div>
         <div class="card">
-          <h2>Ручная установка</h2>
+          <h2>Файлы GGUF в папке моделей</h2>
           <p class="muted" id="guf-dir">—</p>
           <ul id="gguf-files" class="model-list"><li class="muted">—</li></ul>
           <div class="btns">
@@ -240,16 +244,51 @@
         </div>
       </section>
 
-      <!-- КАТАЛОГ -->
+      <!-- КАТАЛОГ (Этап 1Б §2/§3/§7) -->
       <section id="tab-catalog" data-page hidden>
         <h1>Каталог моделей</h1>
         <div class="card">
+          <h2>Выбрать модель по задаче</h2>
+          <div id="task-picks" class="task-picks">
+            <button data-task="coding">Для программирования</button>
+            <button data-task="chat">Для общения</button>
+            <button data-task="writing">Для текстов</button>
+            <button data-task="analysis">Для анализа документов</button>
+            <button data-task="universal">Универсальная модель</button>
+            <button data-task="" class="muted-btn">Сбросить выбор</button>
+          </div>
+          <p class="muted" id="task-explain" hidden></p>
+        </div>
+        <div class="card">
           <div class="filters">
-            <span id="catalog-filters" class="filters" style="display:contents"></span>
-            <label>Диск: <select id="f-drive"></select></label>
-            <label>Папка: <input id="f-dir" type="text" class="dir-input" /></label>
+            <input id="cat-search" type="search" class="dir-input cat-search" placeholder="Поиск по названию, разработчику и описанию…" autocomplete="off" />
+            <label>Назначение: <select id="f-purpose"></select></label>
+            <label>Разработчик: <select id="f-dev"></select></label>
+            <label>Тип: <select id="f-type"><option value="">любой</option><option value="standard">обычные</option><option value="reduced">ослабленные ограничения</option></select></label>
+          </div>
+          <div class="filters">
+            <label>Размер файла: <select id="f-size"><option value="">любой</option><option value="500">до 500 МБ</option><option value="1500">0,5–1,5 ГБ</option><option value="3000">1,5–3 ГБ</option><option value="6000">3–6 ГБ</option><option value="big">более 6 ГБ</option></select></label>
+            <label>Квантование: <select id="f-quant"></select></label>
+            <label>Язык: <select id="f-lang"></select></label>
+            <label>Контекст: <select id="f-ctx"><option value="">любой</option><option value="8192">от 8К ток.</option><option value="32768">от 32К ток.</option><option value="65536">от 64К ток.</option></select></label>
+            <label>Займёт в памяти: <select id="f-ram"><option value="">любой</option><option value="1000">до 1 ГБ</option><option value="2000">до 2 ГБ</option><option value="4000">до 4 ГБ</option><option value="8000">до 8 ГБ</option></select></label>
+            <label class="switch"><input type="checkbox" id="f-cpuok" /> Только совместимые с моим CPU</label>
+          </div>
+          <div class="filters">
+            <label>Сортировка: <select id="f-sort"><option value="name">по названию</option><option value="size">по размеру</option><option value="purpose">по специализации</option><option value="verified">по дате обновления каталога</option></select></label>
+            <span class="muted" id="cat-count"></span>
           </div>
           <p class="muted" id="hw-hint">—</p>
+          <details class="glossary">
+            <summary>Что означают термины: GGUF, Q4/Q5/Q8, контекст, память</summary>
+            <div class="glossary-body">
+              <p><b>GGUF</b> — формат файла модели для локального запуска (один файл содержит всё: алгоритм, словарь, веса). LiteMind работает только с GGUF — другие форматы не скачивает.</p>
+              <p><b>Q4, Q5, Q8 (квантование)</b> — насколько «сжаты» веса модели. Q4 — файл примерно в 4 раза меньше оригинала, качество немного ниже, зато модель быстрее и занимает меньше памяти. Q5 — компромисс. Q8 — почти без потери качества, но файл и память почти как у оригинала. Правило: сначала пробуйте Q4_K_M, если хватает памяти — берите Q5_K_M/Q6_K.</p>
+              <p><b>Контекст</b> — сколько текста модель «видит» одновременно (в токенах). Больше контекст — больше памяти: подсказки и длинные документы требуют запаса.</p>
+              <p><b>Память при запуске ≠ размер файла</b> — модель занимает в RAM больше, чем весит файл: веса × ~1,15 + кэш контекста + служебные данные. LiteMind показывает оценку заранее, чтобы модель не «съела» весь компьютер.</p>
+              <p><b>AVX/AVX2</b> — инструкции процессора, ускоряющие ИИ. У процессоров Intel Celeron N5095A их нет; сборка LiteMind работает и без них — просто медленнее.</p>
+            </div>
+          </details>
           <div id="catalog-list"></div>
         </div>
       </section>
@@ -394,6 +433,18 @@
       <section id="tab-settings" data-page hidden>
         <h1>Настройки</h1>
         <div class="card">
+          <h2>Хранение моделей</h2>
+          <dl class="kv" id="storage-kv"><dt>Загрузка</dt><dd>…</dd></dl>
+          <div class="btns">
+            <button id="btn-store-pick" class="primary">Выбрать новую папку…</button>
+            <button id="btn-store-move">Перенести модели и переключиться</button>
+            <button id="btn-store-check">Проверить существующие пути</button>
+            <button id="btn-store-open">Открыть папку</button>
+          </div>
+          <label class="switch"><input type="checkbox" id="store-keepsrc" checked /> Оставить копии в старой папке (рекомендуется: перенос только после проверки)</label>
+          <p class="muted" id="store-note">Перенос — это копирование с сверкой SHA-256. Старые файлы не удаляются (кроме случая, когда вы сняли галочку выше), при ошибке всё остаётся на месте.</p>
+        </div>
+        <div class="card">
           <h2>Движок</h2>
           <label class="field">Папка для моделей (диск/путь)
             <span class="dir-row">
@@ -448,6 +499,17 @@
       <div class="btns">
         <button id="dl-go" class="primary">Скачать</button>
         <button id="dl-cancel" type="button">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= ДЕТАЛИ МОДЕЛИ КАТАЛОГА ======================= -->
+  <div id="model-dialog" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="model-dialog-title">
+      <h3 id="model-dialog-title">О модели</h3>
+      <div id="model-dialog-body" class="dl-info"></div>
+      <div class="btns">
+        <button id="model-dialog-close" type="button">Закрыть</button>
       </div>
     </div>
   </div>
