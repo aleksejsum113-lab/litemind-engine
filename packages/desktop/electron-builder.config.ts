@@ -148,10 +148,26 @@ const getBase = (appId: string): Configuration => {
 
       // Runtime llama.cpp обязателен в Windows-установке v0.4: без него чат не запустится.
       if (hasLlamaRuntime) {
-        const llama = path.join(resources, "llamacpp", "llama-server.exe")
+        const llamaDir = path.join(resources, "llamacpp")
+        const llama = path.join(llamaDir, "llama-server.exe")
         const llamaStat = await stat(llama)
-        if (!llamaStat.isFile() || llamaStat.size < 1_000_000) {
+        // С осени 2026 upstream llama.cpp разделил сервер: llama-server.exe — тонкий
+        // лаунчер (~10 КБ), вся логика — в llama-server-impl.dll. Поэтому проверяем
+        // не размер одного exe, а полноту комплекта: exe на месте и суммарный
+        // размер runtime-каталога существенный (полный комплект ≈ 30–60 МБ:
+        // llama-server-impl.dll, llama.dll, ggml.dll, ggml-cpu-*.dll и т.д.).
+        if (!llamaStat.isFile() || llamaStat.size < 1_000) {
           throw new Error(`Bundled llama-server.exe looks wrong: ${llama} (${llamaStat.size} bytes)`)
+        }
+        let llamacppTotal = 0
+        for (const entry of await readdir(llamaDir)) {
+          const entryStat = await stat(path.join(llamaDir, entry))
+          if (entryStat.isFile()) llamacppTotal += entryStat.size
+        }
+        if (llamacppTotal < 20_000_000) {
+          throw new Error(
+            `Bundled llama.cpp runtime looks incomplete: ${llamaDir} (total ${llamacppTotal} bytes, expected >= 20 MB)`,
+          )
         }
       }
 
