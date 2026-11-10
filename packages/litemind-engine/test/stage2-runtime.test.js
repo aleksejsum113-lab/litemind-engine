@@ -261,8 +261,20 @@ wait \$CHILD
   assert.ok(backend._startKeyStr.includes('"ctx":8192'));
   assert.equal(backend._ctxFloor, 8192);
 
+  // Смена профиля (Engine.setProfile → resetSession) — явное намерение:
+  // пол контекста сброшен, следующий запуск применяет ровно профильные
+  // параметры, включая МЕНЬШИЙ контекст (ТЗ Этапа 2 §8, дефект «Бережного»).
+  backend.resetSession({ reason: 'profile-switch:low' });
+  await backend.ensureServer({ file: modelFile, contextTokens: 2048, threads: 2, threadsBatch: 2, numBatch: 512, useMmap: false, cacheReuse: 0, profile: 'low' });
+  assert.equal(backend._restarts, 3, 'смена профиля → честный перезапуск');
+  assert.ok(backend._startKeyStr.includes('"ctx":2048'), 'после resetSession применён меньший контекст');
+  assert.equal(backend._ctxFloor, 2048);
+  // Причина перезапуска перезаписывается фактическим diff параметров
+  // (resetSession-метка — временная, до честного перезапуска).
+  assert.ok(backend._lastRestartReason.changed.threads, 'перезапуск зафиксирован новыми параметрами');
+
   const info = backend.runtimeInfo();
-  assert.equal(info.params.threads, 1);
+  assert.equal(info.params.threads, 2, 'последний запуск — профиль low (2 потока)');
   assert.equal(info.loadMs != null, true, 'loadMs измерен');
   assert.equal(info.gpu.probed !== undefined, true, 'gpu-диагностика присутствует');
 });

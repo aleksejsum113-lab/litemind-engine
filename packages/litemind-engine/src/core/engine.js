@@ -71,6 +71,10 @@ export class Engine {
       throw new EngineError(`Unknown profile "${name}". Available: ${Object.keys(this.config.profiles).join(', ')}`, { code: 'BAD_PROFILE', status: 400 });
     }
     this.config.profile = name;
+    // Смена профиля — явное намерение пользователя: пол контекста сбрасывается,
+    // чтобы новый профиль применился ЦЕЛИКОМ (включая меньший контекст «Бережного»),
+    // а не оставался на grow-only контексте предыдущей сессии (ТЗ Этапа 2 §8).
+    this.backend.resetSession?.({ reason: `profile-switch:${name}` });
     // Приоритет процессов инференса (Бережный → BelowNormal). Fire-and-forget.
     applyBackendPriority({ profile: name, log: this.log });
     this.log.info('profile switched', { profile: name });
