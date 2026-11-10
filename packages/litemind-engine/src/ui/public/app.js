@@ -526,7 +526,7 @@ function renameChat(id) {
   event(`чат переименован: ${c.title}`);
 }
 
-function msgBubble(m, { streaming = false } = {}) {
+function msgBubble(m, { streaming = false, last = false } = {}) {
   const wrap = document.createElement('div');
   wrap.className = `msg ${m.role === 'user' ? 'msg-user' : 'msg-bot'}`;
   const avatar = document.createElement('div');
@@ -562,6 +562,31 @@ function msgBubble(m, { streaming = false } = {}) {
       body.appendChild(note);
     }
     if (streaming) body.insertAdjacentHTML('beforeend', '<span class="cursor-blink"></span>');
+    // Действия под готовым ответом: копировать целиком; переспросить —
+    // только у последнего ответа чата (регенерация переотправляет историю).
+    if (!streaming && m.content) {
+      const actions = document.createElement('div');
+      actions.className = 'msg-actions';
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.textContent = 'копировать';
+      copy.addEventListener('click', () => {
+        navigator.clipboard?.writeText(m.content).then(() => {
+          copy.textContent = 'скопировано';
+          setTimeout(() => { copy.textContent = 'копировать'; }, 1200);
+        }).catch(() => {});
+      });
+      actions.appendChild(copy);
+      if (last) {
+        const regen = document.createElement('button');
+        regen.type = 'button';
+        regen.textContent = 'переспросить';
+        regen.title = 'Сгенерировать ответ заново';
+        regen.addEventListener('click', () => regenerateLast());
+        actions.appendChild(regen);
+      }
+      body.appendChild(actions);
+    }
   }
   wrap.append(avatar, body);
   return wrap;
@@ -588,7 +613,10 @@ function renderMessages() {
     log.appendChild(welcomeBlock());
     return;
   }
-  for (const m of c.messages) log.appendChild(msgBubble(m));
+  for (let mi = 0; mi < c.messages.length; mi++) {
+    const m = c.messages[mi];
+    log.appendChild(msgBubble(m, { last: m.role === 'assistant' && mi === c.messages.length - 1 }));
+  }
   log.querySelectorAll('.code-copy').forEach(bindCopy);
   scrollChat(true);
 }
@@ -769,6 +797,30 @@ async function sendChat() {
   const welcome = log.querySelector('.chat-welcome');
   if (welcome) welcome.remove();
   log.appendChild(msgBubble(userMsg));
+  await runCompletion(chat);
+}
+
+/* Регенерация последнего ответа: убираем хвостовые ответы ассистента и
+   переотправляем ту же историю — модель ответит заново. */
+function regenerateLast() {
+  const c = activeChat();
+  if (!c || state.streaming) return;
+  let removed = false;
+  while (c.messages.length && c.messages[c.messages.length - 1].role === 'assistant') {
+    c.messages.pop();
+    removed = true;
+  }
+  if (!c.messages.length || !removed) return;
+  saveChats();
+  renderMessages();
+  event('чат: перегенерация ответа');
+  void runCompletion(c);
+}
+
+/* Запрос к модели и стрим ответа: используется и после отправки сообщения,
+   и при регенерации (история уже в chat.messages). */
+async function runCompletion(chat) {
+  const log = $('chat-log');
   const reply = { role: 'assistant', content: '' };
   const botBubble = msgBubble(reply, { streaming: true });
   log.appendChild(botBubble);
@@ -857,6 +909,8 @@ async function sendChat() {
   } finally {
     if (reply.content || reply.stopped) {
       chat.messages.push({ role: 'assistant', content: reply.content, stopped: reply.stopped });
+    } else {
+      botBubble.remove(); // ошибка до первого токена — пустой пузырь не нужен
     }
     chat.updatedAt = Date.now();
     saveChats();
