@@ -1,33 +1,56 @@
-// Resource Manager — RAM / CPU / VRAM monitoring.
-// Windows: one PowerShell CIM call. Other platforms: /proc (dev/test fallback).
-// This module NEVER touches foreign processes: it only observes.
-import { execFile } from 'node:child_process';
+// Resource Manager — RAM / CPU / paging monitoring.
+//
+// Этап 2 §2/§9: сэмплер ПЕРЕПИСАН на чистый Node без внешних процессов.
+// Раньше каждый сэмпл (каждые 2 с) запускал powershell.exe с тремя WMI-запросами
+// (Get-CimInstance) — на слабых машинах (Celeron N5095A) вызов регулярно выходил
+// за 8-секундный таймаут, collectMetrics уходил в osFallback, а тот на Windows
+// давал cpuPercent = 0 (нет /proc/loadavg). Пользователь видел «CPU около 0%»,
+// хотя CPU был занят генерацией. Кроме того, постоянный запуск powershell —
+// лишний фоновый процесс и лишняя работа для Defender (ТЗ §9).
+//
+// Теперь:
+//   - RAM: os.totalmem()/os.freemem() — GlobalMemoryStatusEx, мгновенно и точно
+//     («доступно» включает standby-кэш, как в Диспетчере задач Windows);
+//   - CPU: дельта os.cpus() между сэмплами — точный агрегат по всем ядрам;
+//   - paging (Windows): честно «недоступно» без отдельного WMI-вызова; признак
+//     paging'а при необходимости уточняется движком в момент решения (gate).
+// Этот модуль НИКОГДА не трогает чужие процессы: он только наблюдает.
 import fs from 'node:fs';
 import os from 'node:os';
-import { promisify } from 'node:util';
 
-const execFileP = promisify(execFile);
+/** Снимок суммарного времени ядер CPU (для расчёта загрузки по дельте). */
+function cpuTimesSnapshot() {
+  let idle = 0;
+  let total = 0;
+  try {
+    for (const c of os.cpus()) {
+      idle += c.times.idle;
+      total += c.times.user + c.times.nice + c.times.sys + c.times.idle + c.times.irq;
+    }
+  } catch { /* os.cpus() не должен падать, но диагностика не бросает */ }
+  return { idle, total };
+}
 
-const PS_SCRIPT = `
-$ErrorActionPreference = 'SilentlyContinue'
-$os = Get-CimInstance Win32_OperatingSystem
-$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-$vramTotal = 0
-$gpus = @(Get-CimInstance Win32_VideoController)
-foreach ($g in $gpus) { if ($g.AdapterRAM) { $vramTotal += [double]$g.AdapterRAM } }
-$totalMb = [math]::Round($os.TotalVisibleMemorySize / 1KB, 1)
-$freeMb = [math]::Round($os.FreePhysicalMemory / 1KB, 1)
-$load = 0
-if ($cpu -and $cpu.LoadPercentage -ne $null) { $load = [double]$cpu.LoadPercentage }
-@{
-  totalRamMb = $totalMb
-  usedRamMb = [math]::Round($totalMb - $freeMb, 1)
-  availableRamMb = $freeMb
-  cpuPercent = $load
-  vramTotalMb = [math]::Round($vramTotal / 1MB, 1)
-  gpuNames = @($gpus | ForEach-Object { $_.Name })
-} | ConvertTo-Json -Compress
-`;
+/**
+ * Снимок загрузки машины. Быстрее 1 мс, без подпроцессов, зависит только от os.
+ * cpuPercent считается сэмплером по дельте (здесь null при первом сэмпле).
+ */
+export async function collectMetrics() {
+  const totalMb = Math.round(os.totalmem() / 1048576);
+  const availableMb = Math.round(os.freemem() / 1048576);
+  return {
+    totalRamMb: totalMb,
+    availableRamMb: availableMb,
+    usedRamMb: Math.round((totalMb - availableMb) * 10) / 10,
+    cpuPercent: null,          // заполнит сэмплер по дельте os.cpus()
+    hardFaultsPerSec: null,    // честно: без WMI не измеряем на регулярной основе
+    committedPercent: null,
+    vramTotalMb: null,
+    gpuNames: [],
+    source: 'node-os',
+    at: Date.now()
+  };
+}
 
 function parseProcMeminfo() {
   const text = fs.readFileSync('/proc/meminfo', 'utf8');
@@ -43,66 +66,22 @@ function parseProcMeminfo() {
   return { totalRamMb: totalMb, availableRamMb: availMb, usedRamMb: Math.round((totalMb - availMb) * 10) / 10 };
 }
 
-function parseLoadavg() {
+/** Уточнение RAM на Linux по /proc/meminfo (MemAvailable точнее os.freemem).
+ *  Применяется только к данным дефолтного провайдера — инжектированные
+ *  провайдеры (тесты) не перезаписываются. */
+function refineWithProcMeminfo(metrics) {
+  if (!metrics || metrics.source !== 'node-os') return metrics;
   try {
-    const [one] = fs.readFileSync('/proc/loadavg', 'utf8').split(' ');
-    const cores = os.cpus().length || 1;
-    return Math.min(100, Math.round((Number(one) / cores) * 100));
-  } catch {
-    return 0;
-  }
-}
-
-/** Snapshot of machine load. Returns null-safe fields; vram may be unknown. */
-export async function collectMetrics() {
-  if (process.platform === 'win32') {
-    try {
-      const { stdout } = await execFileP(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-Command', PS_SCRIPT],
-        { timeout: 8000, maxBuffer: 1024 * 1024, windowsHide: true }
-      );
-      const data = JSON.parse(stdout);
-      return {
-        totalRamMb: Number(data.totalRamMb) || 0,
-        usedRamMb: Number(data.usedRamMb) || 0,
-        availableRamMb: Number(data.availableRamMb) || 0,
-        cpuPercent: Number(data.cpuPercent) || 0,
-        vramTotalMb: data.vramTotalMb > 0 ? Number(data.vramTotalMb) : null,
-        gpuNames: Array.isArray(data.gpuNames) ? data.gpuNames : [],
-        source: 'windows-cim',
-        at: Date.now()
-      };
-    } catch (err) {
-      return {
-        ...osFallback(),
-        error: `metrics collection failed: ${err.message}`,
-        source: 'fallback',
-        at: Date.now()
-      };
-    }
-  }
-  return { ...osFallback(), source: 'procfs', at: Date.now() };
-}
-
-function osFallback() {
-  const mem = parseProcMeminfo() || {
-    totalRamMb: Math.round(os.totalmem() / 1048576),
-    availableRamMb: Math.round(os.freemem() / 1048576),
-    usedRamMb: Math.round((os.totalmem() - os.freemem()) / 1048576)
-  };
-  return {
-    ...mem,
-    cpuPercent: parseLoadavg(),
-    vramTotalMb: null,
-    gpuNames: [],
-    platform: process.platform
-  };
+    const p = parseProcMeminfo();
+    if (p) return { ...metrics, ...p, source: 'procfs' };
+  } catch { /* не Linux — оставляем как есть */ }
+  return metrics;
 }
 
 /**
- * Periodic sampler used by the dashboard / engine status.
- * stop() resolves; errors are recorded, never thrown.
+ * Периодический сэмплер, используется движком и дашбордом.
+ * CPU% считается по дельте os.cpus() между вызовами sample().
+ * stop() завершает таймер; ошибки записываются, но никогда не бросаются.
  */
 export class MetricsSampler {
   constructor({ intervalMs = 2000, provider = collectMetrics, onError = null } = {}) {
@@ -114,13 +93,32 @@ export class MetricsSampler {
     this.maxHistory = 180;
     this._timer = null;
     this._busy = false;
+    this._lastCpu = null; // { idle, total }
   }
 
   async sample() {
     try {
-      this.latest = await this.provider();
-      this.history.push({ at: this.latest.at, cpu: this.latest.cpuPercent, used: this.latest.usedRamMb, available: this.latest.availableRamMb });
-      if (this.history.length > this.maxHistory) this.history.shift();
+      const m = await this.provider();
+      this.latest = m ? { ...m } : m;
+      if (this.latest) {
+        // CPU% по дельте времён ядер: точный агрегат, без подпроцессов.
+        const snap = cpuTimesSnapshot();
+        if (this._lastCpu && snap.total > this._lastCpu.total) {
+          const dTotal = snap.total - this._lastCpu.total;
+          const dIdle = snap.idle - this._lastCpu.idle;
+          this.latest.cpuPercent = Math.max(0, Math.min(100, Math.round((1 - dIdle / dTotal) * 1000) / 10));
+        }
+        this._lastCpu = snap;
+        this.latest = refineWithProcMeminfo(this.latest);
+        this.latest.at = Date.now();
+        this.history.push({
+          at: this.latest.at,
+          cpu: this.latest.cpuPercent,
+          used: this.latest.usedRamMb,
+          available: this.latest.availableRamMb
+        });
+        if (this.history.length > this.maxHistory) this.history.shift();
+      }
     } catch (err) {
       this.lastError = err.message;
       this.onError?.(err);

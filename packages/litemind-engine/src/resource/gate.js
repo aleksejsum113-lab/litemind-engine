@@ -1,6 +1,47 @@
 // Memory forecast gate: decide whether a model may start on this machine.
 // Conservative by design: estimate high, require free memory, keep a Windows reserve.
 
+/**
+ * Этап 2 §3 — динамический резерв RAM для Windows и других приложений.
+ * Резерв НЕ фиксирован: при признаках страничного обмена (paging) и высокой
+ * нагрузке системы резерв растёт, при большом объёме свободной памяти —
+ * возвращается к базовому значению профиля.
+ *
+ * @param {{ baseReserveMb: number, availableRamMb: number, totalRamMb: number,
+ *           hardFaultsPerSec?: number|null, systemCpuPercent?: number|null }} p
+ * @returns {{ reserveMb: number, reasons: string[] }}
+ */
+export function dynamicReserveMb({ baseReserveMb = 1024, availableRamMb = 0, totalRamMb = 0, hardFaultsPerSec = null, systemCpuPercent = null } = {}) {
+  let reserve = Math.max(256, Number(baseReserveMb) || 0);
+  const reasons = [];
+  const available = Math.max(0, Number(availableRamMb) || 0);
+  const total = Math.max(0, Number(totalRamMb) || 0);
+
+  // 1) Интенсивный paging: Windows уже читает с диска страницы памяти —
+  //    добавляем резерв, чтобы не усугублять обмен с файлом подкачки.
+  const hf = Number(hardFaultsPerSec);
+  if (Number.isFinite(hf) && hf > 100) {
+    const bump = Math.min(1024, Math.round(reserve * (hf > 500 ? 0.5 : 0.25)));
+    if (bump > 0) { reserve += bump; reasons.push(`paging: ${Math.round(hf)} стр. ошибок/с → +${bump} МБ`); }
+  }
+
+  // 2) Мало свободной памяти: резервируем больше, если доступно < 15% RAM.
+  if (total > 0 && available > 0 && available / total < 0.15) {
+    reserve += 512;
+    reasons.push(`мало свободной RAM: ${Math.round(available)} МБ → +512 МБ`);
+  }
+
+  // 3) Высокая загрузка CPU системой — другие приложения активно работают.
+  const cpu = Number(systemCpuPercent);
+  if (Number.isFinite(cpu) && cpu >= 80) {
+    reserve += 256;
+    reasons.push(`высокая загрузка CPU: ${Math.round(cpu)}% → +256 МБ`);
+  }
+
+  // Верхняя граница: резерв не должен съедать больше половины 16 ГБ даже в пике.
+  return { reserveMb: Math.min(reserve, 4096), reasons };
+}
+
 export function estimateModelMemoryMb({ modelSizeBytes, contextTokens, kvOverheadKbPerToken = 64 }) {
   if (!modelSizeBytes || !Number.isFinite(modelSizeBytes)) return null; // unknown estimate
   const weightsMb = modelSizeBytes / 1048576;
@@ -28,7 +69,8 @@ export function checkStartBudget({
     return { allowed: true, severity: 'warn', reason: 'Model size unknown: forecast impossible, starting with a warning.', estimateMb: null, availableRamMb };
   }
 
-  const budget = availableRamMb - reserveMb;
+  const reserve = typeof reserveMb === 'object' && reserveMb !== null ? reserveMb.reserveMb : reserveMb;
+  const budget = availableRamMb - reserve;
   if (budget <= 0) {
     return {
       allowed: false, severity: 'block', estimateMb: estimatedMb,

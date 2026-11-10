@@ -259,6 +259,22 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
 
     if (req.method === 'GET' && p === '/api/status') return json(res, 200, await engine.status());
     if (req.method === 'GET' && p === '/api/metrics') return json(res, 200, { perf: engine.perf.summary(), history: engine.sampler?.history ?? [] });
+    // Этап 2 §2/§12: подробная производительность — трассы стадий, серверные тайминги,
+    // фактические параметры runtime. Честные значения или null («недоступно»).
+    if (req.method === 'GET' && p === '/api/perf') {
+      return json(res, 200, {
+        summary: engine.perf.summary(),
+        stages: engine.stageSummary(),
+        traces: engine._stageTraces.slice(-10).map((t) => t.toJSON()),
+        requests: [...engine.requests.values()].slice(-10).reverse().map((r) => ({
+          id: r.id, model: r.model, state: r.state, ttftMs: r.ttftMs,
+          ttftAfterServerMs: r.ttftAfterServerMs ?? null, modelLoadMs: r.modelLoadMs ?? null,
+          outputTokens: r.outputTokens, durationMs: r.durationMs ?? null, error: r.error
+        })),
+        runtime: engine.backend.runtimeInfo ? engine.backend.runtimeInfo() : null,
+        serverTimings: engine.backend.runtimeInfo ? (engine.backend.runtimeInfo().serverTimings ?? []) : []
+      });
+    }
 
     if (req.method === 'POST' && p === '/api/profile') {
       const body = JSON.parse((await readBody(req)) || '{}');
@@ -1381,13 +1397,19 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
           return openaiError(res, 400, `Это не файл: ${file}`, 'invalid_request_error');
         }
         try {
+          const prof = config.profiles?.[config.profile] ?? {};
           const started = await engine.backend.ensureServer({
             file,
             contextTokens: Number(body.contextTokens) || hw.recommendation?.maxContextTokens || 4096,
-            threads: hw.recommendation?.threads ?? 0
+            threads: Number(body.threads) || prof.cpuThreads || 0,
+            threadsBatch: prof.cpuThreadsBatch ?? 0,
+            numBatch: prof.numBatch ?? 0,
+            cacheReuse: prof.cacheReuse ?? 0,
+            profile: config.profile,
+            useMmap: config.backend.useMmap ?? 'auto'
           });
           logger?.info('local model started from file', { file });
-          return json(res, 200, { ok: true, model: path.basename(file).replace(/\.gguf$/i, ''), file, contextTokens: Number(body.contextTokens) || hw.recommendation?.maxContextTokens || 4096, baseUrl: started ?? null });
+          return json(res, 200, { ok: true, model: path.basename(file).replace(/\.gguf$/i, ''), file, contextTokens: Number(body.contextTokens) || hw.recommendation?.maxContextTokens || 4096, baseUrl: started ?? null, runtime: engine.backend.runtimeInfo?.() ?? null });
         } catch (err) {
           return openaiError(res, err.status || 500, err.message, 'run_error', err.code);
         }
@@ -1405,13 +1427,19 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         return json(res, 200, { ok: false, reason: 'incompatible', message: `Модель не рекомендуется: ${rating.fitLabel}. ${rating.files[0]?.reason ?? ''}` });
       }
       try {
+        const prof = config.profiles?.[config.profile] ?? {};
         const started = await engine.backend.ensureServer({
           file: diskPath,
           contextTokens: rating.contextTokens,
-          threads: hw.recommendation?.threads ?? 0
+          threads: Number(body.threads) || prof.cpuThreads || 0,
+          threadsBatch: prof.cpuThreadsBatch ?? 0,
+          numBatch: prof.numBatch ?? 0,
+          cacheReuse: prof.cacheReuse ?? 0,
+          profile: config.profile,
+          useMmap: config.backend.useMmap ?? 'auto'
         });
         logger?.info('catalog model started', { model: model.id, file: target.name });
-        return json(res, 200, { ok: true, model: model.id, file: target.name, quant: target.quant ?? null, contextTokens: rating.contextTokens, baseUrl: started ?? null });
+        return json(res, 200, { ok: true, model: model.id, file: target.name, quant: target.quant ?? null, contextTokens: rating.contextTokens, baseUrl: started ?? null, runtime: engine.backend.runtimeInfo?.() ?? null });
       } catch (err) {
         return openaiError(res, err.status || 500, err.message, 'run_error', err.code);
       }
@@ -1591,6 +1619,7 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
     res.on('close', onClose);
 
     let requestId = null;
+    let finalTimings = null;
     try {
       const result = await engine.generate({
         model,
@@ -1604,6 +1633,14 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         }
       });
       requestId = result.requestId;
+      // Этап 2 §7/§12: честные числа в последнем чанке — UI показывает их под ответом:
+      // загрузка модели, TTFT без загрузки, скорость генерации. Не выдуманные цифры.
+      finalTimings = {
+        ...(result.timings ?? {}),
+        usage: result.usage ?? null,
+        server: result.server ?? null
+      };
+      send({ id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: {}, finish_reason: null }], litemind: { request_id: requestId, timings: finalTimings } });
       finish('stop');
     } catch (err) {
       const reason = err.code === 'CANCELLED' || abort.signal.aborted ? 'cancelled' : 'error';

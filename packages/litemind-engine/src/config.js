@@ -6,7 +6,10 @@ import path from 'node:path';
 
 /**
  * Profiles hold the tunables that protect weak machines.
- * `low` is the default and is intentionally conservative.
+ * `balanced` is the default (ТЗ Этапа 2 §8: профили реально меняют параметры
+ * runtime — потоки, batch, приоритет, резерв RAM, кэш; см. resource/threads.js).
+ * Значения cpuThreads/cpuThreadsBatch 0 = авто (разрешается по числу ядер:
+ * N5095A 4C/4T → генерация 2/3/4 потока, prefill 2/4/4 для low/balanced/high).
  */
 export const DEFAULT_PROFILES = {
   low: {
@@ -16,9 +19,13 @@ export const DEFAULT_PROFILES = {
     contextTokens: 2048,
     maxOutputTokens: 512,
     cpuThreads: 2,
-    numBatch: 128,
-    requestTimeoutMs: 120000,
-    idleUnloadSeconds: 300,
+    cpuThreadsBatch: 0,
+    numBatch: 512,
+    cacheReuse: 0,
+    // Таймаут всего запроса: длинный ответ слабой модели (2 т/с × 512 токенов)
+    // занимает ~4-6 минут — прежние 120 с обрывали легитимные ответы.
+    requestTimeoutMs: 600000,
+    idleUnloadSeconds: 900,
     autoLoadAtStartup: false,
     allowAutoDownload: false,
     memoryReserveMb: 2048,
@@ -31,10 +38,12 @@ export const DEFAULT_PROFILES = {
     queueLimit: 32,
     contextTokens: 4096,
     maxOutputTokens: 1024,
-    cpuThreads: 0, // 0 = backend default
-    numBatch: 256,
-    requestTimeoutMs: 180000,
-    idleUnloadSeconds: 600,
+    cpuThreads: 0, // авто: N5095A → 3 (одно ядро остаётся Windows)
+    cpuThreadsBatch: 0, // авто: все ядра на prefill (короткая фаза)
+    numBatch: 1024,
+    cacheReuse: 0,
+    requestTimeoutMs: 900000,
+    idleUnloadSeconds: 1800,
     autoLoadAtStartup: false,
     allowAutoDownload: false,
     memoryReserveMb: 1024,
@@ -49,10 +58,12 @@ export const DEFAULT_PROFILES = {
     queueLimit: 48,
     contextTokens: 8192,
     maxOutputTokens: 2048,
-    cpuThreads: 0, // 0 = backend default
-    numBatch: 512,
-    requestTimeoutMs: 300000,
-    idleUnloadSeconds: 900,
+    cpuThreads: 0, // авто: все ядра модели
+    cpuThreadsBatch: 0,
+    numBatch: 2048,
+    cacheReuse: 256, // повторное использование KV после контекстного сдвига (llama.cpp)
+    requestTimeoutMs: 1800000,
+    idleUnloadSeconds: 3600,
     autoLoadAtStartup: false,
     allowAutoDownload: false,
     memoryReserveMb: 768,
@@ -80,9 +91,11 @@ export const DEFAULT_CONFIG = {
     baseUrl: 'http://127.0.0.1:11434',
     connectTimeoutMs: 1500,
     streamIdleTimeoutMs: 60000,
-    // mmap держим включённым (экономия RAM, быстрая загрузка); mlock запрещён:
-    // на 16 ГБ он усиливает давление на память Windows.
-    useMmap: true,
+    // Этап 2 §3: 'auto' — mmap выключается для моделей, которые заведомо
+    // помещаются в RAM (последовательное чтение грузит их быстрее холодного
+    // mmap и ускоряет генерацию); большие модели остаются на mmap, чтобы
+    // Windows могла вытеснять холодные страницы. true/false — явное значение.
+    useMmap: 'auto',
     useMlock: false
   },
   // ТЗ §6: профиль по умолчанию — Сбалансированный.
@@ -167,6 +180,10 @@ export function validateConfig(config) {
     errors.push('api.allowLan requires api.auth.enabled with a token (LAN exposure without auth is refused)');
   }
   if (!DEFAULT_PROFILES[config.profile]) errors.push(`profile must be one of ${Object.keys(DEFAULT_PROFILES).join(', ')}`);
+  const mmap = config.backend?.useMmap;
+  if (![true, false, 'auto', null, undefined].includes(mmap)) {
+    errors.push(`backend.useMmap must be true, false, "auto" or null, got ${JSON.stringify(mmap)}`);
+  }
   if (!['lmlama', 'ollama'].includes(config.backend?.type)) {
     errors.push(`unsupported backend.type "${config.backend?.type}" (supported: "lmlama" — собственный llama.cpp runtime, "ollama" — опциональная интеграция)`);
   }

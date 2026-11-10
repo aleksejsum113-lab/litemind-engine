@@ -18,11 +18,14 @@ const BENCH_PROMPT = 'Напиши одно короткое предложен�
 // более лёгкий квант или модель (ТЗ §5).
 export const SLOW_TOKENS_PER_SEC = 2.5;
 
-/** Кандидаты num_thread: профиль/максимум, половина, минимум. Уникальные, >= 1. */
+/** Кандидаты num_thread (Этап 2: включаем и ВСЕ ядра — prefill и генерация
+ *  на N5095A измеряются честно; раньше кандидаты никогда не включали cores).
+ *  Уникальные, >= 1. */
 export function threadCandidates({ cpuThreads = 0, cores = os.cpus().length } = {}) {
-  const max = cpuThreads > 0 ? cpuThreads : Math.max(2, Math.min(4, (cores || 4) - 1));
-  const set = new Set([max, Math.max(1, Math.ceil(max / 2)), 1]);
-  return [...set].filter((n) => n >= 1 && n <= Math.max(1, cores)).sort((a, b) => b - a);
+  const n = Math.max(1, cores || 4);
+  const max = cpuThreads > 0 ? cpuThreads : Math.max(2, Math.min(4, n - 1));
+  const set = new Set([n, max, Math.max(1, Math.ceil(max / 2)), 1]);
+  return [...set].filter((k) => k >= 1 && k <= n).sort((a, b) => b - a);
 }
 
 /**
@@ -51,6 +54,10 @@ export async function probe({ engine, model, threads, contextTokens, maxOutputTo
  * Полная автооптимизация модели. Перебирает кандидатов потоков, сохраняет лучшую
  * конфигурацию в config.optimizations и пишет конфиг на диск.
  * onProgress(stage) — для UI-прогресса: { stage: 'probe'|'done'|'error', index, total, threads, result? }.
+ *
+ * Этап 2: каждая проба теперь реально перезапускает llama-server с новым числом
+ * потоков (args-key в ensureServer) — раньше все пробы шли на одном процессе с
+ * одними и теми же потоками, и «оптимизация» измеряла шум.
  */
 export async function optimizeModel({ engine, model, onProgress = null, maxOutputTokens = 64 }) {
   const profile = engine.profile;
@@ -97,7 +104,9 @@ export async function optimizeModel({ engine, model, onProgress = null, maxOutpu
     profile: engine.config.profile,
     candidates: tried,
     measuredAt: new Date().toISOString(),
-    advice: adviceFor(best.tokensPerSecond, engine.config.profile)
+    advice: adviceFor(best.tokensPerSecond, engine.config.profile),
+    // Этап 2: честная пометка, что пробы перезапускали runtime (args-key).
+    measuredWithRestarts: true
   };
 
   engine.config.optimizations[model] = {

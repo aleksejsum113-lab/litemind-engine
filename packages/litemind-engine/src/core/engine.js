@@ -1,11 +1,30 @@
 // LiteMind Core — request lifecycle, queueing, cancellation, timeouts, model unload.
 // Owns policy (Low Resource limits, memory gate); never implements inference itself.
+//
+// Этап 2: каждая генерация снабжается трассировкой стадий (resource/stages.js):
+// запрос → очередь → memory-gate → запуск/переиспользование llama-server →
+// отправка промпта → первый токен → генерация → завершение. Это честно разделяет
+// загрузку модели и генерацию (ТЗ §2: «не смешивать время загрузки модели и
+// время генерации»). Watchdog бездействия потока запускается ОТ ПЕРВОГО ТОКЕНА:
+// prefill длинного промпта на слабом CPU может длиться минуты — прежний watchdog,
+// запущенный до первого токена, убивал медленный prefill за 60 с.
 import { randomUUID } from 'node:crypto';
 import { activeProfile, saveConfig } from '../config.js';
-import { checkStartBudget, estimateModelMemoryMb } from '../resource/gate.js';
+import { checkStartBudget, estimateModelMemoryMb, dynamicReserveMb } from '../resource/gate.js';
 import { applyBackendPriority } from '../resource/priority.js';
 import { prepareRequest } from '../adaptive/controller.js';
+import { StageTrace, summarizeStages, STAGES } from '../resource/stages.js';
+
 import { BackendError } from '../backends/base.js';
+
+const STAGES_REQUEST_RECEIVED = STAGES.REQUEST_RECEIVED;
+const STAGES_QUEUED = STAGES.QUEUED;
+const STAGES_MEMORY_GATE = STAGES.MEMORY_GATE;
+const STAGES_SERVER_START = STAGES.SERVER_START;
+const STAGES_PROMPT_SUBMIT = STAGES.PROMPT_SUBMIT;
+const STAGES_FIRST_TOKEN = STAGES.FIRST_TOKEN;
+const STAGES_GENERATION = STAGES.GENERATION;
+const STAGES_TOTAL = STAGES.TOTAL;
 
 export class EngineError extends Error {
   constructor(message, { code = 'ENGINE_ERROR', status = 500, details = null } = {}) {
@@ -31,6 +50,7 @@ export class Engine {
     this.queue = [];
     this.active = 0;
     this._idleTimer = null;
+    this._stageTraces = []; // последние 24 трассировки стадий (для /api/perf)
     // ТЗ §16 — жизненный цикл движка: running | stopping | stopped.
     this.lifecycle = { state: 'running', since: this.now() };
     // Модели, для которых пользователь запросил остановку ('stopping')
@@ -63,6 +83,11 @@ export class Engine {
     this.health = { ok: det.ok, checked: true, version: det.version ?? null, error: det.error ?? null, at: this.now() };
     if (det.ok) this.log.info('backend detected', { type: this.backend.type, version: det.version, baseUrl: this.config.backend.baseUrl });
     else this.log.warn('backend not available', { error: det.error });
+    // Этап 2 §10: честный опрос вычислительных устройств runtime (--list-devices).
+    // Фоново и без последствий: результат попадает в диагностику, GPU не включается.
+    if (typeof this.backend.probeGpuDevices === 'function') {
+      this.backend.probeGpuDevices().catch(() => {});
+    }
     return this.health;
   }
 
@@ -94,6 +119,9 @@ export class Engine {
         contextTokens: this.profile.contextTokens,
         maxOutputTokens: this.profile.maxOutputTokens,
         cpuThreads: this.profile.cpuThreads,
+        cpuThreadsBatch: this.profile.cpuThreadsBatch ?? 0,
+        numBatch: this.profile.numBatch ?? 0,
+        cacheReuse: this.profile.cacheReuse ?? 0,
         idleUnloadSeconds: this.profile.idleUnloadSeconds,
         requestTimeoutMs: this.profile.requestTimeoutMs,
         memoryReserveMb: this.profile.memoryReserveMb
@@ -104,6 +132,9 @@ export class Engine {
       adaptive: this.adaptiveStats,
       optimizations: this.config.optimizations ?? {},
       perf: this.perf?.summary() ?? null,
+      // Этап 2 §8/§12: фактические параметры runtime и трассировка стадий.
+      runtime: this.backend.runtimeInfo ? this.backend.runtimeInfo() : null,
+      stages: this.stageSummary(),
       models: [],
       modelsError: null
     };
@@ -117,6 +148,11 @@ export class Engine {
       out.modelsError = this.health.error ?? 'backend not detected';
     }
     return out;
+  }
+
+  /** Сводка по стадиям последних запросов (для мониторинга, ТЗ §12). */
+  stageSummary() {
+    return summarizeStages(this._stageTraces);
   }
 
   _record(record, patch) {
@@ -352,6 +388,23 @@ export class Engine {
     };
     this.requests.set(record.id, record);
 
+    // --- Этап 2 §2: трассировка стадий с временными метками ---
+    const trace = new StageTrace({ now: this.now, requestId: record.id, model });
+    trace.mark(STAGES_REQUEST_RECEIVED, { at: record.createdAt });
+    trace.end(STAGES_REQUEST_RECEIVED); // мгновенное событие: получено
+    record.stages = trace.stages;
+    const closePendingBeforeTokens = () => {
+      // Fallback для бэкендов без колбэков прогресса (mock/ollama):
+      // закрываем незакрытые стадии до first_token честными пометками.
+      if (trace.isOpen(STAGES_SERVER_START)) trace.end(STAGES_SERVER_START, { loadMs: null, restarted: null, meta: 'no-progress-callback' });
+      if (trace.isOpen(STAGES_PROMPT_SUBMIT)) trace.end(STAGES_PROMPT_SUBMIT, { headersMs: null });
+    };
+    const persistTrace = () => {
+      this._stageTraces.push(trace);
+      if (this._stageTraces.length > 24) this._stageTraces.shift();
+      record.stages = trace.stages;
+    };
+
     // --- Adaptive Controller: сложность, уплотнение контекста, бюджет генерации ---
     const prepared = prepareRequest({
       messages,
@@ -397,15 +450,19 @@ export class Engine {
 
     let acquired = false;
     try {
+      trace.mark(STAGES_QUEUED);
       await this._acquire(record);
       acquired = true;
       this._clearIdleTimer();
       this._record(record, { state: 'running', startedAt: this.now() });
       if (ctrl.signal.aborted) cancelled = true;
+      trace.end(STAGES_QUEUED, { waited: true });
 
       // --- memory gate (never start a model that does not fit) ---
       if (!cancelled) {
+        trace.mark(STAGES_MEMORY_GATE);
         const gate = await this._memoryGate(model, ctx);
+        trace.end(STAGES_MEMORY_GATE, { allowed: gate.allowed, severity: gate.severity ?? null });
         if (!gate.allowed) {
           this.stats.rejectedBudget++;
           throw new EngineError(gate.reason, { code: 'MEMORY_BUDGET', status: 503, details: gate });
@@ -420,16 +477,25 @@ export class Engine {
       let firstTokenAt = null;
 
       const wrappedOnToken = (delta, info) => {
+        // Этап 2 §7: сторож бездействия запускается ОТ ПЕРВОГО ТОКЕНА.
+        // До первого токена работает общий таймаут запроса — prefill длинного
+        // промпта на слабом CPU легитимно длится дольше streamIdleTimeoutMs.
         armWatchdog();
         if (firstTokenAt === null) {
           firstTokenAt = this.now();
           record.ttftMs = firstTokenAt - started;
+          closePendingBeforeTokens();
+          if (trace.isOpen(STAGES_FIRST_TOKEN)) trace.end(STAGES_FIRST_TOKEN, { ttftMs: record.ttftMs });
+          trace.mark(STAGES_GENERATION);
         }
         record.outputTokens++;
         onToken?.(delta, info);
       };
-      armWatchdog();
+      // ВНИМАНИЕ: armWatchdog() здесь НЕ вызывается (см. комментарий выше).
 
+      trace.mark(STAGES_SERVER_START);
+      trace.mark(STAGES_PROMPT_SUBMIT);
+      trace.mark(STAGES_FIRST_TOKEN);
       const result = await this.backend.generate({
         model,
         messages: prepared.messages,
@@ -438,19 +504,55 @@ export class Engine {
         threads: thr,
         numBatch: p.numBatch ?? 0,
         useMmap: this.config.backend.useMmap ?? null,
+        cacheReuse: p.cacheReuse ?? 0,
+        profile: this.config.profile,
         signal: ctrl.signal,
-        onToken: wrappedOnToken
+        onToken: wrappedOnToken,
+        // Этап 2 §2: точные границы стадий сообщает сам бэкенд.
+        onServerReady: (serverInfo) => {
+          trace.end(STAGES_SERVER_START, {
+            loadMs: serverInfo?.loadMs ?? null,
+            restarted: serverInfo?.restarted ?? null,
+            params: serverInfo?.params ?? null
+          });
+        },
+        onHeaders: (headersMs) => {
+          trace.end(STAGES_PROMPT_SUBMIT, { headersMs: headersMs ?? null });
+        }
       });
 
+      // Стадии, не закрытые колбэками (пустой ответ/старые бэкенды).
+      closePendingBeforeTokens();
+      if (firstTokenAt === null) {
+        trace.end(STAGES_FIRST_TOKEN, { unavailable: true });
+        trace.mark(STAGES_GENERATION);
+      }
+      trace.end(STAGES_GENERATION, { tokens: result.usage?.completionTokens ?? record.outputTokens });
+      trace.point(STAGES_TOTAL);
+      persistTrace();
+      record.serverTimings = this.backend.takeServerTimings
+        ? this.backend.takeServerTimings().slice(-1)
+        : [];
+
+      const serverMeta = result.server ?? null;
+      // Этап 2: загрузка модели берётся из трассы (работает для любого бэкенда,
+      // который сообщает onServerReady, даже если result.server не заполнен).
+      const serverStageMeta = trace.list.find((s) => s.stage === STAGES.SERVER_START)?.meta ?? null;
       const finishedAt = this.now();
       const durationMs = finishedAt - started;
       const outputTokens = result.usage?.completionTokens || record.outputTokens;
+      const firstTokenStage = trace.durationOf(STAGES_FIRST_TOKEN);
+      const modelLoadMs = serverStageMeta?.restarted ? (serverStageMeta.loadMs ?? null) : null;
       const sample = {
         requestId: record.id,
         model,
         complexity: prepared.complexity,
         durationMs,
         ttftMs: record.ttftMs,
+        // Этап 2 §2: честное разделение — TTFT без загрузки модели и сама загрузка.
+        ttftAfterServerMs: firstTokenStage,
+        modelLoadMs,
+        serverMs: serverMeta?.ms ?? null,
         outputTokens,
         tokensPerSecond: durationMs > 0 && outputTokens ? Math.round((outputTokens / (durationMs / 1000)) * 10) / 10 : null,
         queuedMs: record.startedAt - record.createdAt
@@ -458,9 +560,20 @@ export class Engine {
       this.perf?.record(sample);
       this._trackModelPerformance(model, sample);
       this.stats.completed++;
-      this._record(record, { state: 'done', finishedAt, outputTokens, durationMs, ttftMs: record.ttftMs });
+      this._record(record, {
+        state: 'done', finishedAt, outputTokens, durationMs, ttftMs: record.ttftMs,
+        ttftAfterServerMs: firstTokenStage, modelLoadMs
+      });
       return { ...result, requestId: record.id, timings: sample };
     } catch (err) {
+      // Этап 2 §2: трассировка стадий сохраняется и при ошибке — это диагностике
+      // показывает, ГДЕ именно запрос застрял (например, загрузка модели).
+      closePendingBeforeTokens();
+      if (trace.isOpen(STAGES_FIRST_TOKEN)) trace.end(STAGES_FIRST_TOKEN, { unavailable: true });
+      if (trace.isOpen(STAGES_GENERATION)) trace.end(STAGES_GENERATION, { error: true });
+      trace.point(STAGES_TOTAL);
+      trace.list.push({ stage: 'error', at: this.now(), durMs: null, meta: { message: String(err?.message ?? err).slice(0, 300) } });
+      persistTrace();
       if (overloaded) {
         this.stats.failed++;
         // Безопасно выгружаем модель: RAM должна вернуться системе сразу.
@@ -584,15 +697,26 @@ export class Engine {
       contextTokens,
       kvOverheadKbPerToken: p.kvOverheadKbPerToken
     });
-    return checkStartBudget({
+    // Этап 2 §3: динамический резерв — при paging/высокой нагрузке растёт,
+    // при спокойной системе равен базовому резерву профиля.
+    const reserve = dynamicReserveMb({
+      baseReserveMb: p.memoryReserveMb,
+      availableRamMb: metrics?.availableRamMb ?? 0,
+      totalRamMb: metrics?.totalRamMb ?? 0,
+      hardFaultsPerSec: metrics?.hardFaultsPerSec ?? null,
+      systemCpuPercent: metrics?.cpuPercent ?? null
+    });
+    const gate = checkStartBudget({
       estimatedMb,
       availableRamMb: metrics?.availableRamMb ?? 0,
       totalRamMb: metrics?.totalRamMb ?? 0,
       usedRamMb: metrics?.usedRamMb ?? null,
-      reserveMb: p.memoryReserveMb,
+      reserveMb: reserve,
       maxRamUsageFraction: this.config.resource.maxRamUsageFraction,
       blockOnUnknownEstimate: p.blockOnUnknownEstimate
     });
+    if (reserve.reasons?.length) gate.reserveReasons = reserve.reasons;
+    return gate;
   }
 
   /** Cancel one in-flight/queued request by id. */

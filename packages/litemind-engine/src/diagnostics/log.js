@@ -64,6 +64,9 @@ export class PerfRecorder {
     const ttft = ok.map((s) => s.ttftMs).filter((v) => Number.isFinite(v));
     const dur = ok.map((s) => s.durationMs).filter((v) => Number.isFinite(v));
     const tps = ok.map((s) => s.tokensPerSecond).filter((v) => Number.isFinite(v));
+    // Этап 2: честное разделение — TTFT готового runtime и загрузка модели.
+    const ttftPure = ok.map((s) => s.ttftAfterServerMs).filter((v) => Number.isFinite(v));
+    const loadMs = ok.map((s) => s.modelLoadMs).filter((v) => Number.isFinite(v));
     const avg = (a) => (a.length ? Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 10) / 10 : null);
     const pct = (a, p) => {
       if (!a.length) return null;
@@ -73,6 +76,8 @@ export class PerfRecorder {
     return {
       counters: { ...this.counters },
       ttftMs: { avg: avg(ttft), p95: pct(ttft, 95), min: ttft.length ? Math.min(...ttft) : null },
+      ttftAfterServerMs: { avg: avg(ttftPure), p95: pct(ttftPure, 95), n: ttftPure.length },
+      modelLoadMs: { avg: avg(loadMs), max: loadMs.length ? Math.max(...loadMs) : null, n: loadMs.length },
       durationMs: { avg: avg(dur), p95: pct(dur, 95) },
       tokensPerSecond: { avg: avg(tps), best: tps.length ? Math.max(...tps) : null },
       samples: this.samples.length
