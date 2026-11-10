@@ -15,6 +15,7 @@ import { OllamaInstaller } from '../install/ollama.js';
 import { optimizeModel, SLOW_TOKENS_PER_SEC } from '../optimize/optimizer.js';
 import { capabilitiesFor } from '../adaptive/capabilities.js';
 import * as projectIndex from '../adaptive/project-index.js';
+import * as wsx from '../project/workspace.js';
 import { extractText } from '../attachments/extract.js';
 import { saveConfig } from '../config.js';
 import {
@@ -29,7 +30,32 @@ import {
 } from '../storage/storage.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui', 'public');
-const MAX_BODY = 1024 * 1024; // 1 MiB
+const MAX_BODY = 1024 * 1024; // 1 МиБ — файлы проекта идут по другому лимиту (8 МиБ)
+const MAX_BODY_FILE = 8 * 1024 * 1024;
+
+/** Конфигурируемые исключения сканирования (?exclude=node_modules,tmp). */
+function excludesFrom(url) {
+  const raw = url.searchParams.get('exclude') ?? '';
+  return raw.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 32);
+}
+
+/** mtime файла или null (файл исчез). Точность NTFS ~100 нс, ext4 — нс. */
+function mtimeOf(file) {
+  try { return fs.statSync(file).mtimeMs; } catch { return null; }
+}
+
+/** Проверка expectedMtimeMs перед записью: 409, если файл меняли извне. */
+function checkMtimeConflict(file, expected, body) {
+  if (expected == null || body.force === true) return null;
+  const current = mtimeOf(file);
+  if (current == null) return null;
+  if (Math.abs(current - Number(expected)) > 2) {
+    return Object.assign(new Error('файл изменён другой программой после загрузки в редактор'), {
+      status: 409, conflict: true, mtimeMs: current
+    });
+  }
+  return null;
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -414,9 +440,181 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       return json(res, 200, projectIndex.projectMap(dir) ?? { error: 'проект не просканирован' });
     }
 
+    // --- Projects: открытие/создание папки (Этап 1В §2) --------------------
+    // Честная проверка доступности: «недоступная папка» не становится
+    // активным проектом. Создание = mkdir -p; существующий каталог не ошибка.
+    if (req.method === 'POST' && p === '/api/project/open') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (!body.path) return openaiError(res, 400, 'path is required', 'invalid_request_error');
+      const r = await wsx.openProject(body.path);
+      return json(res, r.ok ? 200 : 404, r);
+    }
+    if (req.method === 'POST' && p === '/api/project/create') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (!body.path) return openaiError(res, 400, 'path is required', 'invalid_request_error');
+      const r = await wsx.createProject(body.path);
+      return json(res, r.ok ? 200 : 400, r);
+    }
+
+    // --- Workspace: ленивое дерево файлов (Этап 1В §2) ---------------------
+    // Один уровень каталога за запрос — огромные проекты не грузятся в память.
+    if (req.method === 'GET' && p === '/api/project/tree') {
+      const dir = url.searchParams.get('path');
+      const rel = url.searchParams.get('dir') ?? '';
+      if (!dir) return openaiError(res, 400, 'path is required', 'invalid_request_error');
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        return openaiError(res, 404, `Каталог не найден: ${dir}`, 'invalid_request_error');
+      }
+      try {
+        const t = await wsx.listTree(dir, rel, { exclude: excludesFrom(url), limit: Number(url.searchParams.get('limit')) || undefined });
+        return json(res, 200, t);
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'invalid_request_error', 'TREE_FAILED');
+      }
+    }
+
+    // Поиск файлов по имени.
+    if (req.method === 'GET' && p === '/api/project/find') {
+      const dir = url.searchParams.get('path');
+      const q = url.searchParams.get('q');
+      if (!dir || !q) return openaiError(res, 400, 'path and q are required', 'invalid_request_error');
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        return openaiError(res, 404, `Каталог не найден: ${dir}`, 'invalid_request_error');
+      }
+      const r = await wsx.findFiles(dir, q, { exclude: excludesFrom(url), limit: Math.min(Number(url.searchParams.get('limit')) || 100, 200) });
+      return json(res, 200, r);
+    }
+
+    // Поиск текста внутри файлов: файл, строка, колонка, номер строки.
+    if (req.method === 'GET' && p === '/api/project/grep') {
+      const dir = url.searchParams.get('path');
+      const q = url.searchParams.get('q');
+      if (!dir || !q) return openaiError(res, 400, 'path and q are required', 'invalid_request_error');
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        return openaiError(res, 404, `Каталог не найден: ${dir}`, 'invalid_request_error');
+      }
+      try {
+        const r = await wsx.grepFiles(dir, q, {
+          exclude: excludesFrom(url),
+          limit: Math.min(Number(url.searchParams.get('limit')) || 60, 200),
+          caseSensitive: url.searchParams.get('case') === '1'
+        });
+        return json(res, 200, r);
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'api_error', 'GREP_FAILED');
+      }
+    }
+
+    // Контекст проекта для чата: только явно выбранные пользователем файлы.
+    if (req.method === 'POST' && p === '/api/project/context') {
+      const body = JSON.parse((await readBody(req, MAX_BODY_FILE)) || '{}');
+      const dir = body.path ? path.resolve(body.path) : null;
+      if (!dir) return openaiError(res, 400, 'path is required', 'invalid_request_error');
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        return openaiError(res, 404, `Каталог не найден: ${dir}`, 'invalid_request_error');
+      }
+      const r = await wsx.buildContext(dir, body.files ?? [], {
+        perFileChars: Math.min(Number(body.perFileChars) || undefined, 500_000) || undefined,
+        totalChars: Math.min(Number(body.totalChars) || undefined, 2_000_000) || undefined
+      });
+      return json(res, 200, r);
+    }
+
+    // --- Изменения файлов через ИИ: бэкап → применить → восстановить -------
+    // Ничего не перезаписывается без явного подтверждения пользователя в UI:
+    // это API подготовки и применения, а не автономный агент.
+    if (req.method === 'GET' && p === '/api/project/backups') {
+      const dir = url.searchParams.get('path');
+      const rel = url.searchParams.get('file');
+      if (!dir || !rel) return openaiError(res, 400, 'path and file are required', 'invalid_request_error');
+      try {
+        const list = await wsx.listBackups(dir, rel, { configPath: config.paths.configPath });
+        return json(res, 200, { file: rel, backups: list });
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'invalid_request_error', 'BACKUPS_FAILED');
+      }
+    }
+    if (req.method === 'POST' && p === '/api/project/apply-change') {
+      const body = JSON.parse((await readBody(req, MAX_BODY_FILE)) || '{}');
+      const dir = body.path ? path.resolve(body.path) : null;
+      const rel = typeof body.file === 'string' ? body.file : null;
+      if (!dir || !rel) return openaiError(res, 400, 'path and file are required', 'invalid_request_error');
+      if (typeof body.content !== 'string') return openaiError(res, 400, 'content must be a string', 'invalid_request_error');
+      if (Buffer.byteLength(body.content, 'utf8') > 2 * 1024 * 1024) {
+        return openaiError(res, 413, 'файл больше 2 МиБ', 'invalid_request_error');
+      }
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        return openaiError(res, 404, `Каталог не найден: ${dir}`, 'invalid_request_error');
+      }
+      try {
+        const root = path.resolve(dir);
+        const { file } = wsx.safeRelPath(root, rel);
+        if (!fs.existsSync(file)) {
+          return openaiError(res, 404, `Файл не найден: ${rel}`, 'invalid_request_error');
+        }
+        const conflict = checkMtimeConflict(file, body.expectedMtimeMs, body);
+        if (conflict) {
+          return json(res, 409, {
+            error: { message: conflict.message + ' — сначала посмотрите текущее содержимое', type: 'conflict_error', code: 'FILE_CHANGED_EXTERNALLY', param: null, line: null },
+            conflict: true, mtimeMs: conflict.mtimeMs
+          });
+        }
+        // 1) Резервная копия текущего содержимого (вне проекта).
+        const backup = await wsx.makeBackup(root, rel, { configPath: config.paths.configPath });
+        // 2) Запись нового содержимого.
+        fs.writeFileSync(file, body.content, 'utf8');
+        const st = fs.statSync(file);
+        logger?.warn('ai file change applied', { file: rel, backup: backup.backupId });
+        return json(res, 200, {
+          applied: true, file: path.relative(root, file),
+          sizeBytes: st.size, mtimeMs: st.mtimeMs,
+          backupId: backup.backupId, backupPath: backup.backupPath
+        });
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'invalid_request_error', 'APPLY_FAILED');
+      }
+    }
+    if (req.method === 'POST' && p === '/api/project/restore-backup') {
+      const body = JSON.parse((await readBody(req, MAX_BODY_FILE)) || '{}');
+      const dir = body.path ? path.resolve(body.path) : null;
+      if (!dir || !body.backupId) return openaiError(res, 400, 'path and backupId are required', 'invalid_request_error');
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        return openaiError(res, 404, `Каталог не найден: ${dir}`, 'invalid_request_error');
+      }
+      try {
+        const root = path.resolve(dir);
+        const b = await wsx.readBackup(root, body.backupId, { configPath: config.paths.configPath });
+        const target = path.resolve(root, b.rel);
+        if (!fs.existsSync(target)) {
+          return openaiError(res, 404, `Файл исчез: ${b.rel}`, 'invalid_request_error');
+        }
+        // Перед восстановлением сохраняем и текущее содержимое — откат тоже обратим.
+        const safety = await wsx.makeBackup(root, b.rel, { configPath: config.paths.configPath });
+        const conflict = checkMtimeConflict(target, body.expectedMtimeMs, body);
+        if (conflict && body.force !== true) {
+          return json(res, 409, {
+            error: { message: conflict.message, type: 'conflict_error', code: 'FILE_CHANGED_EXTERNALLY', param: null, line: null },
+            conflict: true, mtimeMs: conflict.mtimeMs, safetyBackupId: safety.backupId
+          });
+        }
+        fs.writeFileSync(target, b.content, 'utf8');
+        const st = fs.statSync(target);
+        logger?.warn('ai file change restored from backup', { file: b.rel, backup: body.backupId });
+        return json(res, 200, {
+          restored: true, file: b.rel, sizeBytes: st.size, mtimeMs: st.mtimeMs,
+          restoredFrom: body.backupId, safetyBackupId: safety.backupId
+        });
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'invalid_request_error', 'RESTORE_FAILED');
+      }
+    }
+
     // --- Workspace: чтение и сохранение файлов проекта (ТЗ §4/§7) ---------
     // Чтение ограничено 2 МиБ и текстовыми файлами; запись требует, чтобы
     // файл уже существовал (создание файлов — через инструменты проекта).
+    // Этап 1В: вместе с содержимым отдаётся mtimeMs, а запись умеет проверять
+    // expectedMtimeMs — защита от затирания изменений, сделанных другой
+    // программой (409 conflict), с явной опцией force.
     if (req.method === 'GET' && p === '/api/project/file') {
       const dir = url.searchParams.get('path');
       const rel = url.searchParams.get('file');
@@ -439,11 +637,16 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       if (head.includes(0)) {
         return openaiError(res, 415, 'бинарный файл не отображается в Workspace', 'invalid_request_error');
       }
-      return json(res, 200, { file: path.relative(root, file), sizeBytes: stat.size, content: buf.toString('utf8') });
+      return json(res, 200, {
+        file: path.relative(root, file),
+        sizeBytes: stat.size,
+        mtimeMs: stat.mtimeMs,
+        content: buf.toString('utf8')
+      });
     }
 
     if (req.method === 'POST' && p === '/api/project/file') {
-      const body = JSON.parse((await readBody(req)) || '{}');
+      const body = JSON.parse((await readBody(req, MAX_BODY_FILE)) || '{}');
       const dir = body.path ? path.resolve(body.path) : null;
       const rel = typeof body.file === 'string' ? body.file : null;
       if (!dir || !rel) return openaiError(res, 400, 'path and file are required', 'invalid_request_error');
@@ -459,9 +662,17 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       if (Buffer.byteLength(body.content, 'utf8') > 2 * 1024 * 1024) {
         return openaiError(res, 413, 'файл больше 2 МиБ', 'invalid_request_error');
       }
+      const conflict = checkMtimeConflict(file, body.expectedMtimeMs, body);
+      if (conflict) {
+        return json(res, 409, {
+          error: { message: conflict.message, type: 'conflict_error', code: 'FILE_CHANGED_EXTERNALLY', param: null, line: null },
+          conflict: true, mtimeMs: conflict.mtimeMs
+        });
+      }
       fs.writeFileSync(file, body.content, 'utf8');
+      const st = fs.statSync(file);
       logger?.info('workspace file saved', { file: path.relative(root, file) });
-      return json(res, 200, { saved: true, file: path.relative(root, file), sizeBytes: Buffer.byteLength(body.content, 'utf8') });
+      return json(res, 200, { saved: true, file: path.relative(root, file), sizeBytes: st.size, mtimeMs: st.mtimeMs });
     }
 
     // --- AI Terminal: выполнение команд в проекте (ТЗ §4) ------------------
@@ -489,6 +700,117 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         : `t${Date.now().toString(36)}${(terminalJobSeq++).toString(36)}`;
       const previous = terminalJobs.get(jobId);
       if (previous) { try { (previous.kill ?? (() => killProcessTree(previous.child)))(); } catch { /* завершится сам */ } }
+
+      // --- Этап 1В: потоковый режим (SSE) — вывод живой, а не после выхода ---
+      if (body.stream === true) {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-store',
+          connection: 'keep-alive',
+          'access-control-allow-origin': '*',
+          'x-accel-buffering': 'no'
+        });
+        const send = (event, data) => {
+          if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        };
+        const finishSse = (payload) => {
+          send('exit', payload);
+          res.end();
+        };
+        const result = await new Promise((resolve) => {
+          const child = spawn(command, { cwd, shell: true, windowsHide: true, detached: process.platform !== 'win32' });
+          const cap = 2 * 1024 * 1024;
+          const out = [];
+          const errOut = [];
+          let outN = 0;
+          let errN = 0;
+          let truncated = false;
+          let timedOut = false;
+          let stoppedByUser = false;
+          let spawnError = null;
+          let settled = false;
+          let graceTimer = null;
+          // Живой вывод: кодировка определяется по первому куску (§4):
+          // строгий UTF-8 → CP866 → windows-1251. Финальный текст считается
+          // по полному буферу — он и уходит в «Вывод в чат».
+          const decOut = wsx.makeOutputDecoder();
+          const decErr = wsx.makeOutputDecoder();
+          send('start', { jobId, cwd, command });
+          child.stdout?.on('data', (chunk) => {
+            if (outN < cap) {
+              const take = chunk.subarray(0, cap - outN);
+              out.push(take);
+              outN += take.length;
+              if (take.length < chunk.length) truncated = true;
+              send('stdout', { text: decOut.push(take), encoding: decOut.encoding() });
+            } else truncated = true;
+          });
+          child.stderr?.on('data', (chunk) => {
+            if (errN < cap) {
+              const take = chunk.subarray(0, cap - errN);
+              errOut.push(take);
+              errN += take.length;
+              if (take.length < chunk.length) truncated = true;
+              send('stderr', { text: decErr.push(take), encoding: decErr.encoding() });
+            } else truncated = true;
+          });
+          child.on('error', (e) => { spawnError = e.message; send('error', { message: e.message }); });
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            clearTimeout(graceTimer);
+            terminalJobs.delete(jobId);
+            resolve({
+              code: child.exitCode,
+              signal: child.signalCode,
+              stdoutRaw: Buffer.concat(out),
+              stderrRaw: Buffer.concat(errOut),
+              timedOut, stoppedByUser, truncated, spawnError
+            });
+          };
+          child.on('close', finish);
+          // Убитому дереву даём 3 с на отпускание пайпов (демоны), затем
+          // отдаём собранное — HTTP-ответ не зависает (§4).
+          const startGrace = () => {
+            if (graceTimer) return;
+            graceTimer = setTimeout(() => {
+              finish();
+              try { child.stdout?.destroy(); child.stderr?.destroy(); } catch { /* уже закрыты */ }
+            }, 3000);
+          };
+          const timer = setTimeout(() => { timedOut = true; killProcessTree(child); startGrace(); }, timeoutMs);
+          // Клиент отвалился (закрыл окно/вкладку) — не оставляем процесс жить.
+          res.on('close', () => { if (!settled) { stoppedByUser = true; killProcessTree(child); startGrace(); } });
+          terminalJobs.set(jobId, {
+            child,
+            kill: () => { stoppedByUser = true; killProcessTree(child); startGrace(); },
+            cwd,
+            command: command.slice(0, 200)
+          });
+        });
+        const durationMs = Date.now() - started;
+        const outDec = wsx.decodeBuffer(result.stdoutRaw);
+        const errDec = wsx.decodeBuffer(result.stderrRaw);
+        if (result.timedOut) logger?.warn('terminal command timed out', { cwd, durationMs, stream: true });
+        else if (result.stoppedByUser) logger?.warn('terminal command stopped by user', { cwd, durationMs, stream: true });
+        else logger?.info('terminal command executed', { cwd, durationMs, exitCode: result.code ?? 0, stream: true });
+        finishSse({
+          jobId,
+          exitCode: result.spawnError ? 1 : (result.code ?? (result.signal || result.timedOut || result.stoppedByUser ? 1 : 0)),
+          timedOut: result.timedOut,
+          stopped: result.stoppedByUser,
+          truncated: result.truncated,
+          durationMs,
+          stdout: outDec.text,
+          stderr: errDec.text,
+          encoding: outDec.encoding,
+          error: result.spawnError
+            ?? (result.timedOut ? `превышен таймаут ${timeoutMs} мс — процесс принудительно завершён` : null)
+        });
+        return;
+      }
+
       try {
         const result = await new Promise((resolve) => {
           // detached (POSIX): своя группа процессов — kill(-pid) убивает и
@@ -520,11 +842,15 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
             clearTimeout(timer);
             clearTimeout(graceTimer);
             terminalJobs.delete(jobId);
+            // Кодировка честная: UTF-8 или реальная кодировка консоли Windows.
+            const outDec = wsx.decodeBuffer(Buffer.concat(out));
+            const errDec = wsx.decodeBuffer(Buffer.concat(errOut));
             resolve({
               code: child.exitCode,
               signal: child.signalCode,
-              stdout: Buffer.concat(out).toString('utf8'),
-              stderr: Buffer.concat(errOut).toString('utf8'),
+              stdout: outDec.text,
+              stderr: errDec.text,
+              encoding: outDec.encoding,
               timedOut, stoppedByUser, truncated, spawnError
             });
           };
@@ -560,6 +886,7 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
           durationMs,
           stdout: result.stdout,
           stderr: result.stderr,
+          encoding: result.encoding,
           error: result.spawnError
             ?? (result.timedOut ? `превышен таймаут ${timeoutMs} мс — процесс принудительно завершён` : null)
         });
