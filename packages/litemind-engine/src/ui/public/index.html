@@ -326,10 +326,12 @@
             <input id="term-cwd" type="text" class="dir-input" placeholder="C:\Users\you\project" />
           </label>
           <div class="btns">
-            <input id="term-cmd" type="text" class="dir-input" placeholder="команда (например: node -v, git status)" />
+            <input id="term-cmd" type="text" class="dir-input" placeholder="команда (например: node -v, git status); ↑/↓ — история" />
             <button id="btn-term-run" class="primary">Выполнить</button>
+            <button id="btn-term-stop" hidden>Остановить</button>
+            <button id="btn-term-tochat" hidden>Вывод в чат</button>
           </div>
-          <p class="muted">Команды выполняются реальным shell в указанной папке. Таймаут по умолчанию 30 с, вывод до 2 МиБ. Команды с ожиданием ввода не поддерживаются.</p>
+          <p class="muted">Команды выполняются реальным shell в указанной папке. Таймаут по умолчанию 30 с, вывод до 2 МиБ, «Остановить» убивает всё дерево процессов. Команды с ожиданием ввода не поддерживаются; опасные команды требуют подтверждения.</p>
           <pre id="term-out" class="term-out" hidden></pre>
         </div>
       </section>
@@ -394,7 +396,10 @@
         <div class="card">
           <h2>Движок</h2>
           <label class="field">Папка для моделей (диск/путь)
-            <input id="set-rootdir" type="text" class="dir-input" />
+            <span class="dir-row">
+              <input id="set-rootdir" type="text" class="dir-input" />
+              <button id="btn-set-pick" type="button">Выбрать…</button>
+            </span>
           </label>
           <label class="field">Профиль
             <select id="set-profile">
@@ -414,6 +419,15 @@
           <label class="switch"><input type="checkbox" id="set-adaptive" /> Адаптивное управление (классификация задач, бюджет генерации)</label>
           <label class="switch"><input type="checkbox" id="set-compaction" /> Уплотнение контекста (экономия RAM, стабильный префикс для prompt-cache)</label>
           <p class="muted">Вспомогательная модель по умолчанию выключена: классификация выполняется эвристикой без нагрузки на CPU.</p>
+        </div>
+        <div class="card">
+          <h2>О приложении</h2>
+          <dl class="kv" id="about-app"><dt>Загрузка</dt><dd>…</dd></dl>
+          <div class="btns">
+            <button id="btn-open-logs">Открыть папку журналов</button>
+            <button id="btn-open-models">Открыть папку моделей</button>
+            <span class="muted" id="about-note"></span>
+          </div>
         </div>
       </section>
     </main>

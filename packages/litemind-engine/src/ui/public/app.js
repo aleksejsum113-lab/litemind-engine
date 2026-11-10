@@ -1660,6 +1660,20 @@ $('btn-ws-tochat').addEventListener('click', async () => {
 });
 
 /* ============================ AI Terminal ============================ */
+/* История команд (↑/↓), «Остановить» (убивает всё дерево процессов через
+   /api/terminal/stop), подтверждение опасных команд, передача вывода в чат. */
+const TERM_HIST_KEY = 'litemind-term-history';
+let termHistory = [];
+try { termHistory = JSON.parse(localStorage.getItem(TERM_HIST_KEY) || '[]').filter((c) => typeof c === 'string'); } catch { termHistory = []; }
+let termHistPos = -1;   // позиция навигации по истории
+let termDraft = '';     // недобитый ввод до ухода в историю
+let termJobId = null;   // id выполняющейся команды (задаётся клиентом заранее)
+let termLastOutput = null; // { command, text, exitCode } — для «Вывод в чат»
+
+/* Опасные команды: удаляющие/затирающие/перезапускающие. Только предупреждение
+   с подтверждением — терминал пользователя, блокировать не вправе. */
+const DANGEROUS_RE = /(^|\s|["'(&;])(rm\s+-[a-z]*r[a-z]*f|rm\s+-[a-z]*f[a-z]*r|rmdir\s+\/s|del\s+\/[sqa]|rd\s+\/s|format\s+[a-z]:|mkfs|dd\s+if=|shutdown|reboot|Remove-Item\s+(-Re)*[a-z]*-Recurse|:(){:\|:&};:)/i;
+
 function loadTerminal() {
   if (!state.projDir && !$('term-cwd').value) {
     const saved = localStorage.getItem(PROJ_KEY);
@@ -1667,33 +1681,100 @@ function loadTerminal() {
   }
 }
 
+function termRemember(command) {
+  termHistory = termHistory.filter((c) => c !== command);
+  termHistory.unshift(command);
+  if (termHistory.length > 100) termHistory.length = 100;
+  localStorage.setItem(TERM_HIST_KEY, JSON.stringify(termHistory));
+  termHistPos = -1;
+  termDraft = '';
+}
+
 $('btn-term-run').addEventListener('click', async () => {
   const cwd = $('term-cwd').value.trim();
   const command = $('term-cmd').value.trim();
   if (!cwd || !command) { showError('Укажите папку и команду.'); return; }
+  if (DANGEROUS_RE.test(command) && !confirm(`Команда выглядит опасной:\n\n${command}\n\nВыполнить её?`)) {
+    event('терминал: выполнение опасной команды отменено пользователем');
+    return;
+  }
   const out = $('term-out');
   out.hidden = false;
-  out.textContent = `$ ${command}\nвыполняется…`;
+  out.textContent = `$ ${command}\nвыполняется… (можно «Остановить»)\n`;
   $('btn-term-run').disabled = true;
+  $('btn-term-stop').hidden = false;
+  $('btn-term-tochat').hidden = true;
+  termRemember(command);
+  // jobId задаём на клиенте ДО запуска — иначе «Остановить» не знал бы, что убивать.
+  termJobId = `term-${Date.now().toString(36)}`;
   try {
-    const r = await api('/api/terminal/exec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cwd, command, timeoutMs: 30000 }) });
+    const r = await api('/api/terminal/exec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cwd, command, timeoutMs: 30000, jobId: termJobId }) });
     let text = `$ ${command}\n`;
     if (r.stdout) text += r.stdout;
     if (r.stderr) text += (r.stdout ? '\n[stderr]\n' : '') + r.stderr;
     if (!r.stdout && !r.stderr) text += '(без вывода)';
-    text += `\n\nкод выхода: ${r.exitCode}${r.timedOut ? ' (ТАЙМАУТ — процесс завершён принудительно)' : ''} · время: ${r.durationMs} мс`;
+    text += `\n\nкод выхода: ${r.exitCode}`;
+    if (r.timedOut) text += ' (ТАЙМАУТ — процесс завершён принудительно)';
+    else if (r.stopped) text += ' (ОСТАНОВЛЕНО ПОЛЬЗОВАТЕЛЕМ)';
+    if (r.truncated) text += '\n(вывод обрезан: лимит 2 МиБ)';
+    text += ` · время: ${r.durationMs} мс`;
     if (r.error) text += `\nошибка: ${r.error}`;
     out.textContent = text;
     out.className = 'term-out' + (r.exitCode === 0 ? '' : ' rc-bad');
-    event(`терминал: ${command} → код ${r.exitCode}`);
+    termLastOutput = { command, text, exitCode: r.exitCode };
+    $('btn-term-tochat').hidden = false;
+    event(`терминал: ${command} → код ${r.exitCode}${r.stopped ? ' (остановлено)' : ''}`);
   } catch (err) {
     out.textContent = `$ ${command}\nошибка: ${err.message}`;
     showError(err.message);
   } finally {
     $('btn-term-run').disabled = false;
+    $('btn-term-stop').hidden = true;
+    termJobId = null;
   }
 });
-$('term-cmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btn-term-run').click(); });
+
+$('btn-term-stop').addEventListener('click', async () => {
+  if (!termJobId) return;
+  $('btn-term-stop').disabled = true;
+  try {
+    const r = await api('/api/terminal/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jobId: termJobId }) });
+    if (!r.ok) showError(r.error || 'команда уже завершена');
+    // Итог придёт ответом на висящий exec-запрос (stopped: true) — он обновит вывод.
+  } catch (err) { showError('остановка: ' + err.message); }
+  $('btn-term-stop').disabled = false;
+});
+
+$('btn-term-tochat').addEventListener('click', () => {
+  if (!termLastOutput) return;
+  pendingAttachments.push({
+    name: 'terminal-output.txt',
+    kind: 'txt',
+    chars: termLastOutput.text.length,
+    text: `$ ${termLastOutput.command}\nкод выхода: ${termLastOutput.exitCode}\n\n${termLastOutput.text}`,
+    warning: null
+  });
+  renderAttachBar();
+  event('терминал → чат: вывод передан вложением');
+  openTab('chat');
+});
+
+/* История команд: ↑ — назад, ↓ — вперёд; недобитый ввод сохраняется. */
+$('term-cmd').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { $('btn-term-run').click(); return; }
+  if (!termHistory.length) return;
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (termHistPos === -1) { termDraft = $('term-cmd').value; termHistPos = 0; }
+    else if (termHistPos < termHistory.length - 1) termHistPos++;
+    $('term-cmd').value = termHistory[termHistPos] ?? termDraft;
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (termHistPos === -1) return;
+    termHistPos--;
+    $('term-cmd').value = termHistPos === -1 ? termDraft : termHistory[termHistPos];
+  }
+});
 
 /* ============================ Железо ============================ */
 async function loadHardware() {
@@ -1742,7 +1823,76 @@ async function loadSettings() {
     $('set-adaptive').checked = a.config?.enabled !== false;
     $('set-compaction').checked = a.config?.contextCompaction !== false;
   } catch { /* — */ }
+  loadAboutApp();
 }
+
+/* «О приложении» (ТЗ Этап 1 §12): версии и пути из Electron appInfo,
+   диагностика состояния — из /api/engine/state; в браузере показываем,
+   что доступно только через движок. */
+async function loadAboutApp() {
+  const dl = $('about-app');
+  if (!dl) return;
+  const rows = [];
+  const b = bridge();
+  if (b?.appInfo) {
+    try {
+      const a = await b.appInfo();
+      rows.push(
+        ['Версия LiteMind Desktop', a.version],
+        ['Electron / Chrome / Node', `${a.electron} / ${a.chrome} / ${a.node}`],
+        ['Платформа', `${a.platform} · ${a.arch} · ${a.packaged ? 'установленная сборка' : 'dev-режим'}`],
+        ['Данные приложения', a.userDataPath],
+        ['Журналы', a.logsPath],
+        ['Исполняемый файл', a.exePath]
+      );
+    } catch { /* мост недоступен */ }
+  } else {
+    rows.push(['Режим', 'панель движка (браузер). Версии приложения — в LiteMind Desktop']);
+  }
+  try {
+    const st = await api('/api/engine/state');
+    rows.push(
+      ['Движок', `${st.engine}${st.reachable ? ' (отвечает)' : ''}`],
+      ['Runtime', st.backend?.type ?? '—'],
+      ['Модели в памяти', (st.models || []).length ? st.models.map((m) => `${m.id}: ${m.state}`).join(', ') : 'нет'],
+      ['Очередь', `${st.queue?.active ?? 0} активных / ${st.queue?.waiting ?? 0} ожидающих`]
+    );
+  } catch {
+    rows.push(['Движок', 'не отвечает']);
+  }
+  dl.innerHTML = '';
+  for (const [k, v] of rows.filter(([, v]) => v != null)) {
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = String(v); dd.className = 'mono';
+    dl.append(dt, dd);
+  }
+}
+
+$('btn-open-logs').addEventListener('click', async () => {
+  const b = bridge();
+  if (!b?.appInfo) { showError('Открытие журналов доступно в LiteMind Desktop.'); return; }
+  const a = await b.appInfo().catch(() => null);
+  if (!a?.logsPath) { showError('Путь к журналам недоступен.'); return; }
+  const r = await b.shellOpenPath(a.logsPath).catch(() => ({ ok: false }));
+  if (r?.ok === false) showError('Не удалось открыть папку журналов: ' + (r.error ?? ''));
+});
+
+$('btn-open-models').addEventListener('click', async () => {
+  const dir = $('set-rootdir').value.trim();
+  if (!dir) { showError('Папка моделей не задана.'); return; }
+  const b = bridge();
+  if (!b?.shellOpenPath) { showError('Открытие папок доступно в LiteMind Desktop.'); return; }
+  const r = await b.shellOpenPath(dir).catch(() => ({ ok: false }));
+  if (r?.ok === false) showError('Не удалось открыть папку: ' + (r.error ?? '— возможно, папка ещё не создана.'));
+});
+
+/* Нативный выбор папки моделей (ТЗ Этап 1 §12). */
+$('btn-set-pick').addEventListener('click', async () => {
+  const b = bridge();
+  if (!b?.pickFolder) { showError('Стандартный диалог выбора папки доступен в LiteMind Desktop. В браузере введите путь вручную.'); return; }
+  const r = await b.pickFolder('Папка для моделей', $('set-rootdir').value.trim() || undefined).catch(() => null);
+  if (r?.ok && r.path) $('set-rootdir').value = r.path;
+});
 
 $('btn-save-settings').addEventListener('click', async () => {
   const rootDir = $('set-rootdir').value.trim();
