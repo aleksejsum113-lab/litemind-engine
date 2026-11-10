@@ -366,7 +366,10 @@ export class Engine {
     this._assertRunning();
     const p = this.profile;
     const ctx = Number(contextTokens) > 0 ? Number(contextTokens) : p.contextTokens;
-    const maxOut = Number(maxOutputTokens) > 0 ? Number(maxOutputTokens) : p.maxOutputTokens;
+    // Явный лимит клиента — жёсткий потолок (контракт max_tokens); пол адаптивного
+    // контроллера применяется только к профильному дефолту (см. controller.js).
+    const clientMax = Number(maxOutputTokens) > 0 ? Number(maxOutputTokens) : null;
+    const maxOut = clientMax ?? p.maxOutputTokens;
     let thr = threads === undefined || threads === null ? p.cpuThreads : Number(threads);
     // Автооптимизация: измеренная для модели конфигурация потоков имеет приоритет
     // над профилем (если вызывающий не передал threads явно).
@@ -409,7 +412,8 @@ export class Engine {
     const prepared = prepareRequest({
       messages,
       contextTokens: ctx,
-      maxOutputTokens: maxOut,
+      maxOutputTokens: clientMax,
+      defaultMaxOutputTokens: p.maxOutputTokens,
       adaptive: this.config.adaptive ?? {}
     });
     if (prepared.meta?.adaptive === 'on') {

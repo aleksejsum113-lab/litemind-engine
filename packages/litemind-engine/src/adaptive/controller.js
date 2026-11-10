@@ -176,20 +176,32 @@ export function compactMessages({ messages, contextTokens, policy = COMPLEXITY_P
 /**
  * Подготовка запроса контроллером. Вызывается движком перед каждой генерацией.
  * Возвращает { messages, contextTokens, maxOutputTokens, complexity, meta }.
+ *
+ * Контракт max_tokens (Этап 2, исправление регрессии «пустой ответ»):
+ * ЯВНЫЙ лимит клиента — жёсткий потолок (OpenAI-совместимость). Контроллер
+ * может его только УМЕНЬШАТЬ (адаптация под сложность), но никогда не повышать:
+ * у reasoning-моделей (Qwen3 и т.п.) «размышления» <think> съедают небольшой
+ * вынужденный бюджет целиком — клиент получал пустой ответ без объяснений.
+ * Пол minOutputTokens применяется ТОЛЬКО к внутреннему дефолту (когда клиент
+ * лимит не указал) — там он защищает от поверхностных ответов.
  */
-export function prepareRequest({ messages, contextTokens, maxOutputTokens, optimizations = null, adaptive = {}, policyOverride = null }) {
+export function prepareRequest({ messages, contextTokens, maxOutputTokens, defaultMaxOutputTokens = null, optimizations = null, adaptive = {}, policyOverride = null }) {
   if (adaptive.enabled === false) {
-    return { messages, contextTokens, maxOutputTokens, complexity: null, meta: { adaptive: 'off' } };
+    return { messages, contextTokens, maxOutputTokens: Number(maxOutputTokens) > 0 ? Number(maxOutputTokens) : Number(defaultMaxOutputTokens) > 0 ? Number(defaultMaxOutputTokens) : maxOutputTokens, complexity: null, meta: { adaptive: 'off' } };
   }
   const cls = classifyTask(messages);
   const policy = policyOverride ?? COMPLEXITY_POLICY[cls.complexity] ?? COMPLEXITY_POLICY.file;
 
   // Бюджет генерации: адаптируется к сложности, но не ниже minOutputTokens
-  // (поверхностные ответы на сложные задачи недопустимы).
-  const adaptedMax = Math.max(
-    policy.minOutputTokens,
-    Math.round(maxOutputTokens * policy.maxOutputFactor)
-  );
+  // (поверхностные ответы на сложные задачи недопустимы) — ТОЛЬКО для
+  // внутреннего дефолта. Явный лимит клиента — потолок, не поднимаем.
+  const requested = Number(maxOutputTokens) > 0 ? Number(maxOutputTokens) : null;
+  const internalDefault = Number(defaultMaxOutputTokens) > 0
+    ? Number(defaultMaxOutputTokens)
+    : (requested ?? 1024);
+  const adaptedMax = requested != null
+    ? Math.min(requested, Math.max(policy.minOutputTokens, Math.round(requested * policy.maxOutputFactor)))
+    : Math.max(policy.minOutputTokens, Math.round(internalDefault * policy.maxOutputFactor));
 
   let out = { messages, dropped: 0, summaryAdded: false };
   if (adaptive.contextCompaction !== false) {

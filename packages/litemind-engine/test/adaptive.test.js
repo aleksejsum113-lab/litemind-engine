@@ -68,6 +68,20 @@ test('adaptive: prepare reduces output budget for simple, raises for hard', () =
   assert.equal(off.meta.adaptive, 'off');
 });
 
+test('adaptive: explicit client max_tokens is a hard ceiling (never raised)', () => {
+  // Регрессия «пустой ответ»: пол 192 повышал запрос клиента 16 → 192, у
+  // reasoning-моделей (Qwen3) весь бюджет съедали <think>-размышления.
+  const base = { contextTokens: 4096, adaptive: { enabled: true } };
+  for (const requested of [16, 64, 128, 512, 1024]) {
+    const r = prepareRequest({ messages: [{ role: 'user', content: 'привет' }], maxOutputTokens: requested, ...base });
+    assert.ok(r.maxOutputTokens <= requested, `client limit ${requested} must not be raised, got ${r.maxOutputTokens}`);
+  }
+  // Внутренний дефолт (лимит не указан) по-прежнему получает пол и адаптацию.
+  const dflt = prepareRequest({ messages: [{ role: 'user', content: 'привет' }], maxOutputTokens: null, defaultMaxOutputTokens: 1024, ...base });
+  assert.ok(dflt.maxOutputTokens >= COMPLEXITY_POLICY.simple.minOutputTokens);
+  assert.ok(dflt.maxOutputTokens <= 1024);
+});
+
 test('adaptive: digest of long input fits budget and keeps facts', () => {
   const big = [
     'Задача: переписать модуль авторизации на сервере.',
