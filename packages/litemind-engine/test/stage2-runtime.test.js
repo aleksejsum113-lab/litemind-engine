@@ -118,7 +118,7 @@ test('resolveRuntimeParams + args: полный набор и стабильна
   assert.ok(idx('--threads-batch') > 0 && args[idx('--threads-batch') + 1] === '4');
   assert.ok(idx('--batch-size') > 0 && args[idx('--batch-size') + 1] === '1024');
   assert.ok(idx('--ubatch-size') > 0 && args[idx('--ubatch-size') + 1] === '512');
-  assert.ok(idx('--no-mmap') > 0);
+  assert.ok(idx('--load-mode') > 0 && args[idx('--load-mode') + 1] === 'none');
   assert.ok(!args.includes('--cache-reuse'));
   // Ключ запуска стабилен для той же конфигурации и меняется при смене профиля.
   const key = runtimeStartKey(p);

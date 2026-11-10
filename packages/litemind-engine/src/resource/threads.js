@@ -60,8 +60,8 @@ export function resolveBatch({ profile = 'balanced' } = {}) {
 
 /**
  * Политика mmap (ТЗ §3: динамическое и рациональное использование RAM).
- *   true  → --mmap (поведение llama.cpp по умолчанию)
- *   false → --no-mmap (файл читается последовательно и целиком в RAM)
+ *   true  → --load-mode mmap (явно включить memory-mapping)
+ *   false → --load-mode none (файл читается последовательно и целиком в RAM)
  *   'auto'/null → для моделей, которые заведомо помещаются в RAM, mmap ВЫКЛЮЧАЕТСЯ:
  *     последовательное чтение грузит модель заметно быстрее холодного mmap
  *     (страничные сбои) на слабых дисках и ускоряет генерацию (веса уже в RAM).
@@ -147,6 +147,10 @@ export function runtimeStartKey(p) {
 /**
  * Аргументы командной строки llama-server из разрешённых параметров.
  * Порядок стабилен — упрощает диагностику и тесты.
+ *
+ * Режим загрузки: в llama.cpp 0.9.x (комплектный runtime) опция --no-mmap
+ * удалена — вместо неё --load-mode <auto|none|mmap|mlock|mmap+mlock|dio>
+ * (см. common/arg.cpp). 'auto' не передаём: это поведение llama.cpp по умолчанию.
  */
 export function runtimeArgs(p) {
   const args = [
@@ -158,7 +162,8 @@ export function runtimeArgs(p) {
     '--batch-size', String(p.batchSize),
     '--ubatch-size', String(p.ubatchSize)
   ];
-  if (p.useMmap === false) args.push('--no-mmap');
+  if (p.useMmap === false) args.push('--load-mode', 'none');
+  else if (p.useMmap === true) args.push('--load-mode', 'mmap');
   if (p.cacheReuse > 0) args.push('--cache-reuse', String(p.cacheReuse));
   return args;
 }

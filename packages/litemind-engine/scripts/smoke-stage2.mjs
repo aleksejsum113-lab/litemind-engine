@@ -287,7 +287,8 @@ try {
       ['--batch-size', String(exp.batchSize)],
       ['--ubatch-size', String(exp.ubatchSize)]
     ];
-    if (exp.useMmap === false) clChecks.push(['--no-mmap', '']);
+    if (exp.useMmap === false) clChecks.push(['--load-mode', 'none']);
+    if (exp.useMmap === true) clChecks.push(['--load-mode', 'mmap']);
     if (exp.cacheReuse > 0) clChecks.push(['--cache-reuse', String(exp.cacheReuse)]);
     const clBad = clChecks.filter(([flag, val]) => (val ? !has(flag, val) : !cl.includes(flag)))
       .map(([flag, val]) => `${flag}${val ? ` ${val}` : ''} нет`).join(', ');
