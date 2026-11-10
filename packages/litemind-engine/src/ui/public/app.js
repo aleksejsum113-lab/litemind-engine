@@ -733,13 +733,42 @@ function renderAttachBar() {
   pendingAttachments.forEach((a, idx) => {
     const chip = document.createElement('span');
     chip.className = 'attach-chip' + (a.loading ? ' loading' : '');
-    chip.innerHTML = `📄 ${esc(a.name)} <button title="Убрать">×</button>`;
+    // Чип показывает и имя, и путь в проекте (Этап 1В §2: видно, что уйдёт модели).
+    const title = a.path ? `${a.path}${a.warning ? ' — ' + a.warning : ''}` : (a.warning ?? '');
+    chip.title = title;
+    chip.innerHTML = `📄 ${esc(a.name)}${a.path && a.path !== a.name ? ` <i class="attach-path">${esc(a.path)}</i>` : ''} <button title="Убрать">×</button>`;
     chip.querySelector('button').addEventListener('click', () => {
       pendingAttachments.splice(idx, 1);
       renderAttachBar();
     });
     barEl.appendChild(chip);
   });
+  updateCtxWarn();
+}
+
+/* Предупреждение о размере контекста (Этап 1В §2): не режем молча —
+   честно считаем и объясняем, что не поместится. */
+function updateCtxWarn() {
+  const el = $('ctx-warn');
+  if (!el) return;
+  const total = pendingAttachments.reduce((acc, a) => acc + (a.chars ?? 0), 0);
+  if (!pendingAttachments.length || total === 0) { el.hidden = true; el.textContent = ''; return; }
+  const ctxTokens = Number($('ctx')?.value) || 4096;
+  // Оценка честная, но приблизительная: 1 токен ≈ 3.5 символа для смешанного
+  // русско-английского текста (кириллица дороже). Точные числа знает только токенизатор модели.
+  const estTokens = Math.ceil(total / 3.5);
+  const pct = estTokens / ctxTokens;
+  el.hidden = false;
+  if (pct > 1) {
+    el.className = 'ctx-warn bad';
+    el.textContent = `Вложений: ${pendingAttachments.length} · ≈${estTokens.toLocaleString('ru')} токенов при контексте ${ctxTokens} — НЕ ПОМЕСТИТСЯ. Модель получит урезанную историю; уберите лишние файлы или увеличьте «Контекст».`;
+  } else if (pct > 0.7) {
+    el.className = 'ctx-warn warn';
+    el.textContent = `Вложений: ${pendingAttachments.length} · ≈${estTokens.toLocaleString('ru')} из ${ctxTokens} токенов контекста (${Math.round(pct * 100)}%). Оценка приблизительная — часть истории может быть урезана.`;
+  } else {
+    el.className = 'ctx-warn ok';
+    el.textContent = `Вложений: ${pendingAttachments.length} · ≈${estTokens.toLocaleString('ru')} из ${ctxTokens} токенов контекста.`;
+  }
 }
 
 /* ============================ AI Chat — отправка ============================ */
@@ -912,6 +941,9 @@ async function runCompletion(chat) {
     } else {
       botBubble.remove(); // ошибка до первого токена — пустой пузырь не нужен
     }
+    // Этап 1В §3: если модель вернула ```file:... блоки — показываем панель
+    // применения изменений (diff + подтверждение). Без подтверждения ничего не пишется.
+    scanReplyForFileChanges(chat, reply);
     chat.updatedAt = Date.now();
     saveChats();
     composerBusy(false);
@@ -1775,9 +1807,18 @@ async function refreshDownloads() {
   refreshDlBadge();
 }
 
-/* ============================ Проекты ============================ */
+/* ============================ Проекты (Этап 1В §2) ============================ */
 const PROJ_KEY = 'litemind-project-dir';
 const PROJ_RECENT_KEY = 'litemind-projects-recent'; // массив недавних папок (до 8)
+const PROJ_EXCLUDES_KEY = 'litemind-proj-excludes';
+
+const proj = { active: null }; // активный проект: {dir, name} | null
+const recentUnavailable = new Map(); // dir -> reason (в памяти, до перезагрузки UI)
+
+function projExcludes() {
+  return (localStorage.getItem(PROJ_EXCLUDES_KEY) || '')
+    .split(',').map((s) => s.trim()).filter(Boolean).slice(0, 32);
+}
 
 function recentProjects() {
   try { return JSON.parse(localStorage.getItem(PROJ_RECENT_KEY) || '[]').filter((p) => typeof p === 'string'); } catch { return []; }
@@ -1791,47 +1832,165 @@ function rememberProject(dir) {
   renderRecentProjects();
 }
 
+function forgetProject(dir) {
+  const list = recentProjects().filter((p) => p !== dir);
+  localStorage.setItem(PROJ_RECENT_KEY, JSON.stringify(list));
+  renderRecentProjects();
+  event(`проект убран из списка недавних (файлы не тронуты): ${dir}`);
+}
+
+function markRecentUnavailable(dir, reason) {
+  recentUnavailable.set(dir, reason || 'недоступна');
+  renderRecentProjects();
+}
+
+function baseName(p) { return String(p || '').split(/[\\/]/).filter(Boolean).pop() || String(p || ''); }
+
 function renderRecentProjects() {
   const wrap = $('proj-recent');
   if (!wrap) return;
   const list = recentProjects();
-  wrap.hidden = !list.length;
+  $('proj-recent-card').hidden = !list.length;
   wrap.innerHTML = '';
   if (!list.length) return;
-  const label = document.createElement('span');
-  label.className = 'muted';
-  label.textContent = 'Недавние проекты:';
-  wrap.appendChild(label);
   for (const p of list) {
-    const b = document.createElement('button');
-    b.className = 'proj-recent-item';
-    b.title = p;
-    b.textContent = p;
-    b.addEventListener('click', () => {
-      $('proj-dir').value = p;
-      scanProject(false);
-    });
-    wrap.appendChild(b);
+    const bad = recentUnavailable.get(p);
+    const row = document.createElement('div');
+    row.className = 'proj-recent-row' + (bad ? ' unavailable' : '');
+    const info = document.createElement('div');
+    info.className = 'proj-recent-info';
+    info.innerHTML = `<div class="proj-recent-name">${esc(baseName(p))}</div>
+      <div class="mono muted proj-recent-path">${esc(p)}</div>
+      ${bad ? `<div class="proj-recent-bad">папка недоступна: ${esc(bad)}</div>` : ''}`;
+    const actions = document.createElement('div');
+    actions.className = 'proj-recent-actions';
+    const open = document.createElement('button');
+    open.textContent = 'Открыть';
+    open.disabled = !!bad;
+    open.title = bad ? 'Папка недоступна — проверьте, не перемещена ли она' : `Открыть ${p}`;
+    open.addEventListener('click', () => { $('proj-dir').value = p; openProjectDir(p); });
+    const del = document.createElement('button');
+    del.textContent = 'Убрать из списка';
+    del.title = 'Удалить только из списка недавних — файлы на диске не затрагиваются';
+    del.addEventListener('click', () => forgetProject(p));
+    actions.append(open, del);
+    row.append(info, actions);
+    wrap.appendChild(row);
   }
 }
 
-function loadProjects() {
-  const saved = localStorage.getItem(PROJ_KEY);
-  if (saved && !$('proj-dir').value) { $('proj-dir').value = saved; state.projDir = saved; }
-  if (state.projDir) $('ws-dir').textContent = state.projDir;
-  renderRecentProjects();
+function renderActiveProject() {
+  const card = $('proj-active-card');
+  if (!card) return;
+  if (!proj.active) { card.hidden = true; return; }
+  card.hidden = false;
+  $('proj-active-name').textContent = proj.active.name;
+  $('proj-active-path').textContent = proj.active.dir;
+  $('proj-active-state').textContent = 'открыт';
+  $('proj-active-state').className = 'state-value ok';
 }
 
-async function scanProject(force) {
-  const dir = $('proj-dir').value.trim();
-  if (!dir) { showError('Укажите папку проекта.'); return; }
-  state.projDir = dir;
-  rememberProject(dir);
-  $('ws-dir').textContent = dir;
-  $('proj-summary').textContent = 'сканирование…';
+async function copyToClipboard(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    return ok;
+  }
+}
+
+function openProjectFolder(dir) {
+  const b = bridge();
+  if (!b?.shellOpenPath) { showError('Открытие папки в проводнике доступно в LiteMind Desktop.'); return; }
+  b.shellOpenPath(dir).then((r) => {
+    if (r?.ok === false) showError('Не удалось открыть папку: ' + (r.error ?? '—'));
+  }).catch(() => showError('Не удалось открыть папку.'));
+}
+
+/* Открытие проекта: сначала честная проверка папки (§2 — недоступная папка
+   не становится активной), затем сканирование и синхронизация Workspace и
+   Terminal (§5). */
+async function openProjectDir(dirRaw) {
+  const dir = String(dirRaw || $('proj-dir').value || '').trim();
+  if (!dir) { showError('Укажите папку проекта.'); return false; }
+  if (ws.dirty && !confirm('В редакторе есть несохранённые изменения. Открыть другой проект и потерять их?')) return false;
+  $('proj-summary').textContent = 'проверяю папку…';
+  let r;
+  try {
+    r = await api('/api/project/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: dir }) });
+  } catch (err) {
+    $('proj-summary').textContent = '';
+    showError('папка недоступна: ' + err.message);
+    return false;
+  }
+  if (!r.ok) {
+    $('proj-summary').textContent = '';
+    showError(`Папка недоступна: ${r.reason}. Проект НЕ открыт.`);
+    markRecentUnavailable(r.path ?? dir, r.reason);
+    return false;
+  }
+  recentUnavailable.delete(r.path);
+  const previousDir = state.projDir;
+  proj.active = { dir: r.path, name: r.name };
+  state.projDir = r.path;
+  $('proj-dir').value = r.path;
+  rememberProject(r.path);
+  renderActiveProject();
+  renderRecentProjects();
+  $('proj-summary').textContent = `Проект открыт: ${r.name} — сканирую…`;
+  // Workspace переключается на новый проект; контекст чата сбрасывается —
+  // он собран из файлов старого проекта.
+  if (previousDir !== r.path) wsResetForNewProject();
+  state.wsDir = r.path;
+  $('ws-dir').textContent = r.path;
+  $('ws-proj-name').textContent = r.name;
+  wsCtx.clear();
+  renderWsCtx();
+  // Terminal: рабочая папка следует за проектом (§5).
+  $('term-cwd').value = r.path;
+  syncTermCwdLabel();
+  $('proj-report-card').hidden = true;
+  scanProject(false, { silent: true });
+  event(`проект открыт: ${r.path}`);
+  return true;
+}
+
+function closeProject() {
+  if (!proj.active) return;
+  if (ws.dirty && !confirm('В редакторе остались несохранённые изменения. Закрыть проект и потерять их?')) return;
+  const closedDir = state.projDir;
+  proj.active = null;
+  state.projDir = null;
+  localStorage.removeItem(PROJ_KEY);
+  wsResetForNewProject();
+  state.wsDir = null;
+  $('ws-dir').textContent = '—';
+  $('ws-proj-name').textContent = '—';
+  $('proj-summary').textContent = 'Проект закрыт. Файлы на диске не изменялись.';
+  $('proj-report-card').hidden = true;
+  if (closedDir && $('term-cwd').value.trim() === closedDir) {
+    $('term-cwd').value = '';
+    syncTermCwdLabel();
+  }
+  renderActiveProject();
+  event('проект закрыт — файлы на диске не тронуты');
+}
+
+/* Карта проекта: индексация (для умного поиска) + отчёт. */
+async function scanProject(force, { silent = false } = {}) {
+  const dir = state.projDir || $('proj-dir').value.trim();
+  if (!dir) { if (!silent) showError('Укажите папку проекта.'); return; }
+  $('proj-summary').textContent = silent ? 'сканирование…' : $('proj-summary').textContent || 'сканирование…';
   try {
     const s = await api('/api/project/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: dir, force: force === true }) });
-    $('proj-summary').textContent = `Проект открыт: ${dir}`;
+    $('proj-summary').textContent = `Проект открыт: ${proj.active?.name ?? dir}`;
     const exts = Object.entries(s.byExt ?? {})
       .sort((a, b) => b[1] - a[1])
       .map(([ext, n]) => `${ext} ×${n}`);
@@ -1849,14 +2008,38 @@ async function scanProject(force) {
     }
     $('proj-report-card').hidden = false;
     state.wsDir = dir;
-    buildWsTree();
-    event(`проект просканирован: ${dir}`);
+    wsReloadTree();
+    if (!silent) event(`проект просканирован: ${dir}`);
   } catch (err) {
-    $('proj-summary').textContent = '';
-    showError('сканирование: ' + err.message);
+    if (!silent) showError('сканирование: ' + err.message);
   }
 }
-$('btn-proj-scan').addEventListener('click', () => scanProject(false));
+
+/* Структура проекта в чат (§2: передать структуру) — только по кнопке. */
+async function sendProjectStructureToChat() {
+  const dir = state.projDir;
+  if (!dir) { showError('Сначала откройте проект.'); return; }
+  try {
+    await api('/api/project/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: dir, force: false }) });
+    const m = await api(`/api/project/map?path=${encodeURIComponent(dir)}`);
+    if (m.error || !(m.files ?? []).length) { showError('Карта пуста — в проекте не найдено текстовых файлов.'); return; }
+    const lines = [`Структура проекта ${baseName(m.root)} (путь: ${m.root}):`];
+    for (const f of (m.files ?? []).slice(0, 150)) {
+      const syms = (f.symbols ?? []).map((s) => String(s).split(':')[0]).slice(0, 5).join(', ');
+      lines.push(`- ${f.file} (${f.lines} стр.)${syms ? ' — ' + syms : ''}`);
+    }
+    if ((m.files ?? []).length > 150) lines.push(`… и ещё ${m.files.length - 150} файлов`);
+    const text = lines.join('\n');
+    pendingAttachments.push({ name: 'project-structure.txt', kind: 'txt', chars: text.length, text, warning: null });
+    renderAttachBar();
+    event(`структура проекта передана в чат (${m.files.length} файлов)`);
+    openTab('chat');
+  } catch (err) {
+    showError('структура проекта: ' + err.message);
+  }
+}
+
+$('btn-proj-scan').addEventListener('click', () => openProjectDir());
 $('btn-proj-rescan').addEventListener('click', () => scanProject(true));
 $('btn-proj-pick').addEventListener('click', async () => {
   const b = bridge();
@@ -1864,8 +2047,43 @@ $('btn-proj-pick').addEventListener('click', async () => {
   const r = await b.pickFolder('Папка проекта', $('proj-dir').value.trim() || undefined).catch(() => null);
   if (r?.ok && r.path) {
     $('proj-dir').value = r.path;
-    scanProject(false);
+    openProjectDir(r.path);
   }
+});
+/* Создание папки проекта: пользователь выбирает/создаёт её в нативном
+   диалоге Windows, движок делает mkdir -p и открывает проект. */
+$('btn-proj-create').addEventListener('click', async () => {
+  let dir = $('proj-dir').value.trim();
+  const b = bridge();
+  if (b?.pickFolder) {
+    const r = await b.pickFolder('Выберите или создайте папку проекта', dir || undefined).catch(() => null);
+    if (r?.ok && r.path) dir = r.path;
+    else if (!r?.ok) return;
+  }
+  if (!dir) { showError('Укажите путь к новой папке проекта.'); return; }
+  try {
+    const r = await api('/api/project/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: dir }) });
+    if (!r.ok) { showError('Не удалось создать папку: ' + (r.reason ?? 'ошибка')); return; }
+    event(`создана папка проекта: ${r.path}`);
+    $('proj-dir').value = r.path;
+    openProjectDir(r.path);
+  } catch (err) {
+    showError('создание папки: ' + err.message);
+  }
+});
+$('btn-proj-close').addEventListener('click', closeProject);
+$('btn-proj-openfolder').addEventListener('click', () => { if (proj.active) openProjectFolder(proj.active.dir); });
+$('btn-proj-copypath').addEventListener('click', async () => {
+  if (!proj.active) return;
+  const ok = await copyToClipboard(proj.active.dir);
+  if (ok) event('путь проекта скопирован в буфер');
+});
+$('btn-proj-structure-chat').addEventListener('click', sendProjectStructureToChat);
+$('btn-proj-structure-chat2').addEventListener('click', sendProjectStructureToChat);
+$('proj-excludes').addEventListener('change', (e) => {
+  localStorage.setItem(PROJ_EXCLUDES_KEY, e.target.value.trim());
+  event('исключения сканирования сохранены');
+  if (state.wsDir) wsReloadTree();
 });
 
 $('btn-proj-search').addEventListener('click', async () => {
@@ -1891,96 +2109,523 @@ $('btn-proj-search').addEventListener('click', async () => {
   }
 });
 
-/* ============================ Workspace ============================ */
-function loadWorkspace() {
-  if (state.wsDir) { $('ws-dir').textContent = state.wsDir; buildWsTree(); }
-}
-
-async function buildWsTree() {
-  const tree = $('ws-tree');
-  if (!state.wsDir) { tree.innerHTML = '<span class="muted">Откройте проект на вкладке «Проекты».</span>'; return; }
-  tree.innerHTML = '<span class="muted">загрузка карты файлов…</span>';
-  try {
-    const m = await api(`/api/project/map?path=${encodeURIComponent(state.wsDir)}`);
-    const files = m.files ?? [];
-    if (!files.length) { tree.innerHTML = '<span class="muted">карта пуста — выполните сканирование проекта</span>'; return; }
-    tree.innerHTML = '';
-    for (const f of files.slice(0, 400)) {
-      const name = typeof f === 'string' ? f : f.path ?? f.file;
-      if (!name) continue;
-      const btn = document.createElement('button');
-      btn.className = 'ws-file';
-      btn.textContent = name;
-      btn.addEventListener('click', () => openWsFile(name, btn));
-      tree.appendChild(btn);
-    }
-  } catch (err) {
-    tree.innerHTML = '';
-    showError('карта файлов: ' + err.message);
+function loadProjects() {
+  $('proj-excludes').value = localStorage.getItem(PROJ_EXCLUDES_KEY) || '';
+  const saved = localStorage.getItem(PROJ_KEY);
+  if (saved && !$('proj-dir').value) $('proj-dir').value = saved;
+  renderRecentProjects();
+  renderActiveProject();
+  // Проверяем сохранённый проект в фоне: папку могли переместить/переименовать.
+  if (saved && !proj.active) {
+    api('/api/project/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: saved }) })
+      .then((r) => {
+        if (r.ok) {
+          proj.active = { dir: r.path, name: r.name };
+          state.projDir = r.path;
+          renderActiveProject();
+          state.wsDir = r.path;
+          $('ws-dir').textContent = r.path;
+          $('ws-proj-name').textContent = r.name;
+          scanProject(false, { silent: true });
+        } else {
+          markRecentUnavailable(r.path ?? saved, r.reason);
+          $('proj-summary').textContent = `Сохранённая папка недоступна (${r.reason}). Выберите её заново или откройте другую.`;
+        }
+      })
+      .catch(() => { /* движок ещё поднимается — при следующем входе проверим */ });
   }
 }
 
-async function openWsFile(name, btn) {
+/* ============================ Workspace (Этап 1В §3) ============================ */
+const ws = { file: null, mtime: null, dirty: false, expanded: new Set(), treeCache: new Map(), findSeq: 0 };
+const wsCtx = {
+  items: new Set(), // относительные пути файлов и папок (папка — со слешем)
+  add(p) { this.items.add(p); },
+  remove(p) { this.items.delete(p); },
+  clear() { this.items.clear(); },
+  has(p) { return this.items.has(p); }
+};
+
+function loadWorkspace() {
+  if (state.wsDir) {
+    $('ws-dir').textContent = state.wsDir;
+    if (proj.active) $('ws-proj-name').textContent = proj.active.name;
+    else $('ws-proj-name').textContent = baseName(state.wsDir);
+    if (!$('ws-tree').dataset.loaded) wsReloadTree();
+  }
+}
+
+function wsResetForNewProject() {
+  // Подтверждение о несохранённых правках делают вызывающие
+  // (openProjectDir/closeProject) — здесь только очистка состояния.
+  ws.file = null;
+  ws.mtime = null;
+  ws.dirty = false;
+  ws.expanded = new Set();
+  ws.treeCache = new Map();
+  $('ws-editor').value = '';
+  $('ws-editor').placeholder = 'Выберите файл слева…';
+  $('ws-file-label').textContent = 'файл не выбран';
+  $('ws-dirty').hidden = true;
+  $('ws-note').textContent = '';
+  $('ws-aipanel').hidden = true;
+  aiChange = null;
+  $('ws-tree').dataset.loaded = '';
+  $('ws-find').value = '';
+  const tree = $('ws-tree');
+  tree.innerHTML = '<span class="muted">Проект открыт — строю дерево файлов…</span>';
+}
+
+function wsReloadTree() {
+  if (!state.wsDir) return;
+  ws.treeCache = new Map();
+  ws.treeSeq = (ws.treeSeq ?? 0) + 1;
+  $('ws-tree').dataset.loaded = '1';
+  wsRenderLevel('');
+}
+
+/* Один уровень дерева: /api/project/tree отдаёт детей одного каталога. */
+async function wsRenderLevel(relDir) {
+  const seq = ws.treeSeq ?? 0;
+  let data = ws.treeCache.get(relDir || '.');
+  if (!data) {
+    try {
+      const params = new URLSearchParams({ path: state.wsDir, dir: relDir, exclude: projExcludes().join(',') });
+      data = await api(`/api/project/tree?${params}`);
+      ws.treeCache.set(relDir || '.', data);
+    } catch (err) {
+      if (seq !== (ws.treeSeq ?? 0)) return;
+      if (relDir === '') $('ws-tree').innerHTML = `<span class="muted">дерево недоступно: ${esc(err.message)}</span>`;
+      else showError('дерево файлов: ' + err.message);
+      return;
+    }
+  }
+  if (seq !== (ws.treeSeq ?? 0)) return; // проект уже переключили
+  const container = relDir === '' ? $('ws-tree') : document.querySelector(`[data-ws-dir="${CSS.escape(relDir)}"] .ws-children`);
+  if (!container) return;
+  container.innerHTML = '';
+  if (data.truncated) {
+    const note = document.createElement('div');
+    note.className = 'muted ws-note-row';
+    note.textContent = `показаны первые ${data.dirs.length + data.files.length} из ${data.totalEntries} записей — сузьте исключениями`;
+    container.appendChild(note);
+  }
+  for (const d of data.dirs) {
+    const row = document.createElement('div');
+    row.className = 'ws-node ws-dir-row';
+    row.dataset.wsDir = d.rel;
+    const open = ws.expanded.has(d.rel);
+    const toggle = document.createElement('button');
+    toggle.className = 'ws-toggle';
+    toggle.textContent = d.hasChildren === false ? '·' : (open ? '▾' : '▸');
+    toggle.disabled = d.hasChildren === false;
+    toggle.title = open ? 'Свернуть' : 'Развернуть';
+    const name = document.createElement('button');
+    name.className = 'ws-dir-name';
+    name.textContent = d.name;
+    name.title = d.rel;
+    const ctxBtn = document.createElement('button');
+    ctxBtn.className = 'ws-ctx-add';
+    ctxBtn.textContent = '＋ чат';
+    ctxBtn.title = `Добавить папку ${d.rel}/ в контекст чата (первые 30 текстовых файлов)`;
+    ctxBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      wsCtx.add(d.rel + '/');
+      renderWsCtx();
+      event(`в контекст чата добавлена папка: ${d.rel}/`);
+    });
+    row.append(toggle, name, ctxBtn);
+    const kids = document.createElement('div');
+    kids.className = 'ws-children';
+    kids.hidden = !open;
+    row.appendChild(kids);
+    const expand = () => {
+      ws.expanded.add(d.rel);
+      kids.hidden = false;
+      toggle.textContent = '▾';
+      if (!kids.dataset.loaded) { kids.dataset.loaded = '1'; wsRenderLevel(d.rel); }
+    };
+    const collapse = () => {
+      ws.expanded.delete(d.rel);
+      kids.hidden = true;
+      toggle.textContent = '▸';
+    };
+    toggle.addEventListener('click', (e) => { e.stopPropagation(); kids.hidden ? expand() : collapse(); });
+    name.addEventListener('click', () => { kids.hidden ? expand() : collapse(); });
+    container.appendChild(row);
+  }
+  for (const f of data.files) {
+    const row = document.createElement('div');
+    row.className = 'ws-node ws-file-row';
+    const btn = document.createElement('button');
+    btn.className = 'ws-file' + (f.binary ? ' ws-file-binary' : '');
+    btn.textContent = f.name;
+    btn.title = `${f.rel}${f.sizeBytes != null ? ` · ${fmtSize(f.sizeBytes)}` : ''}${f.binary ? ' · бинарный (только в чат не передаётся)' : ''}`;
+    btn.dataset.wsFile = f.rel;
+    btn.addEventListener('click', () => openWsFile(f.rel, btn));
+    const ctxBtn = document.createElement('button');
+    ctxBtn.className = 'ws-ctx-add';
+    ctxBtn.textContent = wsCtx.has(f.rel) ? '✓ чат' : '＋ чат';
+    ctxBtn.title = `Добавить ${f.rel} в контекст чата`;
+    ctxBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (wsCtx.has(f.rel)) wsCtx.remove(f.rel);
+      else wsCtx.add(f.rel);
+      renderWsCtx();
+    });
+    row.append(btn, ctxBtn);
+    container.appendChild(row);
+  }
+  if (!data.dirs.length && !data.files.length) {
+    container.innerHTML = '<div class="muted ws-note-row">пустой каталог</div>';
+  }
+}
+
+/* Поиск файлов по имени (замещает дерево на время набора). */
+let wsFindTimer = null;
+$('ws-find').addEventListener('input', () => {
+  clearTimeout(wsFindTimer);
+  wsFindTimer = setTimeout(wsRunFind, 300);
+});
+
+async function wsRunFind() {
+  const q = $('ws-find').value.trim();
+  const tree = $('ws-tree');
+  if (!state.wsDir) return;
+  if (!q) { wsRenderLevel(''); return; }
+  const seq = ++ws.findSeq;
+  tree.innerHTML = '<span class="muted">поиск файлов…</span>';
+  try {
+    const params = new URLSearchParams({ path: state.wsDir, q, exclude: projExcludes().join(','), limit: '100' });
+    const r = await api(`/api/project/find?${params}`);
+    if (seq !== ws.findSeq) return;
+    tree.innerHTML = '';
+    if (!r.files.length) { tree.innerHTML = '<span class="muted">файлы с таким именем не найдены</span>'; return; }
+    const note = document.createElement('div');
+    note.className = 'muted ws-note-row';
+    note.textContent = `найдено: ${r.files.length}${r.truncated ? '+ (показаны первые)' : ''} — очистите поле, чтобы вернуться к дереву`;
+    tree.appendChild(note);
+    for (const f of r.files) {
+      const row = document.createElement('div');
+      row.className = 'ws-node ws-file-row';
+      const btn = document.createElement('button');
+      btn.className = 'ws-file';
+      btn.textContent = f.rel;
+      btn.title = `${f.rel}${f.sizeBytes != null ? ` · ${fmtSize(f.sizeBytes)}` : ''}`;
+      btn.addEventListener('click', () => openWsFile(f.rel, btn));
+      const ctxBtn = document.createElement('button');
+      ctxBtn.className = 'ws-ctx-add';
+      ctxBtn.textContent = wsCtx.has(f.rel) ? '✓ чат' : '＋ чат';
+      ctxBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (wsCtx.has(f.rel)) wsCtx.remove(f.rel);
+        else wsCtx.add(f.rel);
+        renderWsCtx();
+      });
+      row.append(btn, ctxBtn);
+      tree.appendChild(row);
+    }
+  } catch (err) {
+    if (seq === ws.findSeq) { tree.innerHTML = ''; showError('поиск файлов: ' + err.message); }
+  }
+}
+
+/* Панель «Контекст для чата»: видно ровно то, что уйдёт модели. */
+function renderWsCtx() {
+  const bar = $('ws-ctx-bar');
+  const chips = $('ws-ctx-chips');
+  const list = [...wsCtx.items];
+  bar.hidden = list.length === 0;
+  $('ws-ctx-count').textContent = String(list.length);
+  chips.innerHTML = '';
+  for (const rel of list) {
+    const chip = document.createElement('span');
+    chip.className = 'ws-ctx-chip';
+    const isDir = rel.endsWith('/');
+    chip.innerHTML = `${isDir ? '📁' : '📄'} ${esc(rel)} <button title="Убрать из контекста">×</button>`;
+    chip.querySelector('button').addEventListener('click', () => {
+      wsCtx.remove(rel);
+      renderWsCtx();
+    });
+    chips.appendChild(chip);
+  }
+  document.querySelectorAll('.ws-ctx-add').forEach((b) => {
+    // подписи чипов обновятся при следующей отрисовке уровня
+  });
+}
+
+/* Передача выбранных файлов/папок в чат: контент читает движок, ограничения
+   честные — бинарники и огромные файлы уходят с предупреждением, без молчаливой
+   порчи (§2). */
+$('btn-ws-ctx-chat').addEventListener('click', async () => {
+  if (!state.wsDir) { showError('Откройте проект.'); return; }
+  const items = [...wsCtx.items];
+  if (!items.length) { showError('Отметьте файлы или папки кнопкой «＋ чат».'); return; }
+  $('btn-ws-ctx-chat').disabled = true;
+  try {
+    const r = await api('/api/project/context', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: state.wsDir, files: items })
+    });
+    let okCount = 0;
+    const warnings = [];
+    for (const f of r.files ?? []) {
+      if (f.ok) {
+        pendingAttachments.push({
+          name: f.file.split('/').pop(),
+          path: `${baseName(state.wsDir)}/${f.file}`,
+          kind: (f.file.split('.').pop() || 'txt').toLowerCase(),
+          chars: f.chars,
+          text: f.content,
+          warning: f.truncated ? 'обрезан до лимита контекста' : null
+        });
+        okCount++;
+      } else {
+        warnings.push(`${f.file}: ${f.warning}`);
+      }
+    }
+    for (const w of r.files?.folderWarnings ?? []) warnings.push(w);
+    if (r.skippedTooMany > 0) warnings.push(`ещё ${r.skippedTooMany} выбранных позиций не переданы — лимит 50 файлов`);
+    renderAttachBar();
+    if (okCount) {
+      event(`в чат передано файлов из проекта: ${okCount}`);
+      wsCtx.clear();
+      renderWsCtx();
+      openTab('chat');
+    }
+    if (warnings.length) showError('Не всё удалось передать: ' + warnings.slice(0, 3).join('; ') + (warnings.length > 3 ? ` (и ещё ${warnings.length - 3})` : ''));
+    else if (!okCount) showError('Ни один выбранный элемент нельзя передать (бинарные или недоступные).');
+  } catch (err) {
+    showError('контекст проекта: ' + err.message);
+  } finally {
+    $('btn-ws-ctx-chat').disabled = false;
+  }
+});
+$('btn-ws-ctx-clear').addEventListener('click', () => { wsCtx.clear(); renderWsCtx(); });
+
+/* Открытие файла: содержимое + mtime для защиты от внешних изменений. */
+async function openWsFile(rel, btn) {
+  if (ws.dirty && !confirm('В открытом файле есть несохранённые изменения. Открыть другой файл и потерять их?')) return;
   document.querySelectorAll('.ws-file.selected').forEach((b) => b.classList.remove('selected'));
   btn?.classList.add('selected');
-  $('ws-file-label').textContent = name + ' — загрузка…';
+  $('ws-file-label').textContent = rel + ' — загрузка…';
   try {
-    const r = await api(`/api/project/file?path=${encodeURIComponent(state.wsDir)}&file=${encodeURIComponent(name)}`);
+    const params = new URLSearchParams({ path: state.wsDir, file: rel });
+    const r = await api(`/api/project/file?${params}`);
+    ws.file = r.file;
+    ws.mtime = r.mtimeMs;
+    ws.dirty = false;
     $('ws-editor').value = r.content;
-    $('ws-file-label').textContent = `${name} · ${fmtSize(r.sizeBytes)}`;
-    state.wsFile = name;
+    $('ws-editor').placeholder = '';
+    $('ws-file-label').textContent = `${r.file} · ${fmtSize(r.sizeBytes)}`;
+    $('ws-dirty').hidden = true;
     $('ws-note').textContent = '';
+    $('ws-aipanel').hidden = true;
+    aiChange = null;
   } catch (err) {
+    ws.file = null;
+    ws.mtime = null;
+    ws.dirty = false;
     $('ws-editor').value = '';
-    $('ws-file-label').textContent = name + ' — не открыт';
+    $('ws-file-label').textContent = rel + ' — не открыт';
+    $('ws-dirty').hidden = true;
     $('ws-note').textContent = err.message;
   }
 }
 
-$('btn-ws-save').addEventListener('click', async () => {
-  if (!state.wsDir || !state.wsFile) { showError('Сначала откройте проект и файл.'); return; }
+/* Сохранение с проверкой mtime: если файл изменили извне — 409 и выбор:
+   перезагрузить с диска или перезаписать поверх (осознанно). */
+async function saveWsFile({ force = false } = {}) {
+  if (!state.wsDir || !ws.file) { showError('Сначала откройте файл.'); return false; }
+  const content = $('ws-editor').value;
   try {
-    const r = await api('/api/project/file', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: state.wsDir, file: state.wsFile, content: $('ws-editor').value }) });
+    const r = await api('/api/project/file', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: state.wsDir, file: ws.file, content, expectedMtimeMs: ws.mtime, force })
+    });
+    ws.mtime = r.mtimeMs;
+    ws.dirty = false;
+    $('ws-dirty').hidden = true;
     $('ws-note').textContent = `сохранено ${fmtSize(r.sizeBytes)}`;
-    event(`workspace: сохранён ${state.wsFile}`);
-  } catch (err) { showError('сохранение: ' + err.message); }
+    event(`workspace: сохранён ${ws.file}`);
+    return true;
+  } catch (err) {
+    const conflict = err.conflict === true || /FILE_CHANGED_EXTERNALLY/.test(err.message);
+    if (conflict) {
+      const reload = confirm('Файл изменён другой программой после загрузки в редактор.\n\n«ОК» — перезагрузить файл с диска (ваши правки будут потеряны).\n«Отмена» — всё равно перезаписать моими правками.');
+      if (reload) { await openWsFile(ws.file, document.querySelector(`[data-ws-file="${CSS.escape(ws.file)}"]`)); }
+      else if (confirm('Точно перезаписать поверх внешних изменений? Текущее содержимое на диске будет утрачено.')) {
+        return saveWsFile({ force: true });
+      }
+    } else {
+      showError('сохранение: ' + err.message);
+    }
+    return false;
+  }
+}
+$('btn-ws-save').addEventListener('click', () => saveWsFile());
+
+/* Индикатор несохранённых изменений. */
+$('ws-editor').addEventListener('input', () => {
+  if (!ws.dirty) {
+    ws.dirty = true;
+    $('ws-dirty').hidden = false;
+    $('ws-note').textContent = '';
+  }
+});
+$('ws-editor').addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    saveWsFile();
+  }
+});
+window.addEventListener('beforeunload', (e) => {
+  if (ws.dirty) { e.preventDefault(); e.returnValue = ''; }
 });
 
-/* Передача содержимого открытого файла в чат как вложения (ТЗ Этап 1 §9):
-   тот же конвейер, что у файлов из проводника — /api/attachments + чип над полем ввода. */
-$('btn-ws-tochat').addEventListener('click', async () => {
-  if (!state.wsDir || !state.wsFile) { showError('Сначала откройте проект и файл.'); return; }
-  const content = $('ws-editor').value;
-  if (!content) { showError('Файл пуст — передавать нечего.'); return; }
-  const name = state.wsFile.split(/[\\/]/).pop();
-  pendingAttachments.push({ name, kind: state.wsFile.split('.').pop()?.toLowerCase() || 'txt', chars: content.length, text: content, warning: null });
+/* Файл/выделенный фрагмент → чат как вложение (§5). */
+function wsSendSelectionToChat(selectedOnly) {
+  if (!ws.file) { showError('Сначала откройте файл.'); return; }
+  const whole = $('ws-editor').value;
+  const sel = selectedOnly ? whole.slice($('ws-editor').selectionStart ?? 0, $('ws-editor').selectionEnd ?? 0) : '';
+  const content = selectedOnly ? sel : whole;
+  if (!content.trim()) { showError(selectedOnly ? 'Выделите фрагмент текста в редакторе.' : 'Файл пуст — передавать нечего.'); return; }
+  const name = ws.file.split(/[\\/]/).pop();
+  pendingAttachments.push({
+    name: selectedOnly ? `${name} (фрагмент)` : name,
+    path: `${baseName(state.wsDir)}/${ws.file}`,
+    kind: (ws.file.split('.').pop() || 'txt').toLowerCase(),
+    chars: content.length,
+    text: content,
+    warning: null
+  });
   renderAttachBar();
-  event(`workspace → чат: ${state.wsFile} (${content.length} симв.)`);
+  event(`workspace → чат: ${ws.file}${selectedOnly ? ' (выделенный фрагмент' : ''} (${content.length} симв.))`);
   $('ws-note').textContent = 'передано в чат как вложение';
   openTab('chat');
-});
+}
+$('btn-ws-tochat').addEventListener('click', () => wsSendSelectionToChat(false));
+$('btn-ws-sel-tochat').addEventListener('click', () => wsSendSelectionToChat(true));
 
-/* ============================ AI Terminal ============================ */
-/* История команд (↑/↓), «Остановить» (убивает всё дерево процессов через
-   /api/terminal/stop), подтверждение опасных команд, передача вывода в чат. */
+$('btn-ws-refresh').addEventListener('click', () => {
+  if (ws.dirty && !confirm('Есть несохранённые изменения. Обновить дерево проекта? (Редактор не тронется, но файл могли изменить на диске.)')) return;
+  wsReloadTree();
+  event('дерево проекта обновлено');
+});
+$('btn-ws-openfolder').addEventListener('click', () => { if (state.wsDir) openProjectFolder(state.wsDir); });
+$('btn-ws-copypath').addEventListener('click', async () => {
+  if (!state.wsDir) return;
+  const target = ws.file ? `${state.wsDir}${state.wsDir.endsWith('\\') || state.wsDir.endsWith('/') ? '' : state.wsDir.includes('\\') ? '\\' : '/'}${ws.file}` : state.wsDir;
+  if (await copyToClipboard(target)) event('путь скопирован: ' + target);
+});
+$('btn-ws-gotochat').addEventListener('click', () => openTab('chat'));
+
+/* Поиск текста внутри файлов — с номерами строк. */
+$('btn-ws-grep').addEventListener('click', async () => {
+  const dir = state.wsDir;
+  const q = $('ws-grep-q').value.trim();
+  if (!dir || !q) { showError('Откройте проект и введите текст для поиска.'); return; }
+  const wrap = $('ws-grep-results');
+  const out = $('ws-grep-list');
+  wrap.hidden = false;
+  out.innerHTML = '<li class="muted">поиск текста…</li>';
+  try {
+    const params = new URLSearchParams({ path: dir, q, exclude: projExcludes().join(','), limit: '60' });
+    const r = await api(`/api/project/grep?${params}`);
+    out.innerHTML = '';
+    if (!r.results.length) { out.innerHTML = '<li class="muted">совпадений нет</li>'; return; }
+    let lastFile = null;
+    for (const hit of r.results) {
+      const li = document.createElement('li');
+      li.className = 'ws-grep-hit';
+      const head = document.createElement('div');
+      head.className = 'model-item-title mono';
+      head.textContent = hit.file === lastFile ? `  стр. ${hit.lineNo}` : `${hit.file} · стр. ${hit.lineNo}`;
+      lastFile = hit.file;
+      const pre = document.createElement('pre');
+      pre.textContent = hit.line;
+      li.append(head, pre);
+      li.addEventListener('click', () => openWsFile(hit.file));
+      out.appendChild(li);
+    }
+    const foot = document.createElement('li');
+    foot.className = 'muted';
+    foot.textContent = `просмотрено файлов: ${r.scannedFiles}${r.truncated ? ', показаны первые совпадения — уточните запрос' : ''}`;
+    out.appendChild(foot);
+    event(`поиск текста «${q}»: ${r.results.length} совпадений`);
+  } catch (err) {
+    out.innerHTML = '';
+    showError('поиск текста: ' + err.message);
+  }
+});
+$('btn-ws-grep-close').addEventListener('click', () => { $('ws-grep-results').hidden = true; });
+
+/* ============================ AI Terminal (Этап 1В §4) ============================ */
+/* Реальный shell, живой потоковый вывод (SSE), кодировки Windows (UTF-8 →
+   CP866 → windows-1251, честно сообщается), история ↑/↓, повтор, очистка
+   экрана, «Остановить» с защитой от двойного нажатия и гонок, вывод в чат. */
 const TERM_HIST_KEY = 'litemind-term-history';
 let termHistory = [];
 try { termHistory = JSON.parse(localStorage.getItem(TERM_HIST_KEY) || '[]').filter((c) => typeof c === 'string'); } catch { termHistory = []; }
 let termHistPos = -1;   // позиция навигации по истории
 let termDraft = '';     // недобитый ввод до ухода в историю
-let termJobId = null;   // id выполняющейся команды (задаётся клиентом заранее)
-let termLastOutput = null; // { command, text, exitCode } — для «Вывод в чат»
+let termJobId = null;   // id выполняющейся команды
+let termRunning = false;
+let termStopping = false;
+let termLastOutput = null; // { command, text, exitCode } — для «Вывод → чат»
 
-/* Опасные команды: удаляющие/затирающие/перезапускающие. Только предупреждение
-   с подтверждением — терминал пользователя, блокировать не вправе. */
-const DANGEROUS_RE = /(^|\s|["'(&;])(rm\s+-[a-z]*r[a-z]*f|rm\s+-[a-z]*f[a-z]*r|rmdir\s+\/s|del\s+\/[sqa]|rd\s+\/s|format\s+[a-z]:|mkfs|dd\s+if=|shutdown|reboot|Remove-Item\s+(-Re)*[a-z]*-Recurse|:(){:\|:&};:)/i;
+/* Опасные команды: удаляющие/затирающие/системные. Только предупреждение
+   с подтверждением — терминал пользователя, блокировать не вправе.
+   Обычные команды (dir, git status, node -v…) проходят без вопросов. */
+const DANGEROUS_RE = /(^|[\s"'(&;])((rm|erase|rd|deltree)\s+\S|del\s+\S|rmdir|remove-item|format\s+[a-z]:|mkfs|dd\s+if=|diskpart|bcdedit|shutdown|reboot|cipher\s+\/w|vssadmin|robocopy\s+[^&|]*\/mir|reg\s+(add|delete)|move\s+[^&|]*[*?]|chmod\s+777|:(){:\|:&};:)/i;
+
+function termSetState(mode, detail) {
+  const el = $('term-state');
+  if (!el) return;
+  const labels = {
+    ready: 'готов',
+    running: 'выполняется…',
+    stopping: 'останавливаю…',
+    stopped: 'остановлено пользователем',
+    done: detail ?? 'завершено',
+    fail: detail ?? 'завершено с ошибкой'
+  };
+  el.textContent = labels[mode] ?? mode;
+  el.className = 'term-state ' + mode;
+}
+
+function syncTermCwdLabel() {
+  const v = $('term-cwd').value.trim();
+  $('term-cwd-label').textContent = v || '—';
+}
+$('term-cwd').addEventListener('input', syncTermCwdLabel);
 
 function loadTerminal() {
   if (!state.projDir && !$('term-cwd').value) {
     const saved = localStorage.getItem(PROJ_KEY);
     if (saved) $('term-cwd').value = saved;
   }
+  syncTermCwdLabel();
+  termSetState(termRunning ? 'running' : 'ready');
 }
+
+$('btn-term-useproj').addEventListener('click', () => {
+  if (!state.projDir) { showError('Сначала откройте проект на вкладке «Проекты».'); return; }
+  $('term-cwd').value = state.projDir;
+  syncTermCwdLabel();
+  event('терминал: рабочая папка = активный проект');
+});
+$('btn-term-pick').addEventListener('click', async () => {
+  const b = bridge();
+  if (!b?.pickFolder) { showError('Стандартный диалог выбора папки доступен в LiteMind Desktop. В браузере введите путь вручную.'); return; }
+  const r = await b.pickFolder('Рабочая папка терминала', $('term-cwd').value.trim() || undefined).catch(() => null);
+  if (r?.ok && r.path) { $('term-cwd').value = r.path; syncTermCwdLabel(); }
+});
+$('btn-term-openfolder').addEventListener('click', () => {
+  const dir = $('term-cwd').value.trim();
+  if (!dir) { showError('Укажите рабочую папку.'); return; }
+  openProjectFolder(dir);
+});
 
 function termRemember(command) {
   termHistory = termHistory.filter((c) => c !== command);
@@ -1991,59 +2636,170 @@ function termRemember(command) {
   termDraft = '';
 }
 
-$('btn-term-run').addEventListener('click', async () => {
+/* Прибитый вывод: экран ограничен 512 КиБ, чтобы интерфейс не замедлялся на
+   длинных выводах; полная версия уходит в чат по кнопке. */
+const TERM_VIEW_CAP = 512 * 1024;
+function termAppend(text) {
+  const out = $('term-out');
+  if (out.textContent.length + text.length > TERM_VIEW_CAP) {
+    const keep = out.textContent.slice(Math.max(0, text.length - (TERM_VIEW_CAP - 2000)));
+    out.textContent = '…(начало вывода убрано с экрана — лимит отображения; «Вывод → чат» отправит полный текст последней команды)\n' + keep;
+  }
+  out.textContent += text;
+  out.scrollTop = out.scrollHeight;
+}
+
+async function termRun(commandRaw) {
+  const command = String(commandRaw ?? $('term-cmd').value ?? '').trim();
   const cwd = $('term-cwd').value.trim();
-  const command = $('term-cmd').value.trim();
   if (!cwd || !command) { showError('Укажите папку и команду.'); return; }
+  if (termRunning) { showError('Команда уже выполняется — сначала остановите её или дождитесь завершения.'); return; }
   if (DANGEROUS_RE.test(command) && !confirm(`Команда выглядит опасной:\n\n${command}\n\nВыполнить её?`)) {
     event('терминал: выполнение опасной команды отменено пользователем');
     return;
   }
-  const out = $('term-out');
-  out.hidden = false;
-  out.textContent = `$ ${command}\nвыполняется… (можно «Остановить»)\n`;
+  termRunning = true;
+  termStopping = false;
+  termJobId = `term-${Date.now().toString(36)}`;
+  termRemember(command);
   $('btn-term-run').disabled = true;
   $('btn-term-stop').hidden = false;
+  $('btn-term-stop').disabled = false;
   $('btn-term-tochat').hidden = true;
-  termRemember(command);
-  // jobId задаём на клиенте ДО запуска — иначе «Остановить» не знал бы, что убивать.
-  termJobId = `term-${Date.now().toString(36)}`;
-  try {
-    const r = await api('/api/terminal/exec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cwd, command, timeoutMs: 30000, jobId: termJobId }) });
-    let text = `$ ${command}\n`;
-    if (r.stdout) text += r.stdout;
-    if (r.stderr) text += (r.stdout ? '\n[stderr]\n' : '') + r.stderr;
-    if (!r.stdout && !r.stderr) text += '(без вывода)';
-    text += `\n\nкод выхода: ${r.exitCode}`;
-    if (r.timedOut) text += ' (ТАЙМАУТ — процесс завершён принудительно)';
-    else if (r.stopped) text += ' (ОСТАНОВЛЕНО ПОЛЬЗОВАТЕЛЕМ)';
-    if (r.truncated) text += '\n(вывод обрезан: лимит 2 МиБ)';
-    text += ` · время: ${r.durationMs} мс`;
-    if (r.error) text += `\nошибка: ${r.error}`;
-    out.textContent = text;
-    out.className = 'term-out' + (r.exitCode === 0 ? '' : ' rc-bad');
-    termLastOutput = { command, text, exitCode: r.exitCode };
+  $('btn-term-rerun').hidden = true;
+  const out = $('term-out');
+  out.hidden = false;
+  out.className = 'term-out';
+  out.textContent = `$ ${command}\n`;
+  termSetState('running');
+  const t0 = performance.now();
+
+  const finish = (info) => {
+    const total = Math.round(performance.now() - t0);
+    const exitCode = info.exitCode;
+    let tail = `\n\nкод выхода: ${exitCode}`;
+    if (info.timedOut) tail += ' (ТАЙМАУТ — процесс завершён принудительно)';
+    else if (info.stopped) tail += ' (ОСТАНОВЛЕНО ПОЛЬЗОВАТЕЛЕМ)';
+    if (info.truncated) tail += '\n(вывод обрезан: лимит 2 МиБ)';
+    tail += ` · время: ${info.durationMs ?? total} мс`;
+    if (info.encoding && info.encoding !== 'utf8') tail += `\n(консоль отвечала в кодировке ${info.encoding} — русский текст восстановлен)`;
+    if (info.error) tail += `\nошибка: ${info.error}`;
+    termAppend(tail);
+    out.className = 'term-out' + (exitCode === 0 ? '' : ' rc-bad');
+    termLastOutput = { command, text: out.textContent, exitCode };
     $('btn-term-tochat').hidden = false;
-    event(`терминал: ${command} → код ${r.exitCode}${r.stopped ? ' (остановлено)' : ''}`);
-  } catch (err) {
-    out.textContent = `$ ${command}\nошибка: ${err.message}`;
-    showError(err.message);
-  } finally {
+    $('btn-term-rerun').hidden = false;
+    termRunning = false;
+    termStopping = false;
+    termJobId = null;
     $('btn-term-run').disabled = false;
     $('btn-term-stop').hidden = true;
+    $('btn-term-stop').disabled = false;
+    termSetState(
+      info.stopped ? 'stopped'
+        : info.timedOut || (exitCode !== 0) ? 'fail'
+          : 'done',
+      info.timedOut ? 'таймаут' : info.stopped ? undefined : `завершено, код ${exitCode}`
+    );
+    event(`терминал: ${command} → код ${exitCode}${info.stopped ? ' (остановлено)' : ''}`);
+  };
+
+  // Потоковое выполнение: POST + SSE-ответ (§4 — вывод по мере появления).
+  try {
+    const res = await fetch(ENGINE_BASE + '/api/terminal/exec', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cwd, command, timeoutMs: 30000, jobId: termJobId, stream: true })
+    });
+    if (!res.ok || !res.body) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data?.error?.message || `HTTP ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let done = false;
+    while (!done) {
+      const { done: rdDone, value } = await reader.read();
+      if (rdDone) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n\n')) !== -1) {
+        const block = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        let evName = 'message';
+        const dataLines = [];
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event: ')) evName = line.slice(7).trim();
+          else if (line.startsWith('data: ')) dataLines.push(line.slice(6));
+        }
+        if (!dataLines.length) continue;
+        let obj;
+        try { obj = JSON.parse(dataLines.join('\n')); } catch { continue; }
+        if (evName === 'start') {
+          termAppend(`(запущено в ${obj.cwd})\n`);
+        } else if (evName === 'stdout') {
+          termAppend(obj.text ?? '');
+        } else if (evName === 'stderr') {
+          termAppend(obj.text ?? '');
+        } else if (evName === 'error') {
+          termAppend(`\n[ошибка запуска] ${obj.message}\n`);
+        } else if (evName === 'exit') {
+          done = true;
+          finish(obj);
+          break;
+        }
+      }
+    }
+    if (!done && !termStopping) {
+      // Соединение кончилось без exit — на всякий случай честное состояние.
+      finish({ exitCode: 1, durationMs: Math.round(performance.now() - t0) });
+    }
+  } catch (err) {
+    termRunning = false;
+    termStopping = false;
     termJobId = null;
+    $('btn-term-run').disabled = false;
+    $('btn-term-stop').hidden = true;
+    $('btn-term-stop').disabled = false;
+    termAppend(`\nошибка: ${err.message}\n`);
+    out.className = 'term-out rc-bad';
+    termLastOutput = { command, text: out.textContent, exitCode: 1 };
+    $('btn-term-tochat').hidden = false;
+    $('btn-term-rerun').hidden = false;
+    termSetState('fail', 'ошибка');
+    showError('терминал: ' + err.message);
+  }
+}
+
+$('btn-term-run').addEventListener('click', () => termRun());
+$('btn-term-rerun').addEventListener('click', () => {
+  const last = termHistory[0];
+  if (!last) { showError('История пуста.'); return; }
+  $('term-cmd').value = last;
+  termRun(last);
+});
+
+/* Остановка: защита от повторного нажатия (disabled до события exit) и от
+   гонок (после exit кнопки сбрасываются только один раз). */
+$('btn-term-stop').addEventListener('click', async () => {
+  if (!termRunning || termStopping || !termJobId) return;
+  termStopping = true;
+  $('btn-term-stop').disabled = true;
+  termSetState('stopping');
+  try {
+    const r = await api('/api/terminal/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jobId: termJobId }) });
+    if (!r.ok && termRunning) showError(r.error || 'команда уже завершена');
+    // Итог придёт событием exit в потоке — он обновит вывод и кнопки.
+  } catch (err) {
+    if (termRunning) { showError('остановка: ' + err.message); termStopping = false; $('btn-term-stop').disabled = false; termSetState('running'); }
   }
 });
 
-$('btn-term-stop').addEventListener('click', async () => {
-  if (!termJobId) return;
-  $('btn-term-stop').disabled = true;
-  try {
-    const r = await api('/api/terminal/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jobId: termJobId }) });
-    if (!r.ok) showError(r.error || 'команда уже завершена');
-    // Итог придёт ответом на висящий exec-запрос (stopped: true) — он обновит вывод.
-  } catch (err) { showError('остановка: ' + err.message); }
-  $('btn-term-stop').disabled = false;
+/* Очистка экрана: история команд и termLastOutput сохраняются. */
+$('btn-term-clear').addEventListener('click', () => {
+  const out = $('term-out');
+  out.textContent = '(экран очищен; история команд сохранена — ↑/↓)\n';
 });
 
 $('btn-term-tochat').addEventListener('click', () => {
@@ -2062,7 +2818,7 @@ $('btn-term-tochat').addEventListener('click', () => {
 
 /* История команд: ↑ — назад, ↓ — вперёд; недобитый ввод сохраняется. */
 $('term-cmd').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { $('btn-term-run').click(); return; }
+  if (e.key === 'Enter') { termRun(); return; }
   if (!termHistory.length) return;
   if (e.key === 'ArrowUp') {
     e.preventDefault();
@@ -2074,6 +2830,206 @@ $('term-cmd').addEventListener('keydown', (e) => {
     if (termHistPos === -1) return;
     termHistPos--;
     $('term-cmd').value = termHistPos === -1 ? termDraft : termHistory[termHistPos];
+  }
+});
+
+/* ============================ Изменения файлов через ИИ (Этап 1В §3) ========= */
+/* Безопасный цикл подготовки: модель возвращает полное новое содержимое файла
+   в блоке ```file:<путь>, UI показывает diff, пользователь явно подтверждает.
+   Перед записью — резервная копия (вне проекта); после — можно восстановить.
+   Автономного агента здесь нет и не требуется (§3). */
+let aiChange = null; // { file, proposed, current, mtimeMs, backupId }
+
+function lineDiff(aText, bText) {
+  const a = String(aText ?? '').split('\n');
+  const b = String(bText ?? '').split('\n');
+  const cap = 2000;
+  if (a.length > cap || b.length > cap) return null; // слишком большой diff — покажем замену целиком
+  // LCS-таблица (ограничена по размеру: 2000×2000 = 4М ячеек — приемлемо).
+  const n = a.length;
+  const m = b.length;
+  const dp = new Uint32Array((n + 1) * (m + 1));
+  const W = m + 1;
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i * W + j] = a[i] === b[j]
+        ? dp[(i + 1) * W + j + 1] + 1
+        : Math.max(dp[(i + 1) * W + j], dp[i * W + j + 1]);
+    }
+  }
+  const rows = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { rows.push({ t: '=', s: a[i] }); i++; j++; }
+    else if (dp[(i + 1) * W + j] >= dp[i * W + j + 1]) { rows.push({ t: '-', s: a[i] }); i++; }
+    else { rows.push({ t: '+', s: b[j] }); j++; }
+  }
+  while (i < n) { rows.push({ t: '-', s: a[i] }); i++; }
+  while (j < m) { rows.push({ t: '+', s: b[j] }); j++; }
+  return rows;
+}
+
+function renderDiff(rows, wrapEl) {
+  if (!rows) {
+    wrapEl.textContent = '(файл слишком большой для построчного diff — показывается замена целиком)';
+    return;
+  }
+  const parts = [];
+  let ctxRun = 0;
+  const flushCtx = () => { if (ctxRun) { parts.push(`<span class="d-ctx">  … ещё ${ctxRun} совпадающих строк …</span>`); ctxRun = 0; } };
+  rows.forEach((r) => {
+    if (r.t === '=') { ctxRun++; return; }
+    flushCtx();
+    const cls = r.t === '+' ? 'd-add' : 'd-del';
+    parts.push(`<span class="${cls}">${r.t === '+' ? '+' : '-'} ${esc(r.s)}</span>`);
+  });
+  flushCtx();
+  if (!parts.length) { wrapEl.innerHTML = '<span class="d-ctx">(изменений нет)</span>'; return; }
+  wrapEl.innerHTML = parts.join('\n');
+}
+
+/* Запрос ИИ на изменение открытого файла: файл прикладывается вложением,
+   в поле ввода — готовая инструкция с жёстким форматом ответа. */
+$('btn-ws-aichange').addEventListener('click', () => {
+  if (!ws.file) { showError('Сначала откройте файл, который нужно изменить.'); return; }
+  const content = $('ws-editor').value;
+  if (!content.trim()) { showError('Файл пуст — ИИ не с чем работать.'); return; }
+  const name = ws.file.split(/[\\/]/).pop();
+  pendingAttachments.push({
+    name,
+    path: `${baseName(state.wsDir)}/${ws.file}`,
+    kind: (ws.file.split('.').pop() || 'txt').toLowerCase(),
+    chars: content.length,
+    text: content,
+    warning: null
+  });
+  $('prompt').value = `Приложен файл ${ws.file} из проекта. Внеси запрошенные изменения и верни ПОЛНОЕ новое содержимое файла — ровно один блок:\n\n\`\`\`file:${ws.file}\n(весь новый файл)\n\`\`\`\n\nНичего кроме этого блока в ответ не пиши. Что изменить, я напишу дальше: `;
+  autoGrow();
+  renderAttachBar();
+  event(`workspace: файл ${ws.file} передан ИИ для изменения`);
+  openTab('chat');
+});
+
+/* Ищем ```file:<путь> блоки в ответе модели и показываем панель применения.
+   Только по явному нажатию «Применить» файл меняется на диске. */
+function scanReplyForFileChanges(chat, reply) {
+  if (!state.wsDir || !reply?.content) return;
+  const RE = /```file:([^\n`]+)\n([\s\S]*?)```/g;
+  let m;
+  const found = [];
+  while ((m = RE.exec(reply.content)) !== null) {
+    found.push({ file: m[1].trim(), content: m[2].replace(/\n$/, '') });
+  }
+  if (!found.length) return;
+  const log = $('chat-log');
+  const bubbles = log.querySelectorAll('.msg.assistant, .msg-bot, [class*="assistant"]');
+  const host = bubbles.length ? bubbles[bubbles.length - 1] : log;
+  for (const f of found.slice(0, 3)) {
+    const bar = document.createElement('div');
+    bar.className = 'chat-file-bar';
+    bar.innerHTML = `<span>📄 Модель предложила новое содержимое файла <b class="mono">${esc(f.file)}</b>. Применение — только по вашему подтверждению, перед записью будет сделана резервная копия.</span>`;
+    const actions = document.createElement('div');
+    actions.className = 'btns';
+    const btnReview = document.createElement('button');
+    btnReview.className = 'primary';
+    btnReview.textContent = 'Показать изменения';
+    const btnApply = document.createElement('button');
+    btnApply.textContent = 'Применить сразу';
+    const btnDismiss = document.createElement('button');
+    btnDismiss.textContent = 'Не применять';
+    actions.append(btnReview, btnApply, btnDismiss);
+    bar.appendChild(actions);
+    host.appendChild(bar);
+    const startFlow = async (showDiff) => {
+      try {
+        const params = new URLSearchParams({ path: state.wsDir, file: f.file });
+        const cur = await api(`/api/project/file?${params}`);
+        aiChange = { file: f.file, proposed: f.content, current: cur.content, mtimeMs: cur.mtimeMs, backupId: null };
+        openTab('workspace');
+        if (showDiff) showAiPanel();
+        else void applyAiChange();
+      } catch (err) {
+        showError(`Файл ${f.file} недоступен в открытом проекте: ${err.message}. Изменение не применено.`);
+        bar.remove();
+      }
+    };
+    btnReview.addEventListener('click', () => startFlow(true));
+    btnApply.addEventListener('click', () => startFlow(false));
+    btnDismiss.addEventListener('click', () => { bar.remove(); event('предложенное изменение отклонено'); });
+  }
+}
+
+function showAiPanel() {
+  if (!aiChange) return;
+  $('ws-aipanel').hidden = false;
+  const add = (aiChange.proposed.match(/\n/g) ?? []).length + 1;
+  const del = (aiChange.current.match(/\n/g) ?? []).length + 1;
+  $('ws-aiinfo').textContent = `Файл: ${aiChange.file}. В файле сейчас ${del} строк, предложено ${add}.`;
+  renderDiff(lineDiff(aiChange.current, aiChange.proposed), $('ws-diff'));
+  $('ws-ainote').textContent = '';
+}
+
+async function applyAiChange({ force = false } = {}) {
+  if (!aiChange) return;
+  $('btn-ws-apply').disabled = true;
+  try {
+    const r = await api('/api/project/apply-change', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        path: state.wsDir, file: aiChange.file, content: aiChange.proposed,
+        expectedMtimeMs: aiChange.mtimeMs, force
+      })
+    });
+    aiChange.backupId = r.backupId;
+    $('ws-ainote').textContent = `Применено. Резервная копия: ${r.backupId}. Можно восстановить исходное содержимое.`;
+    $('btn-ws-restore').hidden = false;
+    $('btn-ws-apply').hidden = true;
+    event(`изменение ИИ применено: ${r.file} (копия: ${r.backupId})`);
+    // Если этот файл открыт в редакторе — обновим его содержимое и дерево.
+    if (ws.file === r.file) {
+      ws.mtime = r.mtimeMs;
+      ws.dirty = false;
+      $('ws-editor').value = aiChange.proposed;
+      $('ws-dirty').hidden = true;
+    }
+    wsReloadTree();
+  } catch (err) {
+    if (err.message.includes('FILE_CHANGED_EXTERNALLY')) {
+      if (confirm('Файл на диске изменился после чтения. Всё равно применить предложение ИИ поверх?')) return applyAiChange({ force: true });
+    } else {
+      showError('применение изменения: ' + err.message);
+    }
+  } finally {
+    $('btn-ws-apply').disabled = false;
+  }
+}
+$('btn-ws-apply').addEventListener('click', () => applyAiChange());
+$('btn-ws-ai-cancel').addEventListener('click', () => {
+  $('ws-aipanel').hidden = true;
+  aiChange = null;
+  $('btn-ws-apply').hidden = false;
+  $('btn-ws-restore').hidden = true;
+});
+
+/* Восстановление из резервной копии — тоже обратимо (текущее содержимое
+   перед восстановлением уходит в новую копию на сервере). */
+$('btn-ws-restore').addEventListener('click', async () => {
+  if (!aiChange?.backupId) { showError('Нет резервной копии для этого изменения.'); return; }
+  if (!confirm(`Восстановить исходное содержимое файла ${aiChange.file} из резервной копии?`)) return;
+  try {
+    const r = await api('/api/project/restore-backup', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: state.wsDir, backupId: aiChange.backupId, force: true })
+    });
+    event(`файл восстановлен из копии: ${r.file}`);
+    $('ws-ainote').textContent = `Восстановлено из копии. Содержимое на момент восстановления тоже сохранено в копию ${r.safetyBackupId}.`;
+    if (ws.file === r.file) {
+      await openWsFile(r.file, document.querySelector(`[data-ws-file="${CSS.escape(r.file)}"]`));
+    }
+    wsReloadTree();
+  } catch (err) {
+    showError('восстановление: ' + err.message);
   }
 });
 

@@ -94,6 +94,7 @@
 
           <div class="composer-wrap">
             <div id="attach-bar" class="attach-bar" hidden></div>
+            <div id="ctx-warn" class="ctx-warn" hidden></div>
             <div class="composer">
               <button id="btn-attach" class="icon-btn composer-icon" title="Прикрепить файл (TXT, MD, CSV, JSON, код, PDF, DOCX)">📎</button>
               <input id="file-input" type="file" multiple hidden
@@ -302,75 +303,157 @@
         </div>
       </section>
 
-      <!-- ПРОЕКТЫ -->
+      <!-- ПРОЕКТЫ (Этап 1В §2) -->
       <section id="tab-projects" data-page hidden>
         <h1>Проекты</h1>
+        <div class="card" id="proj-active-card" hidden>
+          <div class="proj-active-head">
+            <div class="proj-active-name-wrap">
+              <div class="proj-name" id="proj-active-name">—</div>
+              <div class="mono muted proj-path" id="proj-active-path">—</div>
+            </div>
+            <span class="state-value ok" id="proj-active-state">открыт</span>
+          </div>
+          <div class="btns">
+            <button id="btn-proj-openfolder">Открыть папку</button>
+            <button id="btn-proj-copypath">Копировать путь</button>
+            <button id="btn-proj-structure-chat">Структура проекта → чат</button>
+            <button id="btn-proj-close" class="danger-soft">Закрыть проект</button>
+          </div>
+          <p class="muted">Закрытие просто убирает проект из активных: файлы на диске не удаляются и не изменяются.</p>
+        </div>
         <div class="card">
           <label class="field">Папка проекта
             <input id="proj-dir" type="text" class="dir-input" placeholder="C:\Users\you\project" />
           </label>
           <div class="btns">
-            <button id="btn-proj-scan" class="primary">Открыть / просканировать</button>
-            <button id="btn-proj-rescan">Пересканировать</button>
+            <button id="btn-proj-scan" class="primary">Открыть проект</button>
             <button id="btn-proj-pick">Выбрать папку…</button>
+            <button id="btn-proj-create">Создать папку проекта…</button>
           </div>
-          <div id="proj-recent" class="proj-recent" hidden></div>
           <p class="muted" id="proj-summary">Проекты LiteMind не хранит: сканирование строит карту файлов и индекс для поиска. Последние папки запоминаются локально.</p>
+          <details class="proj-excludes">
+            <summary>Исключения сканирования</summary>
+            <input id="proj-excludes" type="text" class="dir-input" placeholder="tmp, uploads, snapshot" />
+            <p class="muted">Папки через запятую, которые не показывать в дереве и не искать (node_modules, .git и служебные исключаются всегда).</p>
+          </details>
+        </div>
+        <div class="card" id="proj-recent-card">
+          <h2>Недавние проекты</h2>
+          <div id="proj-recent" class="proj-recent-list"></div>
+          <p class="muted">«Убрать из списка» удаляет проект только из этого списка — файлы на диске не затрагиваются. Недоступные папки честно помечаются.</p>
         </div>
         <div class="card" id="proj-report-card" hidden>
           <h2>Карта проекта</h2>
           <dl class="kv" id="proj-report"></dl>
+          <div class="btns">
+            <button id="btn-proj-rescan">Пересканировать</button>
+            <button id="btn-proj-structure-chat2">Структура → чат</button>
+          </div>
         </div>
         <div class="card" id="proj-search-card">
-          <h2>Поиск по проекту</h2>
+          <h2>Умный поиск по проекту</h2>
           <div class="btns">
             <input id="proj-query" type="text" class="dir-input" placeholder="что искать (код, ошибки, TODO)…" />
             <button id="btn-proj-search">Найти</button>
           </div>
+          <p class="muted">Ищет по содержимому, именам функций и путям и ранжирует результаты. Поиск по точной строке с номерами строк — во вкладке Workspace.</p>
           <div id="proj-results" class="model-list"></div>
         </div>
       </section>
 
-      <!-- WORKSPACE -->
+      <!-- WORKSPACE (Этап 1В §3) -->
       <section id="tab-workspace" data-page hidden>
         <h1>Workspace</h1>
         <div class="card">
           <div class="ws-toolbar">
-            <label>Проект: <span class="mono" id="ws-dir">—</span></label>
-            <span class="muted" id="ws-file-label">файл не выбран</span>
+            <label>Проект: <b id="ws-proj-name">—</b> <span class="mono muted" id="ws-dir">—</span></label>
+            <div class="btns ws-actions">
+              <button id="btn-ws-refresh" title="Обновить файлы проекта с диска">Обновить</button>
+              <button id="btn-ws-openfolder">Открыть папку</button>
+              <button id="btn-ws-copypath">Копировать путь</button>
+              <button id="btn-ws-gotochat">В чат →</button>
+            </div>
+          </div>
+          <div class="ws-search-row">
+            <input id="ws-find" type="search" placeholder="Поиск файлов по имени…" autocomplete="off" />
+            <div class="dir-row">
+              <input id="ws-grep-q" type="search" placeholder="Поиск текста внутри файлов…" autocomplete="off" />
+              <button id="btn-ws-grep">Найти текст</button>
+            </div>
           </div>
           <div class="ws-split">
-            <div>
+            <div class="ws-left">
               <h2>Файлы</h2>
               <div id="ws-tree" class="ws-tree"><span class="muted">Откройте проект на вкладке «Проекты».</span></div>
-            </div>
-            <div class="ws-editor">
-              <h2>Редактор</h2>
-              <textarea id="ws-editor" rows="20" spellcheck="false" placeholder="Выберите файл слева…"></textarea>
-              <div class="btns">
-                <button id="btn-ws-save" class="primary">Сохранить файл</button>
-                <button id="btn-ws-tochat">Передать в чат</button>
-                <span class="muted" id="ws-note"></span>
+              <div id="ws-ctx-bar" class="ws-ctx-bar" hidden>
+                <div class="ws-ctx-head">Контекст для чата: <span id="ws-ctx-count">0</span></div>
+                <div id="ws-ctx-chips" class="ws-ctx-chips"></div>
+                <div class="btns">
+                  <button id="btn-ws-ctx-chat" class="primary">Передать выбранные в чат</button>
+                  <button id="btn-ws-ctx-clear">Снять выделение</button>
+                </div>
+                <p class="muted">Модель получит только эти файлы. Остальное содержимое проекта никуда не отправляется.</p>
               </div>
             </div>
+            <div class="ws-editor">
+              <div class="ws-editor-head">
+                <span class="mono" id="ws-file-label">файл не выбран</span>
+                <span id="ws-dirty" class="ws-dirty" hidden>● не сохранено</span>
+              </div>
+              <textarea id="ws-editor" rows="20" spellcheck="false" placeholder="Выберите файл слева…"></textarea>
+              <div class="btns">
+                <button id="btn-ws-save" class="primary">Сохранить (Ctrl+S)</button>
+                <button id="btn-ws-tochat">Файл → чат</button>
+                <button id="btn-ws-sel-tochat">Выделенное → чат</button>
+                <button id="btn-ws-aichange">Попросить ИИ изменить</button>
+                <span class="muted" id="ws-note"></span>
+              </div>
+              <div id="ws-aipanel" class="ws-aipanel" hidden>
+                <h3>Предложенное изменение</h3>
+                <p class="muted" id="ws-aiinfo"></p>
+                <pre id="ws-diff" class="ws-diff"></pre>
+                <div class="btns">
+                  <button id="btn-ws-apply" class="primary">Применить (сначала резервная копия)</button>
+                  <button id="btn-ws-restore" hidden>Восстановить из копии</button>
+                  <button id="btn-ws-ai-cancel">Отменить</button>
+                </div>
+                <p class="muted" id="ws-ainote"></p>
+              </div>
+            </div>
+          </div>
+          <div class="ws-grep-results" id="ws-grep-results" hidden>
+            <h2>Результаты поиска текста <button id="btn-ws-grep-close" class="link-btn">скрыть</button></h2>
+            <div id="ws-grep-list" class="model-list"></div>
           </div>
         </div>
       </section>
 
-      <!-- AI TERMINAL -->
+      <!-- AI TERMINAL (Этап 1В §4) -->
       <section id="tab-terminal" data-page hidden>
         <h1>AI Terminal</h1>
         <div class="card">
+          <div class="term-status-row">
+            <span class="muted">Команды выполняются в: <span class="mono" id="term-cwd-label">—</span></span>
+            <span id="term-state" class="term-state ready">готов</span>
+          </div>
           <label class="field">Рабочая папка
             <input id="term-cwd" type="text" class="dir-input" placeholder="C:\Users\you\project" />
           </label>
           <div class="btns">
-            <input id="term-cmd" type="text" class="dir-input" placeholder="команда (например: node -v, git status); ↑/↓ — история" />
+            <button id="btn-term-useproj">Взять папку проекта</button>
+            <button id="btn-term-pick">Выбрать папку…</button>
+            <button id="btn-term-openfolder">Открыть папку</button>
+          </div>
+          <div class="btns term-cmd-row">
+            <input id="term-cmd" type="text" class="dir-input" placeholder="команда (например: node -v, git status); ↑/↓ — история" autocomplete="off" />
             <button id="btn-term-run" class="primary">Выполнить</button>
             <button id="btn-term-stop" hidden>Остановить</button>
-            <button id="btn-term-tochat" hidden>Вывод в чат</button>
+            <button id="btn-term-rerun" hidden>Повторить</button>
+            <button id="btn-term-clear">Очистить экран</button>
+            <button id="btn-term-tochat" hidden>Вывод → чат</button>
           </div>
-          <p class="muted">Команды выполняются реальным shell в указанной папке. Таймаут по умолчанию 30 с, вывод до 2 МиБ, «Остановить» убивает всё дерево процессов. Команды с ожиданием ввода не поддерживаются; опасные команды требуют подтверждения.</p>
+          <p class="muted">Команды выполняются реальным shell в указанной папке, вывод показывается по мере появления. Таймаут 30 с (макс. 120), вывод до 2 МиБ, «Остановить» завершает всё дерево процессов. Опасные команды — с подтверждением.</p>
           <pre id="term-out" class="term-out" hidden></pre>
         </div>
       </section>

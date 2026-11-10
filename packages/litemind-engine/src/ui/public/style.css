@@ -296,6 +296,74 @@ textarea { background: var(--bg); border: 1px solid var(--border); color: var(--
 .term-out { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px; font-size: 12.5px; white-space: pre-wrap; max-height: 380px; overflow-y: auto; }
 .term-out.rc-bad { border-color: var(--bad); }
 
+/* ---------- Этап 1В: Projects / Workspace / AI Terminal ---------- */
+.danger-soft { color: var(--bad); }
+.proj-active-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+.proj-name { font-size: 17px; font-weight: 700; }
+.proj-path { word-break: break-all; }
+.proj-recent-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.proj-recent-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elev2); }
+.proj-recent-row.unavailable { opacity: 0.65; border-style: dashed; }
+.proj-recent-info { min-width: 0; }
+.proj-recent-name { font-weight: 600; font-size: 13.5px; }
+.proj-recent-path { font-size: 11.5px; word-break: break-all; }
+.proj-recent-bad { color: var(--bad); font-size: 12px; margin-top: 2px; }
+.proj-recent-actions { display: flex; gap: 6px; flex: none; }
+.proj-excludes { margin-top: 10px; font-size: 13px; }
+.proj-excludes summary { cursor: pointer; color: var(--text-dim); }
+.proj-excludes input { margin: 8px 0 4px; }
+.ws-toolbar { flex-wrap: wrap; gap: 8px; }
+.ws-actions { gap: 6px; }
+.ws-search-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.ws-search-row input { flex: 1; min-width: 180px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 8px 10px; font-size: 13px; }
+.ws-search-row .dir-row { flex: 1; min-width: 240px; }
+.ws-node { display: flex; align-items: center; gap: 2px; }
+.ws-children { margin-left: 16px; border-left: 1px solid var(--border); padding-left: 4px; display: flex; flex-direction: column; gap: 2px; }
+.ws-toggle { background: none; border: none; color: var(--text-dim); cursor: pointer; width: 22px; padding: 4px 0; font-size: 12px; }
+.ws-toggle:disabled { opacity: 0.35; cursor: default; }
+.ws-dir-name { flex: 1; text-align: left; background: none; border: none; color: var(--text); font-weight: 600; font-size: 12.5px; padding: 5px 6px; border-radius: 8px; cursor: pointer; }
+.ws-dir-name:hover { background: var(--bg-elev2); }
+.ws-file-row .ws-file { flex: 1; }
+.ws-file-binary { color: var(--text-dim); }
+.ws-ctx-add { background: none; border: 1px solid transparent; color: var(--text-dim); font-size: 11px; border-radius: 8px; padding: 2px 6px; cursor: pointer; opacity: 0; }
+.ws-node:hover .ws-ctx-add { opacity: 1; }
+.ws-ctx-add:hover { color: var(--accent); border-color: var(--accent); }
+.ws-note-row { font-size: 12px; padding: 4px 6px; }
+.ws-ctx-bar { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent-soft); }
+.ws-ctx-head { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.ws-ctx-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.ws-ctx-chip { font-size: 12px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 3px 8px; display: inline-flex; gap: 6px; align-items: center; }
+.ws-ctx-chip button { background: none; border: none; color: var(--text-dim); cursor: pointer; padding: 0; font-size: 13px; }
+.ws-ctx-chip button:hover { color: var(--bad); }
+.ws-editor-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 12.5px; }
+.ws-dirty { color: var(--warn); font-size: 12.5px; font-weight: 600; }
+.ws-grep-hit { cursor: pointer; border-radius: 8px; padding: 6px 8px; }
+.ws-grep-hit:hover { background: var(--bg-elev2); }
+.ws-grep-hit pre { margin: 2px 0 0; white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--text-dim); }
+.ws-grep-results { margin-top: 14px; }
+.ws-aipanel { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg-elev2); }
+.ws-aipanel h3 { margin: 0 0 6px; font-size: 14px; }
+.ws-diff { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; max-height: 300px; overflow: auto; white-space: pre-wrap; margin: 8px 0; font-family: ui-monospace, Consolas, monospace; }
+.d-add { color: var(--ok); }
+.d-del { color: var(--bad); }
+.d-ctx { color: var(--text-dim); }
+.chat-file-bar { margin-top: 8px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 10px; padding: 10px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 8px; }
+.term-status-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; }
+.term-cmd-row { flex-wrap: nowrap; }
+.term-cmd-row .dir-input { flex: 1; }
+.term-state { font-weight: 700; font-size: 12.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); }
+.term-state.ready { color: var(--text-dim); }
+.term-state.running { color: var(--accent); border-color: var(--accent); }
+.term-state.stopping { color: var(--warn); border-color: var(--warn); }
+.term-state.stopped { color: var(--warn); }
+.term-state.done { color: var(--ok); }
+.term-state.fail { color: var(--bad); border-color: var(--bad); }
+.ctx-warn { font-size: 12.5px; border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; }
+.ctx-warn.ok { background: rgba(63, 185, 111, 0.1); color: var(--ok); }
+.ctx-warn.warn { background: rgba(224, 166, 63, 0.12); color: var(--warn); }
+.ctx-warn.bad { background: rgba(224, 92, 92, 0.14); color: var(--bad); }
+.attach-path { font-style: normal; color: var(--text-dim); font-size: 11px; }
+
 /* ============================ AI CHAT ============================ */
 /* 100vh минус липкий title bar (44px + 1px граница) — иначе поле ввода уходит за нижний край */
 #tab-chat { padding: 0; max-width: none; display: flex; height: calc(100vh - 45px); }
