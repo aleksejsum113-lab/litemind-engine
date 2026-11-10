@@ -242,6 +242,24 @@ function registerShellIpc(): void {
     },
   )
 
+  // Этап 1Б §6: нативный выбор GGUF-файла («Добавить свою модель»).
+  // Фильтр файлов: .gguf — исполняемые и посторонние файлы выбрать нельзя.
+  ipcMain.handle("litemind:pick-gguf", async (event, args: { title?: unknown } | undefined) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const options: Electron.OpenDialogOptions = {
+      title: typeof args?.title === "string" && args.title.trim() ? args.title : "Выберите GGUF-модель",
+      properties: ["openFile"],
+      buttonLabel: "Выбрать модель",
+      filters: [
+        { name: "GGUF-модели", extensions: ["gguf"] },
+        { name: "Все файлы", extensions: ["*"] },
+      ],
+    }
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+    if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true }
+    return { ok: true, path: result.filePaths[0] }
+  })
+
   ipcMain.handle("litemind:app-info", (event) => {
     if (!isRendererUrl(event.senderFrame?.url)) return null
     return appInfoPayload()

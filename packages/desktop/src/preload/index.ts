@@ -40,6 +40,9 @@ contextBridge.exposeInMainWorld("electron", {
       ipcRenderer.invoke("litemind:shell-show-item", String(path ?? "")),
     pickFolder: (title: string, defaultPath?: string) =>
       ipcRenderer.invoke("litemind:pick-folder", { title: String(title ?? "Выберите папку"), defaultPath }),
+    // Этап 1Б §6: выбор своего GGUF-файла в проводнике Windows.
+    pickGgufFile: (title: string) =>
+      ipcRenderer.invoke("litemind:pick-gguf", { title: String(title ?? "Выберите GGUF-модель") }),
     appInfo: () => ipcRenderer.invoke("litemind:app-info"),
   },
 })

@@ -6,6 +6,9 @@ export type LiteMindEngineControlAction = "status" | "start" | "stop" | "quit"
 /** Результат нативного диалога выбора папки (ТЗ Этап 1 §8/§9/§12). */
 export type PickFolderResult = { ok: true; path: string } | { ok: false; canceled: true }
 
+/** Результат нативного диалога выбора GGUF-файла (Этап 1Б §6). */
+export type PickGgufResult = { ok: true; path: string } | { ok: false; canceled: true }
+
 /** Информация о приложении и системе для раздела «Настройки» (ТЗ §12). */
 export type LiteMindAppInfo = {
   version: string
@@ -34,6 +37,8 @@ export type ElectronNative = {
     shellShowItemInFolder(path: string): Promise<{ ok: boolean }>
     /** Стандартный диалог Windows «выбрать папку». */
     pickFolder(title: string, defaultPath?: string): Promise<PickFolderResult>
+    /** Стандартный диалог Windows «выбрать GGUF-файл» (Этап 1Б §6). */
+    pickGgufFile(title: string): Promise<PickGgufResult>
     /** Версии и пути для «Настройки → О приложении». */
     appInfo(): Promise<LiteMindAppInfo>
   }
