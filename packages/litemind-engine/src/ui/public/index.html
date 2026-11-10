@@ -273,7 +273,9 @@
           <div class="btns">
             <button id="btn-proj-scan" class="primary">Открыть / просканировать</button>
             <button id="btn-proj-rescan">Пересканировать</button>
+            <button id="btn-proj-pick">Выбрать папку…</button>
           </div>
+          <div id="proj-recent" class="proj-recent" hidden></div>
           <p class="muted" id="proj-summary">Проекты LiteMind не хранит: сканирование строит карту файлов и индекс для поиска. Последние папки запоминаются локально.</p>
         </div>
         <div class="card" id="proj-report-card" hidden>
@@ -308,6 +310,7 @@
               <textarea id="ws-editor" rows="20" spellcheck="false" placeholder="Выберите файл слева…"></textarea>
               <div class="btns">
                 <button id="btn-ws-save" class="primary">Сохранить файл</button>
+                <button id="btn-ws-tochat">Передать в чат</button>
                 <span class="muted" id="ws-note"></span>
               </div>
             </div>

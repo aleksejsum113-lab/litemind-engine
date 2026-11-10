@@ -1476,18 +1476,56 @@ async function refreshDownloads() {
 
 /* ============================ Проекты ============================ */
 const PROJ_KEY = 'litemind-project-dir';
+const PROJ_RECENT_KEY = 'litemind-projects-recent'; // массив недавних папок (до 8)
+
+function recentProjects() {
+  try { return JSON.parse(localStorage.getItem(PROJ_RECENT_KEY) || '[]').filter((p) => typeof p === 'string'); } catch { return []; }
+}
+
+function rememberProject(dir) {
+  const list = recentProjects().filter((p) => p !== dir);
+  list.unshift(dir);
+  localStorage.setItem(PROJ_RECENT_KEY, JSON.stringify(list.slice(0, 8)));
+  localStorage.setItem(PROJ_KEY, dir);
+  renderRecentProjects();
+}
+
+function renderRecentProjects() {
+  const wrap = $('proj-recent');
+  if (!wrap) return;
+  const list = recentProjects();
+  wrap.hidden = !list.length;
+  wrap.innerHTML = '';
+  if (!list.length) return;
+  const label = document.createElement('span');
+  label.className = 'muted';
+  label.textContent = 'Недавние проекты:';
+  wrap.appendChild(label);
+  for (const p of list) {
+    const b = document.createElement('button');
+    b.className = 'proj-recent-item';
+    b.title = p;
+    b.textContent = p;
+    b.addEventListener('click', () => {
+      $('proj-dir').value = p;
+      scanProject(false);
+    });
+    wrap.appendChild(b);
+  }
+}
 
 function loadProjects() {
   const saved = localStorage.getItem(PROJ_KEY);
   if (saved && !$('proj-dir').value) { $('proj-dir').value = saved; state.projDir = saved; }
   if (state.projDir) $('ws-dir').textContent = state.projDir;
+  renderRecentProjects();
 }
 
 async function scanProject(force) {
   const dir = $('proj-dir').value.trim();
   if (!dir) { showError('Укажите папку проекта.'); return; }
   state.projDir = dir;
-  localStorage.setItem(PROJ_KEY, dir);
+  rememberProject(dir);
   $('ws-dir').textContent = dir;
   $('proj-summary').textContent = 'сканирование…';
   try {
@@ -1519,6 +1557,15 @@ async function scanProject(force) {
 }
 $('btn-proj-scan').addEventListener('click', () => scanProject(false));
 $('btn-proj-rescan').addEventListener('click', () => scanProject(true));
+$('btn-proj-pick').addEventListener('click', async () => {
+  const b = bridge();
+  if (!b?.pickFolder) { showError('Стандартный диалог выбора папки доступен в LiteMind Desktop. В браузере введите путь вручную.'); return; }
+  const r = await b.pickFolder('Папка проекта', $('proj-dir').value.trim() || undefined).catch(() => null);
+  if (r?.ok && r.path) {
+    $('proj-dir').value = r.path;
+    scanProject(false);
+  }
+});
 
 $('btn-proj-search').addEventListener('click', async () => {
   const dir = state.projDir || $('proj-dir').value.trim();
@@ -1596,6 +1643,20 @@ $('btn-ws-save').addEventListener('click', async () => {
     $('ws-note').textContent = `сохранено ${fmtSize(r.sizeBytes)}`;
     event(`workspace: сохранён ${state.wsFile}`);
   } catch (err) { showError('сохранение: ' + err.message); }
+});
+
+/* Передача содержимого открытого файла в чат как вложения (ТЗ Этап 1 §9):
+   тот же конвейер, что у файлов из проводника — /api/attachments + чип над полем ввода. */
+$('btn-ws-tochat').addEventListener('click', async () => {
+  if (!state.wsDir || !state.wsFile) { showError('Сначала откройте проект и файл.'); return; }
+  const content = $('ws-editor').value;
+  if (!content) { showError('Файл пуст — передавать нечего.'); return; }
+  const name = state.wsFile.split(/[\\/]/).pop();
+  pendingAttachments.push({ name, kind: state.wsFile.split('.').pop()?.toLowerCase() || 'txt', chars: content.length, text: content, warning: null });
+  renderAttachBar();
+  event(`workspace → чат: ${state.wsFile} (${content.length} симв.)`);
+  $('ws-note').textContent = 'передано в чат как вложение';
+  openTab('chat');
 });
 
 /* ============================ AI Terminal ============================ */
