@@ -1,5 +1,11 @@
 name: LiteMind Windows build
 
+# Этап 2: job «smoke» — проверка УСТАНОВЛЕННОГО артефакта успешной сборки на
+# чистом windows-latest раннере. Включается только вручную (workflow_dispatch
+# с input smoke=true); обычная сборка/релиз работают как раньше.
+# Отдельный workflow-файл для smoke не зарегистрировать, пока он не попадёт
+# в default-ветку, поэтому проверка живёт здесь (файл из ref запуска).
+
 on:
   push:
     branches: [main, dev]
@@ -13,12 +19,27 @@ on:
       - '.github/**'
       - '**/*.md'
   workflow_dispatch:
+    inputs:
+      smoke:
+        description: 'Запустить smoke-тест установленного артефакта (без пересборки)'
+        type: boolean
+        default: false
+      run_id:
+        description: 'Run ID сборки с артефактом litemind-desktop-win-x64'
+        default: '42790596165'
+      expected_sha256:
+        description: 'Ожидаемый SHA-256 установщика (нижний регистр)'
+        default: '86efd694800bbd2a7685cdd027648cfd405916429793c86980bddcaf14f0883e'
+      model_url:
+        description: 'URL GGUF-модели для теста (та же, что у пользователя)'
+        default: 'https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf'
 
 permissions:
   contents: write
 
 jobs:
   test:
+    if: inputs.smoke != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +55,7 @@ jobs:
   windows:
     needs: test
     runs-on: windows-latest
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && inputs.smoke != true
     steps:
       - uses: actions/checkout@v4
       - name: Install bun 1.4.4 (npm registry)
@@ -115,6 +136,195 @@ jobs:
           path: |
             packages/desktop/dist/*.exe
           if-no-files-found: error
+
+  # ── Этап 2: smoke-тест установленного артефакта ──────────────────────────
+  # Чистый windows-latest: тихая установка NSIS /S, окно GUI, runtime, DLL,
+  # max_tokens=16 (регрессия «пустой ответ»), SSE, профили, остановка.
+  # Артефакт скачивается из успешной сборки по run_id — llama.cpp не пересобирается.
+  smoke:
+    if: github.event_name == 'workflow_dispatch' && inputs.smoke == true
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download artifact from build run
+        uses: actions/download-artifact@v4
+        with:
+          name: litemind-desktop-win-x64
+          path: artifact
+          run-id: ${{ github.event.inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify installer SHA-256 and size
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem artifact -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw 'в артефакте нет .exe установщика' }
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          Write-Host "SHA-256: $hash"
+          Write-Host "Размер: $($exe.Length) байт"
+          if ($hash -ne '${{ github.event.inputs.expected_sha256 }}') { throw "SHA-256 не совпал: $hash" }
+          Add-Content $env:GITHUB_ENV "LM_INSTALLER=$($exe.FullName)"
+
+      - name: Install silently (NSIS /S) and verify runtime files
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath $env:LM_INSTALLER -ArgumentList '/S' -Wait -PassThru
+          Write-Host "код завершения установщика: $($p.ExitCode)"
+          $base = "$env:LOCALAPPDATA\Programs"
+          # productName = LiteMind → по умолчанию %LOCALAPPDATA%\Programs\LiteMind.
+          # Ищем надёжно: exe в подпапках Programs (глубина 2), а не по одному имени папки.
+          $exe = Get-ChildItem $base -Recurse -Depth 2 -Filter 'LiteMind.exe' -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $exe) {
+            Get-ChildItem $base -Directory | ForEach-Object { Write-Host "  найдена папка: $($_.FullName)" }
+            throw "LiteMind.exe не найден после установки в $base"
+          }
+          $dir = $exe.DirectoryName
+          Write-Host "папка установки: $dir"
+          Add-Content $env:GITHUB_ENV "LM_INSTALL_DIR=$dir"
+          $ver = (Get-Item $exe.FullName).VersionInfo.ProductVersion
+          Write-Host "версия приложения: $ver"
+          if ($ver -notlike '0.6*') { throw "ожидается версия 0.6.x, получено: $ver" }
+          $rt = "$dir\resources\llamacpp"
+          Get-ChildItem $rt | Select-Object Name, Length | Format-Table -AutoSize | Out-String | Write-Host
+          foreach ($f in 'llama-server.exe','llama-server-impl.dll','llama.dll','llama-common.dll',
+                         'ggml.dll','ggml-base.dll','ggml-cpu-sse42.dll','ggml-cpu-x64.dll') {
+            if (-not (Test-Path "$rt\$f")) { throw "файл runtime отсутствует: $f" }
+          }
+
+      - name: Download test model (Qwen3-0.6B-Q8_0)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\models" | Out-Null
+          curl.exe -sSL --retry 3 -o "$env:RUNNER_TEMP\models\Qwen3-0.6B-Q8_0.gguf" "${{ github.event.inputs.model_url }}"
+          $len = (Get-Item "$env:RUNNER_TEMP\models\Qwen3-0.6B-Q8_0.gguf").Length
+          Write-Host "модель скачана: $len байт"
+          if ($len -lt 100000000) { throw 'файл модели подозрительно мал' }
+          Add-Content $env:GITHUB_ENV "LM_MODEL=$env:RUNNER_TEMP\models\Qwen3-0.6B-Q8_0.gguf"
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-List | Out-String | Write-Host
+
+      - name: Direct runtime check (llama-server.exe + health + max_tokens=16 + taskkill)
+        shell: pwsh
+        run: |
+          $rt = "$env:LM_INSTALL_DIR\resources\llamacpp"
+          $ver = (& "$rt\llama-server.exe" --version 2>&1 | Out-String).Trim()
+          Write-Host "llama-server --version:`n$ver"
+          if (-not $ver) { throw 'llama-server.exe не запустился (DLL не загрузились?)' }
+          $log = "$env:RUNNER_TEMP\llama-server-direct.log"
+          $p = Start-Process -FilePath "$rt\llama-server.exe" `
+                 -ArgumentList '-m', $env:LM_MODEL, '--host', '127.0.0.1', '--port', '8398', '-c', '2048' `
+                 -RedirectStandardError $log -RedirectStandardOutput "$env:RUNNER_TEMP\llama-server-direct.out.log" `
+                 -PassThru -WindowStyle Hidden
+          $ok = $false
+          foreach ($i in 1..90) {
+            try {
+              $h = Invoke-RestMethod 'http://127.0.0.1:8398/health' -TimeoutSec 2
+              if ($h.status -eq 'ok') { $ok = $true; break }
+            } catch { Start-Sleep -Milliseconds 800 }
+          }
+          if (-not $ok) {
+            Get-Content $log -Tail 40 | ForEach-Object { Write-Host "  $_" }
+            throw 'llama-server: /health не ответил ok за ~75 с'
+          }
+          Write-Host 'llama-server: /health ok — модель загружена, DLL работают'
+          $body = @{
+            model = 'qwen3-test'; stream = $false; max_tokens = 16
+            messages = @(@{ role = 'user'; content = 'Ответь одним коротким предложением. Какого цвета небо? /no_think' })
+          } | ConvertTo-Json -Depth 5
+          $resp = Invoke-RestMethod 'http://127.0.0.1:8398/v1/chat/completions' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 180
+          $content = $resp.choices[0].message.content
+          Write-Host "ответ (max_tokens=16): $content"
+          if (-not $content) { throw 'ПУСТОЙ ответ при max_tokens=16 — регрессия' }
+          taskkill /PID $p.Id /T /F
+          Start-Sleep -Seconds 2
+          $still = Get-Process llama-server -ErrorAction SilentlyContinue
+          if ($still) { throw 'llama-server жив после taskkill /T /F' }
+          Write-Host 'дерево процессов llama-server корректно завершено'
+          Write-Host '--- строки лога llama-server (CPU/бэкенды):'
+          Select-String -Path $log -Pattern 'SSE|AVX|backend|CPU|ggml' |
+            Select-Object -First 25 | ForEach-Object { Write-Host "  $($_.Line)" }
+
+      - name: Engine smoke (SSE + профили + остановка) на установленном runtime
+        shell: pwsh
+        run: |
+          node packages/litemind-engine/scripts/smoke-stage2.mjs `
+            --model "$env:LM_MODEL" `
+            --server "$env:LM_INSTALL_DIR\resources\llamacpp\llama-server.exe" `
+            --port 8397 --out "$env:RUNNER_TEMP\smoke-engine.json"
+
+      - name: Installed app smoke (LiteMind.exe → движок на 8399)
+        shell: pwsh
+        run: |
+          $cfg = "$env:APPDATA\LiteMind"
+          New-Item -ItemType Directory -Force $cfg | Out-Null
+          @{
+            api = @{ port = 8399 }
+            models = @{ rootDir = "$env:RUNNER_TEMP\models" }
+            backend = @{ type = 'lmlama' }
+            profile = 'balanced'
+          } | ConvertTo-Json -Depth 5 | Set-Content "$cfg\config.json" -Encoding utf8NoBOM
+          Start-Process "$env:LM_INSTALL_DIR\LiteMind.exe"
+
+          # GUI: окно приложения должно реально появиться (Electron запущен, окно создано)
+          $win = $null
+          foreach ($i in 1..90) {
+            Start-Sleep -Seconds 1
+            $win = Get-Process LiteMind -ErrorAction SilentlyContinue |
+              Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+            if ($win) { break }
+          }
+          if (-not $win) {
+            Get-Process LiteMind -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "  процесс LiteMind: PID=$($_.Id), MainWindowHandle=$($_.MainWindowHandle)"
+            }
+            throw 'окно LiteMind не появилось за 90 с (GUI не создан)'
+          }
+          Write-Host "окно GUI создано: handle=$($win.MainWindowHandle), заголовок='$($win.MainWindowTitle)'"
+          # Скриншот рабочего стола (best-effort: доказательство GUI для отчёта)
+          try {
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("$env:RUNNER_TEMP\litemind-gui.png", [System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $bmp.Dispose()
+            Write-Host "скриншот сохранён: $env:RUNNER_TEMP\litemind-gui.png"
+          } catch { Write-Host "::warning::скриншот не удался: $($_.Exception.Message)" }
+
+          node packages/litemind-engine/scripts/smoke-stage2-gui.mjs --out "$env:RUNNER_TEMP\smoke-gui.json"
+          $exit = $LASTEXITCODE
+          taskkill /IM LiteMind.exe /T /F 2>$null
+          Start-Sleep -Seconds 3
+          $app = Get-Process LiteMind -ErrorAction SilentlyContinue
+          if ($app) { throw 'LiteMind.exe не завершился' }
+          if ($exit -ne 0) {
+            Get-ChildItem "$env:APPDATA\LiteMind\logs" -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host "=== $($_.Name)"; Get-Content $_.FullName -Tail 30 | ForEach-Object { Write-Host "  $_" } }
+            throw "gui smoke завершился с кодом $exit"
+          }
+          Write-Host 'приложение запустилось, отработало и корректно завершено'
+
+      - name: Upload smoke results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: litemind-windows-smoke-results
+          path: |
+            ${{ runner.temp }}/smoke-engine.json
+            ${{ runner.temp }}/smoke-gui.json
+            ${{ runner.temp }}/llama-server-direct.log
+            ${{ runner.temp }}/litemind-gui.png
+          if-no-files-found: ignore
 
   release:
     needs: [test, windows]
