@@ -5,6 +5,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { CATALOG, CATEGORIES, catalogEntry } from '../catalog/models.js';
 import * as hardware from '../diagnostics/hardware.js';
@@ -80,6 +81,17 @@ function openaiError(res, status, message, type = 'invalid_request_error', code 
   json(res, status, { error: { message, type, code, param: null, line: null } });
 }
 
+/**
+ * Путь лежит внутри rootDir (и не совпадает с ним)?
+ * path.relative на Windows сравнивает диск/папки без учёта регистра,
+ * поэтому «C:\Models\m.gguf» при rootDir «c:\models» корректно признаётся
+ * внутренним — простой startsWith() здесь даёт ложные отказы.
+ */
+function isInsideDir(rootDir, file) {
+  const rel = path.relative(rootDir, file);
+  return rel !== '' && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+}
+
 function readBody(req, maxBytes = MAX_BODY) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -113,6 +125,23 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
   };
   const installedNames = new Set();
   let installedCacheAt = 0;
+  // Этап 1 §11: выполняющиеся команды терминала (для кнопки «Остановить»).
+  const terminalJobs = new Map();
+  let terminalJobSeq = 0;
+  // Убить всё дерево процессов команды: shell-обёртка (cmd.exe / sh) порождает
+  // дочерние процессы, и kill() самого child оставил бы их жить и держать RAM
+  // и пайпы. Windows — taskkill /T /F (как в lmlama.js для llama-server);
+  // POSIX — SIGKILL всей группе (child запущен detached со своей группой).
+  const killProcessTree = (child) => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    try {
+      if (process.platform === 'win32') {
+        if (child.pid) spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+      } else {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+      }
+    } catch { try { child.kill('SIGKILL'); } catch { /* уже завершён */ } }
+  };
   const refreshInstalled = async () => {
     if (Date.now() - installedCacheAt < 5000) return;
     try {
@@ -426,6 +455,9 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
     // --- AI Terminal: выполнение команд в проекте (ТЗ §4) ------------------
     // Реальный запуск через shell с таймаутом и ограничением вывода.
     // Работает только в каталоге проекта (cwd), выходные данные обрезаются.
+    // Этап 1: spawn вместо exec — команда получает jobId, «Остановить»
+    // (/api/terminal/stop) и таймаут убивают всё дерево процессов, а не только
+    // shell-обёртку; вывод собирается с лимитом 2 МБ без буферизации всего.
     if (req.method === 'POST' && p === '/api/terminal/exec') {
       const body = JSON.parse((await readBody(req)) || '{}');
       const cwd = body.cwd ? path.resolve(body.cwd) : null;
@@ -437,27 +469,109 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       if (command.length > 4000) return openaiError(res, 400, 'команда слишком длинная', 'invalid_request_error');
       const timeoutMs = Math.min(Number(body.timeoutMs) || 30000, 120000);
       const started = Date.now();
+      // jobId может задать клиент ДО запуска (иначе UI не знал бы, что
+      // останавливать: ответ приходит только по завершении команды).
+      // Столкновение id — старая команда убивается, её место занимает новая.
+      const jobId = typeof body.jobId === 'string' && /^[\w-]{1,64}$/.test(body.jobId)
+        ? body.jobId
+        : `t${Date.now().toString(36)}${(terminalJobSeq++).toString(36)}`;
+      const previous = terminalJobs.get(jobId);
+      if (previous) { try { (previous.kill ?? (() => killProcessTree(previous.child)))(); } catch { /* завершится сам */ } }
       try {
-        const { exec } = await import('node:child_process');
         const result = await new Promise((resolve) => {
-          exec(command, { cwd, timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024, windowsHide: true, killSignal: 'SIGKILL' }, (err, stdout, stderr) => {
-            resolve({ err, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+          // detached (POSIX): своя группа процессов — kill(-pid) убивает и
+          // потомков команды. На Windows дерево добивает taskkill /T.
+          const child = spawn(command, { cwd, shell: true, windowsHide: true, detached: process.platform !== 'win32' });
+          const cap = 2 * 1024 * 1024;
+          const out = [];
+          const errOut = [];
+          let outN = 0;
+          let errN = 0;
+          let truncated = false;
+          let timedOut = false;
+          let stoppedByUser = false;
+          let spawnError = null;
+          let settled = false;
+          let graceTimer = null;
+          child.stdout?.on('data', (chunk) => {
+            if (outN < cap) { const take = chunk.subarray(0, cap - outN); out.push(take); outN += take.length; if (take.length < chunk.length) truncated = true; }
+            else truncated = true;
+          });
+          child.stderr?.on('data', (chunk) => {
+            if (errN < cap) { const take = chunk.subarray(0, cap - errN); errOut.push(take); errN += take.length; if (take.length < chunk.length) truncated = true; }
+            else truncated = true;
+          });
+          child.on('error', (e) => { spawnError = e.message; });
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            clearTimeout(graceTimer);
+            terminalJobs.delete(jobId);
+            resolve({
+              code: child.exitCode,
+              signal: child.signalCode,
+              stdout: Buffer.concat(out).toString('utf8'),
+              stderr: Buffer.concat(errOut).toString('utf8'),
+              timedOut, stoppedByUser, truncated, spawnError
+            });
+          };
+          // «close» — процесс и stdio закрыты; обычный путь завершения.
+          child.on('close', finish);
+          // Если после убийства дерева кто-то держит пайпы (демонизировался) —
+          // через 3 с отдаём то, что успели собрать, без зависшего HTTP-ответа.
+          const startGrace = () => {
+            if (graceTimer) return;
+            graceTimer = setTimeout(() => {
+              finish();
+              try { child.stdout?.destroy(); child.stderr?.destroy(); } catch { /* уже закрыты */ }
+            }, 3000);
+          };
+          const timer = setTimeout(() => { timedOut = true; killProcessTree(child); startGrace(); }, timeoutMs);
+          terminalJobs.set(jobId, {
+            child,
+            kill: () => { stoppedByUser = true; killProcessTree(child); startGrace(); },
+            cwd,
+            command: command.slice(0, 200)
           });
         });
         const durationMs = Date.now() - started;
-        const timedOut = result.err?.killed === true || result.err?.signal === 'SIGKILL';
-        if (timedOut) logger?.warn('terminal command timed out', { cwd, durationMs });
-        else logger?.info('terminal command executed', { cwd, durationMs, exitCode: result.err?.code ?? 0 });
+        if (result.timedOut) logger?.warn('terminal command timed out', { cwd, durationMs });
+        else if (result.stoppedByUser) logger?.warn('terminal command stopped by user', { cwd, durationMs });
+        else logger?.info('terminal command executed', { cwd, durationMs, exitCode: result.code ?? 0 });
         return json(res, 200, {
-          exitCode: result.err?.code ?? (result.err ? 1 : 0),
-          timedOut,
+          jobId,
+          exitCode: result.spawnError ? 1 : (result.code ?? (result.signal || result.timedOut || result.stoppedByUser ? 1 : 0)),
+          timedOut: result.timedOut,
+          stopped: result.stoppedByUser,
+          truncated: result.truncated,
           durationMs,
           stdout: result.stdout,
           stderr: result.stderr,
-          error: timedOut ? `превышен таймаут ${timeoutMs} мс — процесс принудительно завершён` : result.err?.message ?? null
+          error: result.spawnError
+            ?? (result.timedOut ? `превышен таймаут ${timeoutMs} мс — процесс принудительно завершён` : null)
         });
       } catch (err) {
+        terminalJobs.delete(jobId);
         return openaiError(res, 500, err.message, 'api_error', 'TERMINAL_FAILED');
+      }
+    }
+
+    // Остановка выполняющейся команды терминала (ТЗ Этап 1 §11).
+    // Без jobId останавливается последняя запущенная — у интерфейса один
+    // терминал, и это ровно та команда, которую пользователь видит на экране.
+    if (req.method === 'POST' && p === '/api/terminal/stop') {
+      let body;
+      try { body = JSON.parse((await readBody(req)) || '{}'); } catch { body = {}; }
+      const wanted = String(body.jobId || '');
+      const job = wanted ? terminalJobs.get(wanted) : terminalJobs.get([...terminalJobs.keys()].at(-1));
+      if (!job) return json(res, 200, { ok: false, error: 'команда уже завершена или не найдена' });
+      try {
+        (job.kill ?? (() => killProcessTree(job.child)))();
+        logger?.warn('terminal command stopped by user', { cwd: job.cwd, command: job.command });
+        return json(res, 200, { ok: true, jobId: wanted || [...terminalJobs.keys()].at(-1) });
+      } catch (err) {
+        return json(res, 200, { ok: false, error: err.message });
       }
     }
 
@@ -636,9 +750,42 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
     }
 
     // --- Каталог v2: проверка целостности скачанного файла (SHA-256 из HF) ---
+    // Этап 1 §7: два режима — { modelId } (каталог, сверка с эталоном) и
+    // { file } (локальная GGUF: сигнатура GGUF, размер, фактическая сумма).
     if (req.method === 'POST' && p === '/api/models/verify') {
       let body;
-      try { body = JSON.parse((await readBody(req)) || '{}'); } catch { return openaiError(res, 400, 'Ожидался JSON: { modelId, fileName? }', 'invalid_request_error'); }
+      try { body = JSON.parse((await readBody(req)) || '{}'); } catch { return openaiError(res, 400, 'Ожидался JSON: { modelId, fileName? } или { file }', 'invalid_request_error'); }
+      if (!body.modelId && typeof body.file === 'string' && body.file.trim()) {
+        const file = path.resolve(body.file.trim());
+        const rootDir = path.resolve(config.models.rootDir);
+        if (!isInsideDir(rootDir, file)) {
+          return openaiError(res, 400, `Путь должен указывать на файл внутри папки моделей (${rootDir}).`, 'invalid_request_error');
+        }
+        if (!fs.existsSync(file)) return json(res, 200, { ok: false, verified: false, reason: 'not_found', message: 'Файл не найден.' });
+        const stat = fs.statSync(file);
+        if (!stat.isFile()) return openaiError(res, 400, `Это не файл: ${file}`, 'invalid_request_error');
+        const hash = crypto.createHash('sha256');
+        let magicOk = false;
+        await new Promise((resolve, reject) => {
+          const stream = fs.createReadStream(file);
+          let first = true;
+          stream.on('data', (chunk) => {
+            if (first) { magicOk = chunk.subarray(0, 4).toString('binary') === 'GGUF'; first = false; }
+            hash.update(chunk);
+          });
+          stream.on('end', resolve);
+          stream.on('error', reject);
+        });
+        const verified = magicOk && stat.size > 0;
+        logger?.info('model file verified (file mode)', { file, verified, sizeBytes: stat.size });
+        return json(res, 200, {
+          ok: true, verified, file, sizeBytes: stat.size, magicOk,
+          sha256: hash.digest('hex'), expectedSha256: null, shaOk: null, sizeOk: stat.size > 0,
+          message: verified
+            ? 'Файл цел: корректная сигнатура GGUF, SHA-256 вычислен.'
+            : 'Файл повреждён: отсутствует сигнатура GGUF. Скачайте модель заново.'
+        });
+      }
       const model = catalogEntry(String(body.modelId || ''));
       if (!model) return openaiError(res, 404, `Unknown catalog model: ${body.modelId}`, 'invalid_request_error');
       const entryFile = body.fileName
@@ -679,15 +826,45 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
     }
 
     // --- Каталог v2: запуск скачанной модели (llama-server без генерации) ---
+    // Этап 1 §7: два режима — { modelId } (каталог) и { file } (любая локальная
+    // GGUF из папки моделей, кнопка «Запустить» в менеджере моделей).
     if (req.method === 'POST' && p === '/api/models/run') {
       let body;
-      try { body = JSON.parse((await readBody(req)) || '{}'); } catch { return openaiError(res, 400, 'Ожидался JSON: { modelId }', 'invalid_request_error'); }
-      const model = catalogEntry(String(body.modelId || ''));
-      if (!model) return openaiError(res, 404, `Unknown catalog model: ${body.modelId}`, 'invalid_request_error');
+      try { body = JSON.parse((await readBody(req)) || '{}'); } catch { return openaiError(res, 400, 'Ожидался JSON: { modelId } или { file }', 'invalid_request_error'); }
       if (typeof engine.backend.ensureServer !== 'function') {
         return openaiError(res, 501, `Backend "${engine.backend.type}" не поддерживает прямой запуск. Переключитесь на backend "lmlama".`, 'not_supported', 'RUN_UNSUPPORTED');
       }
       const hw = await hardware.analyzeHardware({ candidateRoots: disksCandidateRoots() });
+      // Режим «файл»: прямая ссылка на GGUF в папке моделей.
+      if (!body.modelId && typeof body.file === 'string' && body.file.trim()) {
+        const file = path.resolve(body.file.trim());
+        const rootDir = path.resolve(config.models.rootDir);
+        if (!file.toLowerCase().endsWith('.gguf')) {
+          return openaiError(res, 400, 'Запускать можно только GGUF-файлы.', 'invalid_request_error');
+        }
+        if (!isInsideDir(rootDir, file)) {
+          return openaiError(res, 400, `Файл вне папки моделей (${rootDir}). Перенесите модель в папку моделей или измените её в «Настройках».`, 'invalid_request_error');
+        }
+        if (!fs.existsSync(file)) {
+          return json(res, 200, { ok: false, reason: 'not_found', message: `Файл не найден: ${file}` });
+        }
+        if (!fs.statSync(file).isFile()) {
+          return openaiError(res, 400, `Это не файл: ${file}`, 'invalid_request_error');
+        }
+        try {
+          const started = await engine.backend.ensureServer({
+            file,
+            contextTokens: Number(body.contextTokens) || hw.recommendation?.maxContextTokens || 4096,
+            threads: hw.recommendation?.threads ?? 0
+          });
+          logger?.info('local model started from file', { file });
+          return json(res, 200, { ok: true, model: path.basename(file).replace(/\.gguf$/i, ''), file, contextTokens: Number(body.contextTokens) || hw.recommendation?.maxContextTokens || 4096, baseUrl: started ?? null });
+        } catch (err) {
+          return openaiError(res, err.status || 500, err.message, 'run_error', err.code);
+        }
+      }
+      const model = catalogEntry(String(body.modelId || ''));
+      if (!model) return openaiError(res, 404, `Unknown catalog model: ${body.modelId}`, 'invalid_request_error');
       const rating = compat.rateCatalogModel(model, hw);
       const target = rating.recommended;
       if (!target) return openaiError(res, 409, 'Не удалось выбрать файл модели.', 'run_error');
