@@ -99,8 +99,10 @@ test('adaptive: runtime capabilities are honest about ollama', () => {
 // ---------------------------------------------------------------- optimizer
 
 test('optimizer: thread candidates and advice thresholds', () => {
+  // Этап 2: кандидаты включают ВСЕ ядра (prefill на N5095A честно измеряется).
   assert.deepEqual(threadCandidates({ cpuThreads: 4, cores: 4 }), [4, 2, 1]);
-  assert.deepEqual(threadCandidates({ cpuThreads: 0, cores: 4 }), [3, 2, 1]);
+  assert.deepEqual(threadCandidates({ cpuThreads: 0, cores: 4 }), [4, 3, 2, 1]);
+  assert.deepEqual(threadCandidates({ cpuThreads: 0, cores: 8 }), [8, 4, 2, 1]);
   assert.equal(adviceFor(10, 'balanced').includes('комфортная'), true);
   assert.equal(adviceFor(1, 'balanced').includes('медленно'), true);
   assert.ok(SLOW_TOKENS_PER_SEC > 0);

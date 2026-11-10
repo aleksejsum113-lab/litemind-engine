@@ -51,17 +51,21 @@ test('collectMetrics returns a complete, non-crashing snapshot', async () => {
   const m = await collectMetrics();
   assert.ok(m.totalRamMb > 0, 'total RAM known');
   assert.ok(m.availableRamMb >= 0, 'available RAM known');
-  assert.ok(typeof m.cpuPercent === 'number', 'CPU load number');
-  assert.ok(['windows-cim', 'procfs', 'fallback'].includes(m.source), `source=${m.source}`);
+  // Этап 2: cpuPercent считается сэмплером по дельте os.cpus() — в первом
+  // снимке его честно нет (null), а не подставленный ноль.
+  assert.ok(m.cpuPercent === null || typeof m.cpuPercent === 'number', 'cpuPercent null or number');
+  assert.ok(['node-os', 'procfs'].includes(m.source), `source=${m.source}`);
 });
 
-test('MetricsSampler samples, keeps bounded history and stops cleanly', async () => {
+test('MetricsSampler computes cpuPercent from deltas and keeps bounded history', async () => {
   let n = 0;
   const sampler = new MetricsSampler({ intervalMs: 10, provider: async () => ({ totalRamMb: 100, usedRamMb: 40, availableRamMb: 60, cpuPercent: n++, at: Date.now() }) });
   await sampler.sample();
   await sampler.sample();
   assert.equal(sampler.latest.totalRamMb, 100);
   assert.equal(sampler.history.length, 2);
+  // Второй сэмпл: CPU% вычислен по дельте os.cpus() (число, а не null).
+  assert.equal(typeof sampler.latest.cpuPercent, 'number', 'cpu computed on second sample');
   sampler.start();
   await new Promise((r) => setTimeout(r, 60));
   sampler.stop();
