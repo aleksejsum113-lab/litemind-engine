@@ -2,6 +2,7 @@
 // Реальный запуск: движок → llama-server → GGUF → настоящий ответ модели.
 // Никаких моков: сервер движка слушает порт, llama-server — реальный процесс.
 import assert from 'node:assert';
+import { ensureAttachmentFixtures } from './helpers/attachment-fixtures.js';
 
 process.env.LITEMIND_LLAMA_SERVER = '/tmp/llamacpp-build/bin/llama-server';
 process.env.LITEMIND_CONFIG = '/tmp/litemind-e2e/config.json';
@@ -12,6 +13,7 @@ fs.writeFileSync(process.env.LITEMIND_CONFIG, JSON.stringify({
 }));
 
 const { startLiteMindEngine } = await import('../src/index.js');
+const attachmentFixtures = ensureAttachmentFixtures();
 
 const BASE = 'http://127.0.0.1:8399';
 let handle;
@@ -147,13 +149,13 @@ try {
   ok('чат-UI (главный экран) раздаётся движком', 'index.html + app.js + style.css');
 
   // 11. Вложения по HTTP: DOCX и PDF
-  const docxB64 = fs.readFileSync('/tmp/litemind-attachments/test.docx').toString('base64');
+  const docxB64 = fs.readFileSync(attachmentFixtures.docxPath).toString('base64');
   const at1 = await fetch(`${BASE}/api/attachments`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'test.docx', dataBase64: docxB64 })
   }).then((r) => r.json());
   assert.ok(at1.ok && at1.text.includes('LiteMind attachment test'), `docx: ${JSON.stringify(at1).slice(0, 200)}`);
-  const pdfB64 = fs.readFileSync('/tmp/litemind-attachments/test.pdf').toString('base64');
+  const pdfB64 = fs.readFileSync(attachmentFixtures.pdfPath).toString('base64');
   const at2 = await fetch(`${BASE}/api/attachments`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'test.pdf', dataBase64: pdfB64 })

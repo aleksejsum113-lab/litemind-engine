@@ -4,6 +4,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 import { extractText, extractDocx, extractPdf } from '../src/attachments/extract.js';
+import { ensureAttachmentFixtures } from './helpers/attachment-fixtures.js';
+
+// Фикстуры создаются самим тестом (детерминированно, без внешних скриптов) —
+// раньше они генерировались вне репозитория и в CI их не было (ENOENT).
+const fixtures = ensureAttachmentFixtures();
 
 test('TXT читается как есть', () => {
   const r = extractText('notes.txt', Buffer.from('привет\nстрока два', 'utf8'));
@@ -17,7 +22,7 @@ test('CSV/JSON/код — текст', () => {
 });
 
 test('DOCX: текст из word/document.xml', () => {
-  const buf = fs.readFileSync('/tmp/litemind-attachments/test.docx');
+  const buf = fs.readFileSync(fixtures.docxPath);
   const r = extractText('test.docx', buf);
   assert.equal(r.kind, 'docx');
   assert.ok(r.text.includes('LiteMind attachment test'), r.text);
@@ -26,7 +31,7 @@ test('DOCX: текст из word/document.xml', () => {
 });
 
 test('PDF: текст из несжатых операторов', () => {
-  const buf = fs.readFileSync('/tmp/litemind-attachments/test.pdf');
+  const buf = fs.readFileSync(fixtures.pdfPath);
   const r = extractText('test.pdf', buf);
   assert.equal(r.kind, 'pdf');
   assert.ok(r.text.includes('Hello from PDF'), r.text);
