@@ -8,7 +8,7 @@
 // Если порт уже занят (standalone-установка), движок «усыновляется»: старт не
 // выполняется, но остановка через API (/api/engine/stop) тоже работает.
 import log from "electron-log"
-import { app, ipcMain } from "electron"
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron"
 import { isRendererUrl } from "../windows/scheme"
 
 const ENGINE_PORT = 8399
@@ -190,9 +190,68 @@ async function engineStatus() {
 
 let ipcRegistered = false
 
+/** Пути для «Настройки → О приложении» и «Открыть журналы» (ТЗ Этап 1 §12). */
+function appInfoPayload() {
+  return {
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    node: process.versions.node,
+    platform: process.platform,
+    arch: process.arch,
+    packaged: app.isPackaged,
+    userDataPath: app.getPath("userData"),
+    logsPath: app.getPath("logs"),
+    exePath: app.getPath("exe"),
+  }
+}
+
+function registerShellIpc(): void {
+  // ТЗ Этап 1 §8/§9/§12: нативный выбор папки и «Открыть в проводнике».
+  // Каналы принимают команды только от фреймов собственного рендерера.
+  ipcMain.handle("litemind:shell-open", async (event, target: unknown) => {
+    if (!isRendererUrl(event.senderFrame?.url)) return { ok: false, error: "forbidden" }
+    const p = typeof target === "string" ? target.trim() : ""
+    if (!p) return { ok: false, error: "empty path" }
+    const err = await shell.openPath(p)
+    if (err) log.warn("[litemind] shell.openPath failed", { path: p, error: err })
+    return err ? { ok: false, error: err } : { ok: true }
+  })
+
+  ipcMain.handle("litemind:shell-show-item", (event, target: unknown) => {
+    if (!isRendererUrl(event.senderFrame?.url)) return { ok: false }
+    const p = typeof target === "string" ? target.trim() : ""
+    if (!p) return { ok: false }
+    shell.showItemInFolder(p)
+    return { ok: true }
+  })
+
+  ipcMain.handle(
+    "litemind:pick-folder",
+    async (event, args: { title?: unknown; defaultPath?: unknown } | undefined) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const options: Electron.OpenDialogOptions = {
+        title: typeof args?.title === "string" && args.title.trim() ? args.title : "Выберите папку",
+        properties: ["openDirectory", "createDirectory"],
+        buttonLabel: "Выбрать папку",
+      }
+      if (typeof args?.defaultPath === "string" && args.defaultPath.trim()) options.defaultPath = args.defaultPath
+      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+      if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true }
+      return { ok: true, path: result.filePaths[0] }
+    },
+  )
+
+  ipcMain.handle("litemind:app-info", (event) => {
+    if (!isRendererUrl(event.senderFrame?.url)) return null
+    return appInfoPayload()
+  })
+}
+
 function registerEngineIpc(): void {
   if (ipcRegistered) return
   ipcRegistered = true
+  registerShellIpc()
   // ТЗ §16: единая точка управления движком для UI. Принимаем команды только
   // от фреймов рендерера приложения (как WindowSnapshotChannel).
   ipcMain.handle("litemind:engine-control", (event, action: unknown) => {

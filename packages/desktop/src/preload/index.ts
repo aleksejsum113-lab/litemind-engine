@@ -30,8 +30,16 @@ contextBridge.exposeInMainWorld("electron", {
   plugins: snapshot.then((snapshot) => snapshot.plugins),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   // ТЗ §16: управление движком LiteMind (статус/запуск/остановка/выход).
+  // ТЗ Этап 1: нативные диалоги папок и «Открыть в проводнике» для менеджера
+  // моделей, загрузчика, Projects/Workspace, терминала и настроек.
   litemindEngine: {
     control: (action: "status" | "start" | "stop" | "quit") =>
       ipcRenderer.invoke("litemind:engine-control", action),
+    shellOpenPath: (path: string) => ipcRenderer.invoke("litemind:shell-open", String(path ?? "")),
+    shellShowItemInFolder: (path: string) =>
+      ipcRenderer.invoke("litemind:shell-show-item", String(path ?? "")),
+    pickFolder: (title: string, defaultPath?: string) =>
+      ipcRenderer.invoke("litemind:pick-folder", { title: String(title ?? "Выберите папку"), defaultPath }),
+    appInfo: () => ipcRenderer.invoke("litemind:app-info"),
   },
 })
