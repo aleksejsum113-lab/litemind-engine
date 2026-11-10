@@ -102,9 +102,25 @@ body {
 .chat-list-item:hover { background: var(--bg-elev2); }
 .chat-list-item.active { background: var(--accent-soft); color: var(--text); }
 .chat-list-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-list-meta { font-size: 11px; color: var(--text-dim); flex: none; }
+.chat-list-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.chat-list-main .chat-list-title { flex: none; }
+.chat-list-actions { display: flex; gap: 2px; opacity: 0; flex: none; }
+.chat-list-item:hover .chat-list-actions { opacity: 1; }
+.chat-list-actions button { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 13px; border-radius: 6px; padding: 1px 4px; }
+.chat-list-actions button:hover { color: var(--text); }
+.chat-list-actions button.danger:hover { color: var(--bad); }
 .chat-list-del { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 15px; border-radius: 6px; opacity: 0; }
 .chat-list-item:hover .chat-list-del { opacity: 1; }
 .chat-list-del:hover { color: var(--bad); }
+.chat-search {
+  width: 100%; box-sizing: border-box; margin: 0 0 8px; padding: 7px 10px;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); font-size: 12.5px; outline: none;
+}
+.chat-search:focus { border-color: var(--accent); }
+.chat-search::placeholder { color: var(--text-dim); }
+.chat-list-empty { color: var(--text-dim); font-size: 12.5px; padding: 8px 10px; }
 
 #nav { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
 .nav-label {

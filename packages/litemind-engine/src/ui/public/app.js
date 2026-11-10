@@ -7,7 +7,7 @@ const $ = (id) => document.getElementById(id);
 const ENGINE_BASE = location.protocol.startsWith('http') && location.port === '8399' ? '' : 'http://127.0.0.1:8399';
 const bridge = () => (typeof window !== 'undefined' && window.electron?.litemindEngine) || null;
 
-const state = { streaming: false, engineOnline: null, catalog: null, wsDir: null, wsFile: null, projDir: null, stickBottom: true };
+const state = { streaming: false, engineOnline: null, catalog: null, wsDir: null, wsFile: null, projDir: null, stickBottom: true, chatSearch: '' };
 
 /* ============================ title bar окна ============================ */
 // В Desktop (frame:false + titleBarOverlay) резервируем справа место под
@@ -377,7 +377,12 @@ function fillModels(models, _current) {
     sel.appendChild(o);
   }
 }
-$('model')?.addEventListener('change', () => { localStorage.setItem('litemind-selected-model', $('model').value); setTitlebarModel($('model').value); });
+$('model')?.addEventListener('change', () => {
+  localStorage.setItem('litemind-selected-model', $('model').value);
+  setTitlebarModel($('model').value);
+  const c = activeChat();
+  if (c) { c.model = $('model').value; saveChats(); }
+});
 
 /* ============================ AI Chat — сессии ============================ */
 const CHATS_KEY = 'litemind-chats-v2';
@@ -401,7 +406,14 @@ function saveChats() {
 const activeChat = () => chats.find((c) => c.id === activeChatId) ?? null;
 
 function newChat(silent) {
-  const c = { id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6), title: 'Новый чат', createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
+  // Пустую заготовку не дублируем: если активный чат пуст и ещё не
+  // переименован — повторное нажатие «Новый чат» просто возвращается к нему.
+  const cur = activeChat();
+  if (cur && !cur.messages.length && cur.title === 'Новый чат') {
+    if (!silent) $('prompt').focus();
+    return cur;
+  }
+  const c = { id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6), title: 'Новый чат', createdAt: Date.now(), updatedAt: Date.now(), messages: [], model: null };
   chats.unshift(c);
   activeChatId = c.id;
   saveChats();
@@ -412,7 +424,10 @@ function newChat(silent) {
 }
 
 function deleteChat(id) {
-  chats = chats.filter((c) => c.id !== id);
+  const c = chats.find((x) => x.id === id);
+  const label = c?.title && c.title !== 'Новый чат' ? `«${c.title}»` : 'этот чат';
+  if (!confirm(`Удалить ${label}? Восстановить диалог будет невозможно.`)) return;
+  chats = chats.filter((x) => x.id !== id);
   if (activeChatId === id) activeChatId = chats[0]?.id ?? null;
   if (!activeChatId && !chats.length) { saveChats(); newChat(true); return; }
   saveChats();
@@ -420,18 +435,95 @@ function deleteChat(id) {
   renderMessages();
 }
 
+/* Дата/время последней активности чата: сегодня — время, вчера — «вчера»,
+   дальше — дата. Относительные подписи делают историю читаемой без дат в несколько строк. */
+function chatWhen(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).toDateString() === d.toDateString();
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  if (sameDay) return hm;
+  if (yesterday) return `вчера ${hm}`;
+  return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getFullYear()).slice(2)}`;
+}
+
 function renderChatList() {
   const wrap = $('chat-list');
   wrap.innerHTML = '';
   if (!chats.length) { newChat(true); return; }
-  for (const c of chats) {
+  const q = (state.chatSearch || '').trim().toLowerCase();
+  // Сортировка по последней активности — свежие сверху, независимо от порядка создания.
+  const ordered = chats.slice().sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+  const visible = q
+    ? ordered.filter((c) => c.title?.toLowerCase().includes(q) || c.messages.some((m) => m.content?.toLowerCase().includes(q)))
+    : ordered;
+  if (!visible.length) {
+    const empty = document.createElement('div');
+    empty.className = 'chat-list-empty';
+    empty.textContent = `Ничего не найдено: «${state.chatSearch.trim()}»`;
+    wrap.appendChild(empty);
+    return;
+  }
+  for (const c of visible) {
     const item = document.createElement('div');
     item.className = 'chat-list-item' + (c.id === activeChatId ? ' active' : '');
-    item.innerHTML = `<span class="chat-list-title">${esc(c.title)}</span><button class="chat-list-del" title="Удалить чат">×</button>`;
-    item.addEventListener('click', () => { activeChatId = c.id; saveChats(); renderChatList(); renderMessages(); });
-    item.querySelector('.chat-list-del').addEventListener('click', (e) => { e.stopPropagation(); deleteChat(c.id); });
+    item.title = c.messages.length ? c.messages.map((m) => m.content).join('\n').slice(0, 600) : 'Пустой чат';
+    const main = document.createElement('div');
+    main.className = 'chat-list-main';
+    const title = document.createElement('span');
+    title.className = 'chat-list-title';
+    title.textContent = c.title || 'Новый чат';
+    const meta = document.createElement('span');
+    meta.className = 'chat-list-meta';
+    meta.textContent = chatWhen(c.updatedAt || c.createdAt);
+    main.append(title, meta);
+    const actions = document.createElement('div');
+    actions.className = 'chat-list-actions';
+    const ren = document.createElement('button');
+    ren.className = 'rename';
+    ren.title = 'Переименовать';
+    ren.textContent = '✎';
+    ren.addEventListener('click', (e) => { e.stopPropagation(); renameChat(c.id); });
+    const del = document.createElement('button');
+    del.className = 'danger';
+    del.title = 'Удалить чат';
+    del.textContent = '×';
+    del.addEventListener('click', (e) => { e.stopPropagation(); deleteChat(c.id); });
+    actions.append(ren, del);
+    item.append(main, actions);
+    item.addEventListener('click', () => { activeChatId = c.id; saveChats(); renderChatList(); renderMessages(); restoreChatModel(c); });
     wrap.appendChild(item);
   }
+}
+
+/* Выбранная модель сохраняется для каждого диалога: при переключении чата
+   возвращаем его модель в селектор (если такая модель ещё установлена). */
+function restoreChatModel(c) {
+  const sel = $('model');
+  if (!sel || !c?.model) return;
+  const has = [...sel.options].some((o) => o.value === c.model);
+  if (has && sel.value !== c.model) {
+    sel.value = c.model;
+    setTitlebarModel(c.model);
+    localStorage.setItem('litemind-selected-model', c.model);
+  }
+}
+
+function renameChat(id) {
+  const c = chats.find((x) => x.id === id);
+  if (!c) return;
+  const name = prompt('Название чата:', c.title || 'Новый чат');
+  if (name === null) return; // отмена
+  const trimmed = name.trim();
+  if (!trimmed) { showError('Название чата не может быть пустым.'); return; }
+  c.title = trimmed.slice(0, 80);
+  c.updatedAt = Date.now();
+  saveChats();
+  renderChatList();
+  if (id === activeChatId) $('chat-title').textContent = c.title;
+  event(`чат переименован: ${c.title}`);
 }
 
 function msgBubble(m, { streaming = false } = {}) {
@@ -540,9 +632,11 @@ function loadChat() {
   if (!activeChat()) activeChatId = chats[0]?.id ?? null;
   renderChatList();
   renderMessages();
+  restoreChatModel(activeChat());
 }
 
 $('btn-newchat').addEventListener('click', () => newChat());
+$('chat-search').addEventListener('input', () => { state.chatSearch = $('chat-search').value; renderChatList(); });
 $('btn-clear-chats').addEventListener('click', () => {
   if (!confirm('Удалить все чаты? Это действие необратимо.')) return;
   chats = [];
@@ -645,6 +739,7 @@ async function sendChat() {
 
   let chat = activeChat();
   if (!chat) chat = newChat(true);
+  chat.model = model; // модель фиксируется за диалогом — переключение чата вернёт её
 
   // Текст пользователя + содержимое вложений (реальные данные для модели).
   let content = promptText;
