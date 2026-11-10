@@ -181,10 +181,10 @@ test('DownloadManager.cancelAll останавливает загрузки и �
     res.on('close', () => clearInterval(iv));
   });
   await new Promise((r) => src.listen(0, '127.0.0.1', r));
-  const url = `http://127.0.0.1:${src.address().port}/model.bin`;
+  const url = `http://127.0.0.1:${src.address().port}/model.gguf`;
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'litemind-dl-'));
-  const dm = new DownloadManager();
+  const dm = new DownloadManager({ allowLoopbackHttp: true });
   try {
     const job = await dm.start({ id: 'm1', url, name: 'model.gguf', targetDir: dir, sizeBytes: 10 * 1024 * 1024 });
     await new Promise((r) => setTimeout(r, 300)); // часть данных скачалась

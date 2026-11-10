@@ -92,7 +92,12 @@ export const DEFAULT_CONFIG = {
     // (ТЗ: предпочтительно E:\LiteMind\models); в песочнице/на CI — tmp.
     rootDir: process.platform === 'win32' ? 'E:\\LiteMind\\models' : path.join(os.tmpdir(), 'litemind-models'),
     // Насколько заполненным может стать диск (0..1), прежде чем загрузка отклоняется.
-    minFreeFraction: 0.05
+    minFreeFraction: 0.05,
+    // Этап 1Б §8: опциональный удалённый JSON для обновления каталога без
+    // обновления приложения. null = только вшитый каталог (+ локальный
+    // catalog-override.json). При отсутствии интернета каталог работает
+    // полностью — удалённые данные не обязательны.
+    catalogUrl: null
   },
   // Лучшие измеренные настройки генерации на модель (заполняет автооптимизация).
   // Формат: { [model]: { threads, tokensPerSecond, ttftMs, measuredAt, candidates } }

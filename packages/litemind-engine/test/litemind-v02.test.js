@@ -150,9 +150,9 @@ test('download: full flow with progress, then done and size verified', async () 
   const body = Buffer.from('A'.repeat(3 * 1024 * 1024));
   const srv = await startRangeServer(body);
   const dir = tmpDir();
-  const mgr = new DownloadManager();
+  const mgr = new DownloadManager({ allowLoopbackHttp: true });
   try {
-    const job = await mgr.start({ id: 'm1', url: srv.url, name: 'test.gguf', targetDir: dir, sizeBytes: body.length });
+    const job = await mgr.start({ id: "m1", url: srv.url + "/model.gguf", name: 'test.gguf', targetDir: dir, sizeBytes: body.length });
     assert.equal(job.state, 'downloading');
     await waitFor(() => mgr.list()[0]?.state === 'done');
     const files = fs.readdirSync(dir);
@@ -165,9 +165,9 @@ test('download: pause keeps .part, resume completes with Range', async () => {
   const body = Buffer.from('B'.repeat(6 * 1024 * 1024));
   const srv = await startRangeServer(body);
   const dir = tmpDir();
-  const mgr = new DownloadManager();
+  const mgr = new DownloadManager({ allowLoopbackHttp: true });
   try {
-    const job = await mgr.start({ id: 'm2', url: srv.url, name: 'model.gguf', targetDir: dir, sizeBytes: body.length });
+    const job = await mgr.start({ id: "m2", url: srv.url + "/model.gguf", name: 'model.gguf', targetDir: dir, sizeBytes: body.length });
     // пауза сразу после старта
     await waitFor(() => mgr.list()[0]?.receivedBytes > 0);
     assert.equal(mgr.pause(job.id).paused, true);
@@ -187,9 +187,9 @@ test('download: cancel removes .part', async () => {
   const body = Buffer.alloc(10 * 1024 * 1024, 7);
   const srv = await startRangeServer(body);
   const dir = tmpDir();
-  const mgr = new DownloadManager();
+  const mgr = new DownloadManager({ allowLoopbackHttp: true });
   try {
-    const job = await mgr.start({ id: 'm3', url: srv.url, name: 'x.gguf', targetDir: dir, sizeBytes: body.length });
+    const job = await mgr.start({ id: "m3", url: srv.url + "/model.gguf", name: 'x.gguf', targetDir: dir, sizeBytes: body.length });
     await waitFor(() => mgr.list()[0]?.receivedBytes > 0);
     await mgr.cancel(job.id);
     assert.ok(!fs.existsSync(path.join(dir, 'x.gguf.part')));

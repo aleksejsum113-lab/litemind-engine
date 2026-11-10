@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { CATALOG, CATEGORIES, catalogEntry } from '../catalog/models.js';
+import { CATALOG, CATEGORIES, PURPOSES, CATALOG_VERSION, catalogEntry } from '../catalog/models.js';
 import * as hardware from '../diagnostics/hardware.js';
 import * as compat from '../compat.js';
 import { DownloadManager } from '../download/manager.js';
@@ -17,6 +17,16 @@ import { capabilitiesFor } from '../adaptive/capabilities.js';
 import * as projectIndex from '../adaptive/project-index.js';
 import { extractText } from '../attachments/extract.js';
 import { saveConfig } from '../config.js';
+import {
+  RegisteredModels,
+  StorageError,
+  checkDownloadUrl,
+  diskSpace,
+  moveModels,
+  safeGgufName,
+  safeTargetDir,
+  storageReport
+} from '../storage/storage.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'ui', 'public');
 const MAX_BODY = 1024 * 1024; // 1 MiB
@@ -125,6 +135,8 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
   };
   const installedNames = new Set();
   let installedCacheAt = 0;
+  // Этап 1Б §6: реестр пользовательских GGUF (файлы вне папки моделей).
+  const registeredModels = new RegisteredModels(path.join(path.dirname(config.paths.configPath), 'registered-models.json'));
   // Этап 1 §11: выполняющиеся команды терминала (для кнопки «Остановить»).
   const terminalJobs = new Map();
   let terminalJobSeq = 0;
@@ -634,10 +646,56 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
 
     if (req.method === 'GET' && p === '/api/catalog') {
       const hw = await hardware.analyzeHardware({ candidateRoots: disksCandidateRoots() });
+      // Этап 1Б §8: базовый каталог всегда работает локально; опционально
+      // дополняется оверрайдом (catalog-override.json рядом с config.json)
+      // и удалённым JSON (config.models.catalogUrl) — при недоступности сети
+      // приложение продолжает работать на вшитом каталоге.
+      let catalog = CATALOG;
+      let overrideSource = null;
+      const overridePath = path.join(path.dirname(config.paths.configPath), 'catalog-override.json');
+      try {
+        if (fs.existsSync(overridePath)) {
+          const ov = JSON.parse(fs.readFileSync(overridePath, 'utf8'));
+          if (Array.isArray(ov.models)) {
+            const byId = new Map(catalog.map((m) => [m.id, m]));
+            for (const m of ov.models) {
+              if (!m || typeof m.id !== 'string' || !Array.isArray(m.files) || !m.files.length) continue;
+              // Существующие записи не удаляются и не теряют поля — только обновление/добавление.
+              byId.set(m.id, { ...(byId.get(m.id) ?? {}), ...m });
+            }
+            catalog = [...byId.values()];
+            overrideSource = 'local';
+          }
+        }
+      } catch (err) {
+        logger?.warn('catalog override ignored', { error: err.message });
+      }
+      if (config.models.catalogUrl) {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 8000);
+          const remote = await fetch(config.models.catalogUrl, { signal: ctrl.signal }).then((r) => (r.ok ? r.json() : null));
+          clearTimeout(t);
+          if (Array.isArray(remote?.models) && remote.models.length) {
+            const byId = new Map(catalog.map((m) => [m.id, m]));
+            for (const m of remote.models) {
+              if (!m || typeof m.id !== 'string' || !Array.isArray(m.files) || !m.files.length) continue;
+              byId.set(m.id, { ...(byId.get(m.id) ?? {}), ...m });
+            }
+            catalog = [...byId.values()];
+            overrideSource = 'remote';
+          }
+        } catch (err) {
+          logger?.info('remote catalog unavailable — using bundled', { error: err.message });
+        }
+      }
       return json(res, 200, {
+        version: CATALOG_VERSION,
+        purposes: PURPOSES,
         categories: CATEGORIES,
         modelsRootDir: config.models.rootDir,
-        models: CATALOG.map((m) => {
+        overrideSource,
+        models: catalog.map((m) => {
           const rating = compat.rateCatalogModel(m, hw);
           const installed = installedNames.has(m.ollamaName);
           const downloaded = fs.existsSync(path.join(config.models.rootDir, rating.recommended?.name ?? ''));
@@ -656,7 +714,30 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       const model = catalogEntry(body.modelId);
       if (!model) return openaiError(res, 404, `Unknown catalog model: ${body.modelId}`, 'invalid_request_error');
       const file = model.files.find((f) => f.name === body.fileName) ?? model.files[model.files.length - 1];
-      const targetDir = path.resolve(body.targetDir || config.models.rootDir);
+      // Этап 1Б §5.5: безопасность — источник, имя файла и папка проверяются
+      // до старта (исполняемые файлы, обход папок и посторонние хосты запрещены).
+      const urlCheck = checkDownloadUrl(file.url);
+      if (!urlCheck.ok) return openaiError(res, 400, `Ссылка отклонена: ${urlCheck.reason}`, 'invalid_request_error', 'URL_REJECTED');
+      let name;
+      let targetDir;
+      try {
+        name = safeGgufName(file.name);
+        targetDir = safeTargetDir(body.targetDir || config.models.rootDir);
+      } catch (err) {
+        return openaiError(res, 400, err.message, 'invalid_request_error', err.code);
+      }
+      // §5.5: не качать повторно уже существующий проверенный файл; не удалять
+      // существующий файл без явного подтверждения (overwrite: true).
+      const finalPath = path.join(targetDir, name);
+      if (fs.existsSync(finalPath)) {
+        const existingSize = fs.statSync(finalPath).size;
+        if (file.sizeBytes && existingSize === file.sizeBytes) {
+          return json(res, 200, { ok: true, alreadyDownloaded: true, name, targetDir, sizeBytes: existingSize, message: 'Файл уже скачан и имеет правильный размер — повторная загрузка не нужна.' });
+        }
+        if (!body.overwrite) {
+          return openaiError(res, 409, `В папке уже есть файл «${name}» (${existingSize} байт), размер не совпадает с каталогом. Подтвердите замену — старый файл будет перезаписан.`, 'conflict', 'FILE_EXISTS');
+        }
+      }
       // Проверка места на диске до старта (защита от забитого диска).
       try {
         const st = fs.statfsSync(targetDir);
@@ -666,7 +747,7 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       } catch {
         /* каталог ещё не создан — mkdir сделает менеджер; проверка free места невозможна */
       }
-      const job = await downloads.start({ id: model.id, url: file.url, name: file.name, targetDir, sizeBytes: file.sizeBytes });
+      const job = await downloads.start({ id: model.id, url: file.url, name, targetDir, sizeBytes: file.sizeBytes });
       return json(res, 202, job);
     }
 
@@ -679,6 +760,94 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         return json(res, 200, await downloads.cancel(id));
       }
     }
+
+    // --- Хранилище моделей (Этап 1Б §5.2) --------------------------------
+    // Текущая папка, свободное место, общий размер установленных моделей,
+    // проверка существующих путей. Отдельно от /api/settings — UI «Настройки
+    // → Хранение моделей» обновляет её без перезагрузки страницы.
+    if (req.method === 'GET' && p === '/api/storage') {
+      const report = await storageReport(config.models.rootDir, registeredModels.list());
+      const disk = diskSpace(config.models.rootDir);
+      return json(res, 200, { ...report, disk, activeDownloads: downloads.list().filter((d) => ['downloading', 'paused'].includes(d.state)).length });
+    }
+
+    // Проверка путей без переноса: для каждой модели — существует ли файл,
+    // совпадает ли размер (§5.2 «проверка существующих путей»).
+    if (req.method === 'POST' && p === '/api/storage/check') {
+      const report = await storageReport(config.models.rootDir, registeredModels.list());
+      const problems = [
+        ...report.models.filter((m) => m.sizeBytes === 0).map((m) => ({ file: m.path, issue: 'файл пустой' })),
+        ...report.registered.filter((r) => !r.exists).map((r) => ({ file: r.file, issue: 'файл не найден (реестр пользовательских моделей)' })),
+        ...report.registered.filter((r) => r.sizeMismatch).map((r) => ({ file: r.file, issue: `размер изменился: было ${r.sizeBytes ?? '—'} байт` }))
+      ];
+      return json(res, 200, { ok: problems.length === 0, problems, checked: report.models.length + report.registered.length, report });
+    }
+
+    // Перенос моделей в новую папку с проверкой SHA-256. По умолчанию старые
+    // файлы НЕ удаляются (keepSource: true) — восстановление возможно всегда.
+    // После успешного переноса rootDir переключается и сохраняется.
+    if (req.method === 'POST' && p === '/api/storage/move') {
+      let body;
+      try { body = JSON.parse((await readBody(req)) || '{}'); } catch { return openaiError(res, 400, 'Ожидался JSON: { toDir, keepSource? }', 'invalid_request_error'); }
+      let toDir;
+      try { toDir = safeTargetDir(body.toDir); } catch (err) { return openaiError(res, 400, err.message, 'invalid_request_error', err.code); }
+      const active = downloads.list().filter((d) => ['downloading', 'paused'].includes(d.state));
+      if (active.length) {
+        return openaiError(res, 409, `Идёт загрузка (${active.length}). Поставьте её на паузу или отмените перед переносом моделей.`, 'conflict', 'DOWNLOADS_ACTIVE');
+      }
+      try {
+        const result = await moveModels({
+          fromDir: config.models.rootDir,
+          toDir,
+          keepSource: body.keepSource !== false,
+          log: (msg, meta) => logger?.info(msg, meta)
+        });
+        // Новая папка становится папкой моделей только после успешного переноса.
+        config.models.rootDir = toDir;
+        saveConfig(config, config.paths.configPath);
+        engine.backend.rootDir = toDir; // сканирование сразу из новой папки
+        logger?.info('models root dir changed', { rootDir: toDir, moved: result.results.filter((r) => r.status.startsWith('moved')).length });
+        return json(res, 200, { ok: true, ...result, rootDir: toDir });
+      } catch (err) {
+        const status = err instanceof StorageError ? err.status : 500;
+        return openaiError(res, status, err.message, 'storage_error', err.code);
+      }
+    }
+
+    // --- Регистрация пользовательского GGUF (Этап 1Б §6) -----------------
+    // Файл выбирается в проводнике (Desktop) или указывается вручную; проверяем
+    // формат, считаем SHA-256, извлекаем метаданные из заголовка. Модель
+    // становится видна менеджеру и запускается через Engine API. Метаданные,
+    // которых нет в GGUF, не придумываем.
+    if (req.method === 'POST' && p === '/api/models/register') {
+      let body;
+      try { body = JSON.parse((await readBody(req)) || '{}'); } catch { return openaiError(res, 400, 'Ожидался JSON: { file }', 'invalid_request_error'); }
+      if (typeof body.file !== 'string' || !body.file.trim()) {
+        return openaiError(res, 400, 'Укажите путь к GGUF-файлу (поле file).', 'invalid_request_error');
+      }
+      try {
+        const entry = await registeredModels.add(body.file.trim());
+        logger?.info('local model registered', { id: entry.id, file: entry.file, sizeBytes: entry.sizeBytes });
+        return json(res, 200, { ok: true, model: entry, message: `Модель «${entry.id}» добавлена в менеджер. SHA-256 вычислен локально.` });
+      } catch (err) {
+        const status = err instanceof StorageError ? err.status : 500;
+        return openaiError(res, status, err.message, 'register_error', err.code);
+      }
+    }
+
+    // Убрать из реестра пользовательских моделей. Файл на диске НЕ удаляется:
+    // он принадлежит пользователю и может лежать вне папки моделей.
+    {
+      const m = p.match(/^\/api\/models\/registered\/([^/]+)$/);
+      if (m && req.method === 'DELETE') {
+        const id = decodeURIComponent(m[1]);
+        const removed = registeredModels.remove(id);
+        if (!removed) return openaiError(res, 404, `В реестре нет модели «${id}».`, 'invalid_request_error');
+        logger?.info('local model unregistered', { id });
+        return json(res, 200, { ok: true, id, note: 'Модель убрана из списка. Файл на диске не удалялся.' });
+      }
+    }
+
 
     if (req.method === 'POST' && p === '/api/install') {
       const body = JSON.parse((await readBody(req)) || '{}');
@@ -736,13 +905,38 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
     if (req.method === 'GET' && p === '/api/models/scan') {
       // Полная информация для менеджера моделей: размер, формат, квант,
       // совместимость с RAM, статус файла (включая повреждённые).
+      // Этап 1Б: плюс реестр пользовательских моделей (файлы вне папки моделей).
       try {
         const scanned = await engine.backend.scanModels();
+        const registeredEntries = registeredModels.list();
+        const rootFiles = new Set(scanned.map((m) => path.resolve(m.file).toLowerCase()));
+        const registeredScanned = [];
+        for (const r of registeredEntries) {
+          if (rootFiles.has(path.resolve(r.file).toLowerCase())) continue; // уже в папке моделей
+          const st = await fs.promises.stat(r.file).catch(() => null);
+          registeredScanned.push({
+            id: r.id,
+            file: r.file,
+            sizeBytes: st?.size ?? 0,
+            architecture: r.architecture ?? null,
+            name: r.name ?? null,
+            quant: r.quant ?? null,
+            contextLength: r.contextLength ?? null,
+            ok: !!st,
+            error: st ? null : 'Файл не найден (путь из реестра пользовательских моделей).',
+            memoryEstimateMb: st ? Math.round((st.size / (1024 * 1024)) * 1.15) + 256 : 0,
+            compatible: !!st,
+            registered: true,
+            sha256: r.sha256 ?? null,
+            shaSource: 'local',
+            addedAt: r.addedAt ?? null
+          });
+        }
         return json(res, 200, {
           rootDir: config.models.rootDir,
           backend: engine.backend.type,
           runtimeBinary: engine.backend.findServerBinary?.() ?? null,
-          models: scanned
+          models: [...registeredScanned, ...scanned]
         });
       } catch (err) {
         return openaiError(res, 500, err.message, 'scan_error');
@@ -758,8 +952,11 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       if (!body.modelId && typeof body.file === 'string' && body.file.trim()) {
         const file = path.resolve(body.file.trim());
         const rootDir = path.resolve(config.models.rootDir);
-        if (!isInsideDir(rootDir, file)) {
-          return openaiError(res, 400, `Путь должен указывать на файл внутри папки моделей (${rootDir}).`, 'invalid_request_error');
+        // Этап 1Б §6: зарегистрированные пользовательские модели могут лежать
+        // вне папки моделей — их проверять разрешено.
+        const reg = registeredModels.isRegistered(file);
+        if (!reg && !isInsideDir(rootDir, file)) {
+          return openaiError(res, 400, `Путь должен указывать на файл внутри папки моделей (${rootDir}) или на зарегистрированную пользовательскую модель.`, 'invalid_request_error');
         }
         if (!fs.existsSync(file)) return json(res, 200, { ok: false, verified: false, reason: 'not_found', message: 'Файл не найден.' });
         const stat = fs.statSync(file);
@@ -781,8 +978,9 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         return json(res, 200, {
           ok: true, verified, file, sizeBytes: stat.size, magicOk,
           sha256: hash.digest('hex'), expectedSha256: null, shaOk: null, sizeOk: stat.size > 0,
+          shaSource: 'local', // §5.4: честная пометка — хеш вычислен локально
           message: verified
-            ? 'Файл цел: корректная сигнатура GGUF, SHA-256 вычислен.'
+            ? 'Файл цел: корректная сигнатура GGUF. SHA-256 вычислен локально — это проверка целостности, а не подтверждение подлинности источника.'
             : 'Файл повреждён: отсутствует сигнатура GGUF. Скачайте модель заново.'
         });
       }
@@ -819,8 +1017,9 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         sha256: actualSha256,
         expectedSha256: entryFile.sha256,
         shaOk,
+        shaSource: entryFile.sha256 ? 'huggingface' : 'local',
         message: verified
-          ? (shaOk ? 'Файл цел: размер и SHA-256 совпадают с Hugging Face.' : 'Размер совпадает; SHA-256 эталона недоступен — сверьте сумму вручную.')
+          ? (shaOk ? 'Файл цел: размер и SHA-256 совпадают с эталоном Hugging Face.' : 'Размер совпадает; эталонная сумма у источника отсутствует — ниже локально вычисленный хеш: это проверка целостности, а не подтверждение источника.')
           : 'Файл повреждён или докачан не полностью: скачайте заново.'
       });
     }
@@ -835,15 +1034,18 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         return openaiError(res, 501, `Backend "${engine.backend.type}" не поддерживает прямой запуск. Переключитесь на backend "lmlama".`, 'not_supported', 'RUN_UNSUPPORTED');
       }
       const hw = await hardware.analyzeHardware({ candidateRoots: disksCandidateRoots() });
-      // Режим «файл»: прямая ссылка на GGUF в папке моделей.
+      // Режим «файл»: GGUF из папки моделей или зарегистрированная пользовательская модель.
       if (!body.modelId && typeof body.file === 'string' && body.file.trim()) {
         const file = path.resolve(body.file.trim());
         const rootDir = path.resolve(config.models.rootDir);
         if (!file.toLowerCase().endsWith('.gguf')) {
           return openaiError(res, 400, 'Запускать можно только GGUF-файлы.', 'invalid_request_error');
         }
-        if (!isInsideDir(rootDir, file)) {
-          return openaiError(res, 400, `Файл вне папки моделей (${rootDir}). Перенесите модель в папку моделей или измените её в «Настройках».`, 'invalid_request_error');
+        // Этап 1Б §6: зарегистрированные пользовательские модели разрешено
+        // запускать из любого места (реестр — единственный источник доверия).
+        const reg = registeredModels.isRegistered(file);
+        if (!reg && !isInsideDir(rootDir, file)) {
+          return openaiError(res, 400, `Файл вне папки моделей (${rootDir}) и не зарегистрирован. Добавьте его кнопкой «Добавить свою модель» или измените папку в «Настройках».`, 'invalid_request_error');
         }
         if (!fs.existsSync(file)) {
           return json(res, 200, { ok: false, reason: 'not_found', message: `Файл не найден: ${file}` });
@@ -897,6 +1099,14 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         try { id = String(JSON.parse((await readBody(req)) || '{}').id || ''); } catch { /* ниже */ }
       }
       if (!id) return openaiError(res, 400, 'Укажите id модели (имя файла без .gguf).', 'invalid_request_error');
+      // Этап 1Б: зарегистрированная пользовательская модель убирается только
+      // из реестра — файл на диске не удаляется (он может лежать вне папки
+      // моделей и принадлежит пользователю, ТЗ: «не удалять пользовательские модели»).
+      if (registeredModels.get(id) && !isInsideDir(path.resolve(config.models.rootDir), registeredModels.get(id).file)) {
+        registeredModels.remove(id);
+        logger?.info('registered model unregistered via delete', { id });
+        return json(res, 200, { ok: true, unregistered: true, id, note: 'Модель убрана из менеджера. Файл на диске не удалялся.' });
+      }
       if (typeof engine.backend.deleteModel !== 'function') {
         return openaiError(res, 501, `Backend "${engine.backend.type}" не поддерживает удаление файлов. Переключитесь на backend "lmlama".`, 'not_supported', 'DELETE_UNSUPPORTED');
       }

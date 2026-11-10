@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { checkDownloadUrl } from '../storage/storage.js';
 
 const RESUME_SUFFIX = '.part';
 const UA = 'LiteMind-Engine/0.2 (local; Windows; +https://github.com/aleksejsum113-lab/litemind-engine)';
@@ -30,9 +31,11 @@ export class DownloadError extends Error {
 let NEXT_ID = 1;
 
 export class DownloadManager {
-  constructor({ fetchImpl = fetch, onEvent = null } = {}) {
+  constructor({ fetchImpl = fetch, onEvent = null, allowLoopbackHttp = false } = {}) {
     this.fetch = fetchImpl;
     this.onEvent = onEvent; // (event) => void — для SSE-потока UI
+    // Только тестовый стенд: локальный http-сервер вместо Hugging Face.
+    this.allowLoopbackHttp = allowLoopbackHttp;
     this.jobs = new Map(); // id -> job
   }
 
@@ -49,6 +52,10 @@ export class DownloadManager {
    * Начать загрузку. Если в targetDir уже есть <name>.part — продолжит с offset.
    */
   async start({ id, url, name, targetDir, sizeBytes = null }) {
+    // Этап 1Б §5.5: даже при программном вызове менеджер не качает ничего,
+    // кроме официальных GGUF-источников (защита от исполняемых файлов).
+    const urlCheck = checkDownloadUrl(url, { allowLoopbackHttp: this.allowLoopbackHttp });
+    if (!urlCheck.ok) throw new DownloadError(`Ссылка отклонена: ${urlCheck.reason}`, { code: 'URL_REJECTED', status: 400 });
     if ([...this.jobs.values()].some((j) => j.key === `${id}:${name}` && ['downloading', 'paused'].includes(j.state))) {
       throw new DownloadError('Эта модель уже скачивается', { code: 'ALREADY_DOWNLOADING', status: 409 });
     }
