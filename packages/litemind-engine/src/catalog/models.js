@@ -2302,22 +2302,22 @@ export const CATALOG = [
         "quant": "Q2_K",
         "name": "deepseek-coder-6.7b-instruct.Q2_K.gguf",
         "url": "https://huggingface.co/TheBloke/deepseek-coder-6.7b-instruct-GGUF/resolve/main/deepseek-coder-6.7b-instruct.Q2_K.gguf",
-        "sizeBytes": 2823815168,
-        "sha256": null
+        "sizeBytes": 2827706592,
+        "sha256": "56447b37bd7c606c081d9b216b69c6cd77db6b473721b709a7b21ed4606e4960"
       },
       {
         "quant": "Q3_K_S",
         "name": "deepseek-coder-6.7b-instruct.Q3_K_S.gguf",
         "url": "https://huggingface.co/TheBloke/deepseek-coder-6.7b-instruct-GGUF/resolve/main/deepseek-coder-6.7b-instruct.Q3_K_S.gguf",
-        "sizeBytes": 2952790016,
-        "sha256": null
+        "sizeBytes": 2950176992,
+        "sha256": "176ed1c984911dfb1707e85e4f56b8ab6986f21eec9fc7d6a31d5e3cce141e52"
       },
       {
         "quant": "Q4_K_M",
         "name": "deepseek-coder-6.7b-instruct.Q4_K_M.gguf",
         "url": "https://huggingface.co/TheBloke/deepseek-coder-6.7b-instruct-GGUF/resolve/main/deepseek-coder-6.7b-instruct.Q4_K_M.gguf",
-        "sizeBytes": 4080009216,
-        "sha256": null
+        "sizeBytes": 4083015904,
+        "sha256": "92da6238854f2fa902d8b2ad79d548536af1d3ab06821f323bd5bbcea2013276"
       }
     ],
     "developer": "DeepSeek",
