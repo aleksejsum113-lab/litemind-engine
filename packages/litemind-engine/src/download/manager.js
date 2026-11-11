@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { checkDownloadUrl } from '../storage/storage.js';
+import { checkDownloadUrl, sha256File } from '../storage/storage.js';
 
 const RESUME_SUFFIX = '.part';
 const UA = 'LiteMind-Engine/0.2 (local; Windows; +https://github.com/aleksejsum113-lab/litemind-engine)';
@@ -51,7 +51,7 @@ export class DownloadManager {
   /**
    * Начать загрузку. Если в targetDir уже есть <name>.part — продолжит с offset.
    */
-  async start({ id, url, name, targetDir, sizeBytes = null }) {
+  async start({ id, url, name, targetDir, sizeBytes = null, sha256 = null }) {
     // Этап 1Б §5.5: даже при программном вызове менеджер не качает ничего,
     // кроме официальных GGUF-источников (защита от исполняемых файлов).
     const urlCheck = checkDownloadUrl(url, { allowLoopbackHttp: this.allowLoopbackHttp });
@@ -85,6 +85,8 @@ export class DownloadManager {
       finalPath,
       partPath,
       sizeBytes,
+      sha256: sha256 ? String(sha256).toLowerCase() : null,
+      shaVerified: null,
       received: resumeFrom,
       startedAt: Date.now(),
       state: 'downloading',
@@ -216,6 +218,23 @@ export class DownloadManager {
       throw new DownloadError(`Размер файла не совпал: получено ${size}, ожидалось ${job.sizeBytes}. Файл .part сохранён — нажмите «Продолжить».`, { code: 'SIZE_MISMATCH' });
     }
     await fs.promises.rename(job.partPath, job.finalPath);
+    // ТЗ §4: проверка SHA-256 после скачивания (каталог содержит эталон).
+    // Несовпадение не удаляет файл, но честно помечает загрузку ошибкой.
+    if (job.sha256) {
+      try {
+        const actual = (await sha256File(job.finalPath)).toLowerCase();
+        job.shaVerified = actual === job.sha256;
+        if (!job.shaVerified) {
+          job.state = 'error';
+          job.error = `SHA-256 не совпал (ожидался ${job.sha256.slice(0, 12)}…, получен ${actual.slice(0, 12)}…). Файл оставлен на диске — удалите его и скачайте заново.`;
+          this._emit({ type: 'verify', shaVerified: false, ...this._snapshot(job) });
+          return;
+        }
+        this._emit({ type: 'verify', shaVerified: true, ...this._snapshot(job) });
+      } catch (err) {
+        job.shaVerified = null; // не смогли посчитать — не блокируем результат
+      }
+    }
     job.state = 'done';
     job.etaSeconds = 0;
     this._emit({ type: 'done', ...this._snapshot(job) });
@@ -308,6 +327,9 @@ export class DownloadManager {
       speedBps: job.speedBps,
       etaSeconds: job.etaSeconds,
       error: job.error,
+      // ТЗ §4: эталонная и фактическая проверка SHA-256 (null — проверка не проводилась)
+      sha256: job.sha256 ?? null,
+      shaVerified: job.shaVerified ?? null,
       startedAt: job.startedAt
     };
   }

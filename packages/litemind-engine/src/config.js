@@ -125,6 +125,20 @@ export const DEFAULT_CONFIG = {
     auxEnabled: false,
     auxModel: null
   },
+  // ТЗ §7: управляемый интернет — по умолчанию ВЫКЛЮЧЕН. Включается только
+  // пользователем (Настройки → Интернет). githubToken хранится локально и
+  // никогда не попадает в логи.
+  web: {
+    enabled: false,
+    allowGithub: true,
+    githubToken: null
+  },
+  // AI Agent (ТЗ v0.6.1): пределы безопасности цикла Agent→Tool→Result.
+  agent: {
+    maxSteps: 24,             // максимум вызовов инструментов за прогон
+    stepMaxOutputTokens: 800, // лимит ответа модели на один шаг
+    maxRuntimeMs: 1200000     // предохранитель по времени на прогон (20 мин)
+  },
   resource: {
     pollIntervalMs: 2000,
     // Refuse to start a model when forecast exceeds this share of total RAM.

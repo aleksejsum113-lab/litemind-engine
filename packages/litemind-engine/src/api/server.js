@@ -18,6 +18,8 @@ import * as projectIndex from '../adaptive/project-index.js';
 import * as wsx from '../project/workspace.js';
 import { extractText } from '../attachments/extract.js';
 import { saveConfig } from '../config.js';
+import { AgentManager } from '../agent/session.js';
+import { createWebContext, DEFAULT_WEB_CONFIG } from '../web/fetcher.js';
 import {
   RegisteredModels,
   StorageError,
@@ -166,6 +168,10 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
   // Этап 1 §11: выполняющиеся команды терминала (для кнопки «Остановить»).
   const terminalJobs = new Map();
   let terminalJobSeq = 0;
+  // ТЗ v0.6.1: AI Agent (диалоговые сессии + инструменты) и управляемый интернет.
+  const webCtx = createWebContext(config);
+  const agent = new AgentManager({ config, engine, logger });
+  agent.setWebContext(webCtx);
   // Убить всё дерево процессов команды: shell-обёртка (cmd.exe / sh) порождает
   // дочерние процессы, и kill() самого child оставил бы их жить и держать RAM
   // и пайпы. Windows — taskkill /T /F (как в lmlama.js для llama-server);
@@ -973,7 +979,10 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
     }
 
     if (req.method === 'GET' && p === '/api/settings') {
-      return json(res, 200, { modelsRootDir: config.models.rootDir, profile: config.profile, configPath: config.paths.configPath });
+      return json(res, 200, {
+        modelsRootDir: config.models.rootDir, profile: config.profile, configPath: config.paths.configPath,
+        web: { enabled: !!config.web?.enabled, allowGithub: config.web?.allowGithub !== false, hasToken: !!config.web?.githubToken }
+      });
     }
 
     if (req.method === 'POST' && p === '/api/settings') {
@@ -982,9 +991,21 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         config.models.rootDir = path.resolve(body.modelsRootDir.trim());
       }
       if (typeof body.profile === 'string') engine.setProfile(body.profile);
+      // ТЗ §7: управляемый интернет — переключение только явным действием
+      if (body.web && typeof body.web === 'object') {
+        if (typeof body.web.enabled === 'boolean') config.web.enabled = body.web.enabled;
+        if (typeof body.web.allowGithub === 'boolean') config.web.allowGithub = body.web.allowGithub;
+        if (typeof body.web.githubToken === 'string') {
+          const t = body.web.githubToken.trim();
+          config.web.githubToken = t ? t : null; // пустая строка — убрать токен
+        }
+      }
       const saved = saveConfig(config, config.paths.configPath);
-      logger?.info('settings saved', { modelsRootDir: config.models.rootDir, profile: config.profile, path: saved });
-      return json(res, 200, { ok: true, modelsRootDir: config.models.rootDir, profile: config.profile, configPath: saved });
+      logger?.info('settings saved', { modelsRootDir: config.models.rootDir, profile: config.profile, webEnabled: !!config.web?.enabled, path: saved });
+      return json(res, 200, {
+        ok: true, modelsRootDir: config.models.rootDir, profile: config.profile, configPath: saved,
+        web: { enabled: !!config.web?.enabled, allowGithub: config.web?.allowGithub !== false, hasToken: !!config.web?.githubToken }
+      });
     }
 
     if (req.method === 'GET' && p === '/api/catalog') {
@@ -1090,7 +1111,7 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       } catch {
         /* каталог ещё не создан — mkdir сделает менеджер; проверка free места невозможна */
       }
-      const job = await downloads.start({ id: model.id, url: file.url, name, targetDir, sizeBytes: file.sizeBytes });
+      const job = await downloads.start({ id: model.id, url: file.url, name, targetDir, sizeBytes: file.sizeBytes, sha256: file.sha256 ?? null });
       return json(res, 202, job);
     }
 
@@ -1536,6 +1557,70 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
 
     if (req.method === 'POST' && (p === '/v1/chat/completions' || p === '/v1/completions')) {
       return handleCompletions(req, res, p.endsWith('/completions') && !p.includes('chat'));
+    }
+
+    // --- ТЗ v0.6.1: AI Agent — диалоговые сессии (Agent → Tool → Result) ---
+    if (p === '/api/agent/status' && req.method === 'GET') {
+      return json(res, 200, agent.status());
+    }
+    if (p === '/api/agent/sessions' && req.method === 'GET') {
+      return json(res, 200, { sessions: agent.listSessions() });
+    }
+    if (p === '/api/agent/sessions' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      try {
+        const s = agent.createSession(body);
+        if (body.firstMessage) return json(res, 200, await agent.postMessage(s.id, { text: String(body.firstMessage), projectDir: body.projectDir }));
+        return json(res, 200, s);
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'agent_error');
+      }
+    }
+    {
+      const m = /^\/api\/agent\/sessions\/([\w-]+)(\/.*)?$/.exec(p);
+      if (m) {
+        const id = m[1];
+        const action = m[2] || '';
+        try {
+          if (req.method === 'GET' && action === '') return json(res, 200, agent.fullView(id));
+          if (req.method === 'DELETE' && action === '') return json(res, 200, await agent.deleteSession(id));
+          if (req.method === 'POST' && action === '/messages') {
+            const body = JSON.parse((await readBody(req, MAX_BODY_FILE)) || '{}');
+            return json(res, 200, await agent.postMessage(id, body));
+          }
+          if (req.method === 'POST' && action === '/decision') {
+            const body = JSON.parse((await readBody(req)) || '{}');
+            return json(res, 200, await agent.decide(id, body));
+          }
+          if (req.method === 'POST' && action === '/stop') return json(res, 200, await agent.stop(id));
+          if (req.method === 'GET' && action === '/events') {
+            const cursor = Number(url.searchParams.get('cursor') ?? 0);
+            return agent.subscribe(id, res, { cursor });
+          }
+        } catch (err) {
+          return openaiError(res, err.status || 500, err.message, 'agent_error');
+        }
+      }
+    }
+
+    // --- ТЗ §7: управляемый интернет (по умолчанию выключен) -------------
+    if (req.method === 'POST' && p === '/api/web/fetch') {
+      try {
+        const body = JSON.parse((await readBody(req)) || '{}');
+        const r = await webCtx.fetchText(String(body.url ?? ''));
+        return json(res, 200, { ok: true, ...r, text: r.text.slice(0, 20000) });
+      } catch (err) {
+        return openaiError(res, err.status || 400, err.message, 'web_error');
+      }
+    }
+    if (req.method === 'POST' && p === '/api/web/github') {
+      try {
+        const body = JSON.parse((await readBody(req)) || '{}');
+        const r = await webCtx.github(body);
+        return json(res, 200, { ok: true, ...r, text: r.text.slice(0, 20000) });
+      } catch (err) {
+        return openaiError(res, err.status || 400, err.message, 'web_error');
+      }
     }
 
     return openaiError(res, 404, `Unknown route: ${req.method} ${p}`, 'invalid_request_error', 'NOT_FOUND');
