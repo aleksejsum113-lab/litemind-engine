@@ -275,3 +275,23 @@ test('execCommand: таймаут убивает процесс и возвра�
   assert.equal(r2.exitCode, 0);
   assert.ok(r2.stdout.includes('123'));
 });
+
+test('отказ от «пустого DONE»: без инструментов задача не завершается, после подсказок — завершается', async () => {
+  const { dir, cfgPath } = tmpConfigDir();
+  const proj = path.join(dir, 'project');
+  await fsp.mkdir(proj, { recursive: true });
+  const replies = [
+    'DONE: {"summary":"всё готово"}',                       // отказ 1
+    'TEXT: {"text":"я сделал"}\nDONE: {"summary":"готово"}', // parsed = done, отказ 2
+    'DONE: {"summary":"сдаюсь"}'                            // nudges исчерпаны → принимается
+  ];
+  const { mgr } = makeManager({ cfgPath, replies });
+  const s = mgr.createSession({ projectDir: proj });
+  const v = await mgr.postMessage(s.id, { text: 'сделай задачу' });
+  assert.equal(v.state, 'done'); // после 2 подсказок DONE принят
+  const full = mgr.fullView(s.id);
+  assert.ok(full.messages.some((m) => m.type === 'note' && String(m.text).includes('без выполнения')));
+  // оба «пустых» DONE были отклонены (2 нуджа), третий принят
+  assert.ok(full.messages.filter((m) => m.type === 'note' && String(m.text).includes('инструмент')).length === 2);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

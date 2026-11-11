@@ -69,7 +69,7 @@ async function main() {
   const s1 = await jpost('/api/agent/sessions', {
     projectDir: proj, model: MODEL, autoApprove: true,
     title: 'smoke: создать hello.js',
-    firstMessage: 'Задача: в этом проекте создай файл hello.js, содержащий функцию hello(), которая возвращает строку «Привет, LiteMind!», и экспортирует её (module.exports). Затем выполни команду node -e "console.log(require(\'./hello.js\').hello())" и убедись, что печатается строка. Заверши задачу отчётом.'
+    firstMessage: 'Задача (выполняется ТОЛЬКО инструментами, словами не отчитываться): создай файл hello.js инструментом write_file — функция hello() возвращает строку «Привет, LiteMind!» и экспортируется через module.exports. Затем инструментом terminal выполни команду node -e "console.log(require(\'./hello.js\').hello())". После реального результата инструмента заверши задачу отчётом DONE.'
   });
   check('задача принята агентом', s1.status === 200 && !!s1.body?.id, `HTTP ${s1.status}, id=${s1.body?.id}`);
   const id1 = s1.body.id;
@@ -96,7 +96,7 @@ async function main() {
 
   // ── Уточнение во время задачи (дополнение к ТЗ) ─────────────────────────
   const s2 = await jpost(`/api/agent/sessions/${id1}/messages`, {
-    text: 'Продолжаем: добавь в конец файла hello.js строку-комментарий «// smoke test ok» и проверь снова.'
+    text: 'Продолжаем (только инструментами): инструментом edit_file добавь в конец файла hello.js строку-комментарий «// smoke test ok», затем инструментом terminal выполни node hello.js и убедись, что вывод прежний. После реального результата — DONE.'
   });
   check('уточнение принято во время диалога', s2.status === 200, `HTTP ${s2.status}`);
   const fin2 = await waitForState(id1, ['done', 'error', 'stopped'], 6 * 60_000);
@@ -125,11 +125,11 @@ async function main() {
   const s4 = await jpost('/api/agent/sessions', {
     projectDir: proj, model: MODEL, autoApprove: true,
     title: 'smoke: остановка',
-    firstMessage: 'Выполни команду ping -n 30 127.0.0.1 и после неё напиши TEXT с результатом.'
+    firstMessage: 'Выполни инструментом terminal команду ping -n 30 127.0.0.1 и после её реального результата напиши TEXT с числом потерь.'
   });
   // ждём входа в running, затем останавливаем
   let enteredRunning = false;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 75; i++) {
     await new Promise((r) => setTimeout(r, 2000));
     const g = await jget(`/api/agent/sessions/${s4.body.id}`);
     if (g.body?.state === 'running') { enteredRunning = true; break; }

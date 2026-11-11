@@ -460,7 +460,18 @@ export class AgentManager {
       '- Изменения файлов и команды терминала пользователь подтверждает сам; если пользователь отклонил — предложи другой способ.',
       '- Уточнение пользователя во время задачи — продолжай текущую задачу с учётом уточнения. Новое поручение — составь новый план.',
       '- Если задача не требует инструментов (просто поболтать/объяснить) — отвечай TEXT.',
-      '- Пиши по-русски, кратко и по делу.'
+      '- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО: отвечать DONE или TEXT «я создал/выполнил», если ты не вызвал инструмент и не получил [результат инструмента]. Действия выполняются ТОЛЬКО инструментами.',
+      '- Пиши по-русски, кратко и по делу.',
+      '',
+      'ПРИМЕР ПРАВИЛЬНОЙ РАБОТЫ.',
+      'Пользователь: «Создай файл a.txt с текстом привет».',
+      'Твой ход 1: ACTION: {"tool":"write_file","args":{"path":"a.txt","content":"привет"}}',
+      'Система: [результат инструмента write_file] файл записан: a.txt',
+      'Твой ход 2: DONE: {"summary":"файл a.txt создан","created":["a.txt"]}',
+      '',
+      'ПРИМЕР НЕПРАВИЛЬНО (так нельзя): сразу ответить DONE: {"summary":"файл создан"} — файл НЕ создан, отчёт ложный.',
+      '',
+      'ПРИМЕР 2. Пользователь: «покажи файлы проекта». Твой ход 1: ACTION: {"tool":"list_files","args":{}} — затем краткий TEXT со списком.'
     ].join('\n');
   }
 
@@ -469,6 +480,8 @@ export class AgentManager {
     s.stats.runs++;
     s.stats.startedAt = nowIso();
     s.stats.endedAt = null;
+    s.stats.toolCalls = 0;
+    s._nudges = 0;
     s.error = null;
     s._ctrl = new AbortController();
     const ctx = {
@@ -559,6 +572,15 @@ export class AgentManager {
         }
 
         if (parsed.kind === 'done') {
+          // Отказ от «пустого DONE»: задача не может быть выполнена, если агент
+          // не вызвал ни одного инструмента (малые модели любят отчитаться
+          // словами). Дважды подсказываем и продолжаем цикл.
+          if ((s.stats.toolCalls ?? 0) === 0 && (s._nudges ?? 0) < 2) {
+            s._nudges = (s._nudges ?? 0) + 1;
+            this._append(s, { role: 'event', type: 'note', text: 'модель отчиталась без выполнения действий — требую инструменты' });
+            s.messages.push({ id: ++s.cursor, role: 'user', ts: nowIso(), text: '[система: отказано. Ты не вызвал ни одного инструмента — задача фактически не выполнена. Используй ACTION с нужным инструментом (write_file/terminal/…), дождись [результат инструмента] и только потом DONE.]' });
+            continue;
+          }
           const report = {
             summary: String(parsed.data.summary ?? 'задача завершена'),
             created: parsed.data.created ?? [],
@@ -577,6 +599,7 @@ export class AgentManager {
         // ACTION
         const tool = String(parsed.data.tool ?? '').trim();
         const args = parsed.data.args ?? {};
+        s.stats.toolCalls = (s.stats.toolCalls ?? 0) + 1;
         if (!this.tools.names().includes(tool)) {
           this._append(s, {
             role: 'tool', tool, args, ok: false,
