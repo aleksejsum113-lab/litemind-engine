@@ -707,3 +707,41 @@ details.glossary .glossary-body { margin-top: 8px; font-size: 13px; line-height:
 .agent-note { color: var(--text-dim, #9aa0ae); font-size: 13px; }
 .agent-note.err { color: #ff6b6b; }
 .msg.streaming .msg-md { opacity: .85; }
+
+/* ===== Model Discovery (раздел «Новые модели», ТЗ v0.6.2) ===== */
+.disco-card {
+  border: 1px solid var(--border, #2a2f3a); border-radius: 12px; padding: 12px 16px;
+  background: var(--panel, #1a1e28); margin-bottom: 10px;
+}
+.disco-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.disco-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; }
+.disco-meta {
+  display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px;
+  color: var(--text-dim, #9aa0ae); font-size: 12px;
+}
+.disco-desc { margin: 8px 0 0; font-size: 13px; line-height: 1.5; color: var(--text); }
+.disco-note {
+  margin: 8px 0 0; padding: 8px 12px; border-radius: 8px; font-size: 13px;
+  background: rgba(255, 176, 32, .1); border: 1px solid #ffb02055;
+}
+.disco-tag {
+  padding: 1px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;
+  background: rgba(108, 140, 255, .14); color: #9db1ff; text-transform: uppercase; letter-spacing: .3px;
+}
+.disco-tag.disco-new { background: rgba(82, 214, 154, .16); color: #52d69a; }
+.disco-tag.disco-upd { background: rgba(255, 176, 32, .16); color: #ffb020; }
+.disco-tag.disco-inst { background: rgba(154, 160, 174, .18); color: #c3c9d4; }
+.disco-level { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.disco-level.disco-ok { color: #52d69a; }
+.disco-level.disco-limited { color: #ffb020; }
+.disco-level.disco-warn { color: #ff9f43; }
+.disco-level.disco-bad { color: #ff6b6b; }
+.disco-more { margin-top: 10px; }
+.disco-more summary { cursor: pointer; color: #9db1ff; font-size: 13px; user-select: none; }
+.disco-more[open] summary { margin-bottom: 8px; }
+.disco-reasons {
+  margin: 0 0 8px; padding-left: 18px; font-size: 12.5px; line-height: 1.55;
+  color: var(--text-dim, #9aa0ae);
+}
+.disco-more .btns { margin-top: 8px; }
+.disco-more a { color: #9db1ff; word-break: break-all; }

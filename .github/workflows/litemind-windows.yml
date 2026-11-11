@@ -323,14 +323,22 @@ jobs:
           $agentExit = $LASTEXITCODE
           Write-Host "agent smoke код: $agentExit"
 
+          # ── ТЗ v0.6.2: Model Discovery — реальная проверка источников (HF),
+          # карточки с оценкой по железу, скачивание найденной модели кнопкой
+          # из приложения (общий загрузчик + SHA-256) + Projects/Workspace/Terminal.
+          Write-Host '=== Model Discovery smoke: источники + скачивание ==='
+          node packages/litemind-engine/scripts/smoke-stage3-discovery.mjs --port 8399 --out "$env:RUNNER_TEMP\smoke-discovery.json"
+          $discoExit = $LASTEXITCODE
+          Write-Host "discovery smoke код: $discoExit"
+
           taskkill /IM LiteMind.exe /T /F 2>$null
           Start-Sleep -Seconds 3
           $app = Get-Process LiteMind -ErrorAction SilentlyContinue
           if ($app) { throw 'LiteMind.exe не завершился' }
-          if ($exit -ne 0 -or $agentExit -ne 0) {
+          if ($exit -ne 0 -or $agentExit -ne 0 -or $discoExit -ne 0) {
             Get-ChildItem "$env:APPDATA\LiteMind\logs" -ErrorAction SilentlyContinue |
               ForEach-Object { Write-Host "=== $($_.Name)"; Get-Content $_.FullName -Tail 30 | ForEach-Object { Write-Host "  $_" } }
-            throw "smoke завершился с кодом: gui=$exit, agent=$agentExit"
+            throw "smoke завершился с кодом: gui=$exit, agent=$agentExit, discovery=$discoExit"
           }
           Write-Host 'приложение запустилось, отработало и корректно завершено'
 
@@ -384,6 +392,7 @@ jobs:
             ${{ runner.temp }}/smoke-engine.json
             ${{ runner.temp }}/smoke-gui.json
             ${{ runner.temp }}/smoke-agent.json
+            ${{ runner.temp }}/smoke-discovery.json
             ${{ runner.temp }}/llama-server-direct.log
             ${{ runner.temp }}/litemind-gui.png
           if-no-files-found: ignore

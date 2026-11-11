@@ -20,6 +20,7 @@ import { extractText } from '../attachments/extract.js';
 import { saveConfig } from '../config.js';
 import { AgentManager } from '../agent/session.js';
 import { createWebContext, DEFAULT_WEB_CONFIG } from '../web/fetcher.js';
+import { DiscoveryManager } from '../discovery/discovery.js';
 import {
   RegisteredModels,
   StorageError,
@@ -172,6 +173,9 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
   const webCtx = createWebContext(config);
   const agent = new AgentManager({ config, engine, logger });
   agent.setWebContext(webCtx);
+  // ТЗ v0.6.2: Model Discovery — общий загрузчик, общий compat, общая папка моделей.
+  const discovery = new DiscoveryManager({ config, logger, downloads });
+  discovery.schedule();
   // Убить всё дерево процессов команды: shell-обёртка (cmd.exe / sh) порождает
   // дочерние процессы, и kill() самого child оставил бы их жить и держать RAM
   // и пайпы. Windows — taskkill /T /F (как в lmlama.js для llama-server);
@@ -250,7 +254,7 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
 
     // --- dashboard static ----------------------------------------------
     if (req.method === 'GET' && (p === '/' || p === '/index.html')) return serveFile(res, 'index.html');
-    if (req.method === 'GET' && (p === '/app.js' || p === '/agent-ui.js' || p === '/style.css')) return serveFile(res, p.slice(1));
+    if (req.method === 'GET' && (p === '/app.js' || p === '/agent-ui.js' || p === '/discovery-ui.js' || p === '/style.css')) return serveFile(res, p.slice(1));
 
     // --- health / status --------------------------------------------------
     if (req.method === 'GET' && p === '/health') {
@@ -981,7 +985,11 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
     if (req.method === 'GET' && p === '/api/settings') {
       return json(res, 200, {
         modelsRootDir: config.models.rootDir, profile: config.profile, configPath: config.paths.configPath,
-        web: { enabled: !!config.web?.enabled, allowGithub: config.web?.allowGithub !== false, hasToken: !!config.web?.githubToken }
+        web: { enabled: !!config.web?.enabled, allowGithub: config.web?.allowGithub !== false, hasToken: !!config.web?.githubToken },
+        discovery: {
+          enabled: config.discovery?.enabled !== false,
+          intervalHours: config.discovery?.intervalHours ?? 24
+        }
       });
     }
 
@@ -1000,12 +1008,73 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
           config.web.githubToken = t ? t : null; // пустая строка — убрать токен
         }
       }
+      // ТЗ v0.6.2: настройки Discovery (автопроверка и её период).
+      if (body.discovery && typeof body.discovery === 'object') {
+        if (typeof body.discovery.enabled === 'boolean') config.discovery.enabled = body.discovery.enabled;
+        if (body.discovery.intervalHours != null) {
+          const n = Math.round(Number(body.discovery.intervalHours));
+          if (Number.isFinite(n) && n >= 6 && n <= 168) config.discovery.intervalHours = n;
+        }
+        if (config.discovery.enabled) discovery.schedule();
+      }
       const saved = saveConfig(config, config.paths.configPath);
       logger?.info('settings saved', { modelsRootDir: config.models.rootDir, profile: config.profile, webEnabled: !!config.web?.enabled, path: saved });
       return json(res, 200, {
         ok: true, modelsRootDir: config.models.rootDir, profile: config.profile, configPath: saved,
-        web: { enabled: !!config.web?.enabled, allowGithub: config.web?.allowGithub !== false, hasToken: !!config.web?.githubToken }
+        web: { enabled: !!config.web?.enabled, allowGithub: config.web?.allowGithub !== false, hasToken: !!config.web?.githubToken },
+        discovery: {
+          enabled: config.discovery?.enabled !== false,
+          intervalHours: config.discovery?.intervalHours ?? 24
+        }
       });
+    }
+
+    // --- Model Discovery (ТЗ v0.6.2): новые модели из открытых источников ---
+    if (req.method === 'GET' && p === '/api/discovery/status') {
+      return json(res, 200, discovery.status());
+    }
+
+    if (req.method === 'POST' && p === '/api/discovery/refresh') {
+      // Запуск проверки вручную: кнопка «Проверить новые модели» (§5).
+      // Работает в фоне — UI опрашивает /api/discovery/status (checking).
+      discovery.refresh().catch((err) => logger?.warn?.('discovery: ручная проверка упала', { error: err.message }));
+      return json(res, 202, { ok: true, checking: true, status: discovery.status() });
+    }
+
+    if (req.method === 'GET' && p === '/api/discovery/models') {
+      const url = new URL(req.url, 'http://x');
+      const filter = (url.searchParams.get('filter') ?? 'all').trim();
+      const limitRaw = Number(url.searchParams.get('limit'));
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(400, limitRaw) : 200;
+      try {
+        return json(res, 200, await discovery.list({ filter, limit }));
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message || 'Ошибка Discovery', 'discovery_error', err.code);
+      }
+    }
+
+    if (req.method === 'GET' && p === '/api/discovery/model') {
+      const url = new URL(req.url, 'http://x');
+      const key = url.searchParams.get('key') ?? '';
+      const d = await discovery.detail(key);
+      if (!d) return openaiError(res, 404, 'Модель не найдена в каталоге Discovery.', 'not_found');
+      return json(res, 200, d);
+    }
+
+    if (req.method === 'POST' && p === '/api/discovery/download') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (typeof body.key !== 'string' || !body.key) {
+        return openaiError(res, 400, 'Нужен key записи Discovery.', 'invalid_request_error');
+      }
+      try {
+        const r = await discovery.download(body.key, {
+          targetDir: typeof body.targetDir === 'string' && body.targetDir.trim() ? body.targetDir.trim() : null,
+          overwrite: body.overwrite === true
+        });
+        return json(res, r.alreadyDownloaded ? 200 : 202, r);
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'download_error', err.code);
+      }
     }
 
     if (req.method === 'GET' && p === '/api/catalog') {

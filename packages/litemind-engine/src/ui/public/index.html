@@ -32,6 +32,7 @@
         <button class="nav-item" data-tab="workspace"><i>▤</i><span>Workspace</span></button>
         <button class="nav-item" data-tab="models"><i>▣</i><span>Мои модели</span></button>
         <button class="nav-item" data-tab="catalog"><i>◫</i><span>Каталог моделей</span></button>
+        <button class="nav-item" data-tab="discovery"><i>✧</i><span>Новые модели</span> <span id="disco-badge" class="nav-badge" hidden></span></button>
         <button class="nav-item" data-tab="downloads"><i>⇩</i><span>Загрузки</span> <span id="dl-count" class="nav-badge" hidden></span></button>
         <button class="nav-item" data-tab="terminal"><i>▸_</i><span>AI Terminal</span></button>
         <div class="nav-label">Система</div>
@@ -356,6 +357,35 @@
         </div>
       </section>
 
+      <!-- НОВЫЕ МОДЕЛИ (Model Discovery, ТЗ v0.6.2) -->
+      <section id="tab-discovery" data-page hidden>
+        <h1>Новые модели</h1>
+        <div class="card">
+          <p class="muted">Приложение само следит за открытыми источниками (Hugging Face Hub — бесплатные GGUF-кванты: Qwen, DeepSeek, Llama, Gemma, Mistral, Dolphin, Huihui и новые семейства). Скачиваются только метаданные — сами файлы моделей вы загружаете по кнопке. Совместимость рассчитана по железу вашего ПК.</p>
+          <div class="filters">
+            <button id="btn-disco-refresh" class="primary">Проверить новые модели</button>
+            <span class="muted" id="disco-status">—</span>
+          </div>
+          <p class="muted" id="disco-error" hidden></p>
+        </div>
+        <div class="card">
+          <div id="disco-filters" class="task-picks">
+            <button data-filter="all">Все новые модели</button>
+            <button data-filter="new">Новинки</button>
+            <button data-filter="updated">Обновлённые</button>
+            <button data-filter="compatible">Совместимые с моим ПК</button>
+            <button data-filter="chat">Для общения</button>
+            <button data-filter="coding">Для программирования</button>
+            <button data-filter="text">Для работы с текстом</button>
+            <button data-filter="fast">Быстрые и компактные</button>
+            <button data-filter="dolphin">Dolphin / Huihui</button>
+            <button data-filter="installed">Уже скачанные</button>
+          </div>
+          <p class="muted" id="disco-count">—</p>
+          <div id="disco-list"><p class="muted">—</p></div>
+        </div>
+      </section>
+
       <!-- ЗАГРУЗКИ -->
       <section id="tab-downloads" data-page hidden>
         <h1>Загрузки</h1>
@@ -634,6 +664,14 @@
           <p class="muted">По умолчанию интернет выключен: приложение полностью работает локально. При включении доступ разрешается только публичным адресам — локальные и приватные сети заблокированы. Доступ к GitHub-репозиториям — только чтение; публикация, push и merge из приложения не выполняются.</p>
         </div>
         <div class="card">
+          <h2>Обновление каталога моделей (Discovery)</h2>
+          <label class="switch"><input type="checkbox" id="set-disco-enabled" /> Автоматически проверять новые модели (раз в сутки)</label>
+          <label class="field">Период автопроверки (часов, 6–168)
+            <input id="set-disco-hours" type="number" min="6" max="168" step="1" value="24" />
+          </label>
+          <p class="muted">Обнаружение качает только метаданные (названия, размеры, контрольные суммы) — сами модели скачиваются только по вашей кнопке в разделе «Новые модели». Кнопка «Проверить новые модели» работает независимо от этой настройки.</p>
+        </div>
+        <div class="card">
           <h2>Мультимодальность (в разработке)</h2>
           <dl class="kv">
             <dt>Распознавание речи (Whisper)</dt><dd class="muted">планируется — заглушки не выдаются за готовое</dd>
@@ -693,5 +731,6 @@
 
   <script src="app.js"></script>
   <script src="agent-ui.js"></script>
+  <script src="discovery-ui.js"></script>
 </body>
 </html>

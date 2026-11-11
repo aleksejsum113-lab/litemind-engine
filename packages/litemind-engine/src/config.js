@@ -139,6 +139,15 @@ export const DEFAULT_CONFIG = {
     stepMaxOutputTokens: 800, // лимит ответа модели на один шаг
     maxRuntimeMs: 1200000     // предохранитель по времени на прогон (20 мин)
   },
+  // Model Discovery (ТЗ v0.6.2): автоматическое обнаружение новых моделей.
+  // Качаются ТОЛЬКО метаданные (списки моделей и деревья файлов, ~десятки
+  // запросов раз в сутки); веса — исключительно по кнопке пользователя.
+  discovery: {
+    enabled: true,        // фоновая автопроверка по расписанию
+    intervalHours: 24,    // период проверки (6..168 ч)
+    maxTreeFetchesPerCheck: 25, // лимит деревьев файлов за одну проверку
+    authors: null         // null → список авторов GGUF-квантов из sources.js
+  },
   resource: {
     pollIntervalMs: 2000,
     // Refuse to start a model when forecast exceeds this share of total RAM.

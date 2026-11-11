@@ -15,7 +15,7 @@ const state = { streaming: false, engineOnline: null, catalog: null, wsDir: null
 if (bridge()) document.body.classList.add('in-electron');
 const TAB_TITLES = {
   agent: 'AI Agent',
-  chat: 'Чат', models: 'Мои модели', catalog: 'Каталог моделей', downloads: 'Загрузки',
+  chat: 'Чат', models: 'Мои модели', catalog: 'Каталог моделей', discovery: 'Новые модели', downloads: 'Загрузки',
   projects: 'Проекты', workspace: 'Workspace', terminal: 'AI Terminal', home: 'Состояние',
   hardware: 'Железо', monitor: 'Мониторинг', control: 'Управление', settings: 'Настройки'
 };
@@ -106,7 +106,7 @@ function switchTab(name) {
   ({ catalog: loadCatalog, downloads: refreshDownloads, hardware: loadHardware, settings: loadSettings,
      models: loadMyModels, monitor: loadMonitor, control: refreshControl, home: refreshStatus,
      chat: loadChat, projects: loadProjects, workspace: loadWorkspace, terminal: loadTerminal,
-     agent: window.__litemindLoadAgent })[name]?.();
+     agent: window.__litemindLoadAgent, discovery: window.__litemindLoadDiscovery })[name]?.();
   const hash = '#' + name;
   if (location.hash !== hash) history.replaceState(null, '', hash);
   document.getElementById('app').classList.remove('sidebar-open');
@@ -3190,6 +3190,11 @@ async function loadSettings() {
       $('set-web-token').value = '';
       $('set-web-token').placeholder = s.web?.hasToken ? 'токен сохранён (введите новый для замены)' : 'ghp_… (пусто — без токена)';
     }
+    // ТЗ v0.6.2: настройки Discovery
+    if ($('set-disco-enabled')) {
+      $('set-disco-enabled').checked = s.discovery?.enabled !== false;
+      $('set-disco-hours').value = String(s.discovery?.intervalHours ?? 24);
+    }
   } catch { /* — */ }
   try {
     const a = await api('/api/adaptive');
@@ -3370,11 +3375,15 @@ $('btn-save-settings').addEventListener('click', async () => {
   };
   const tok = $('set-web-token')?.value.trim();
   if (tok) webPayload.githubToken = tok; // пусто = оставить прежнее значение
+  const discoPayload = {
+    enabled: $('set-disco-enabled')?.checked ?? true,
+    intervalHours: Number($('set-disco-hours')?.value ?? 24) || 24
+  };
   try {
-    await api('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelsRootDir: rootDir || undefined, profile, web: webPayload }) });
+    await api('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelsRootDir: rootDir || undefined, profile, web: webPayload, discovery: discoPayload }) });
     $('settings-note').textContent = 'сохранено';
     state.catalog = null;
-    event(`настройки сохранены (профиль: ${profile}, интернет: ${webPayload.enabled ? 'вкл' : 'выкл'})`);
+    event(`настройки сохранены (профиль: ${profile}, интернет: ${webPayload.enabled ? 'вкл' : 'выкл'}, discovery: ${discoPayload.enabled ? 'вкл' : 'выкл'})`);
     refreshStatus();
   } catch (err) {
     $('settings-note').textContent = '';
