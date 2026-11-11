@@ -82,7 +82,7 @@ for (let i = 0; i < 75; i++) {
   } catch { /* движок занят — ждём дальше */ }
 }
 check('Проверка источников завершилась за ~5 мин', refreshed,
-  `checking=${lastStatus?.checking}, lastError=${lastStatus?.lastError ?? 'нет'}`);
+  `checking=${lastStatus?.checking}, lastError=${lastStatus?.lastError ?? 'нет'}, lastRun=${JSON.stringify(lastStatus?.lastRun ?? null)}`);
 check('Проверка успешна (без ошибки сети)', refreshed && !lastStatus?.lastError,
   `lastCheckAt=${lastStatus?.lastCheckAt}, lastError=${lastStatus?.lastError ?? 'нет'}`);
 
@@ -181,19 +181,18 @@ if (picked) {
 console.log('=== 6. Projects / Workspace / Terminal ===');
 const projDir = path.join(os.tmpdir(), `lm-smoke-proj-${Date.now()}`);
 try {
-  const r = await jpost('/api/project/create', { name: path.basename(projDir), parentDir: path.dirname(projDir) });
+  // Контракт API: { path } — полный путь проекта (mkdir -p, существующий не ошибка).
+  const r = await jpost('/api/project/create', { path: projDir });
   const dirOk = r.status === 200 || r.status === 201;
-  check('Projects: проект создан', dirOk, `http=${r.status}, path=${r.body?.path ?? r.body?.dir ?? '?'}`);
+  check('Projects: проект создан', dirOk, `http=${r.status}, path=${r.body?.path ?? projDir}`);
   if (dirOk) {
-    const save = await jpost('/api/project/file', {
-      path: path.join(r.body?.path ?? r.body?.dir ?? projDir, 'smoke-disco.txt'),
-      content: 'привет из smoke-теста Discovery\n'
-    });
+    const filePath = path.join(projDir, 'smoke-disco.txt');
+    const save = await jpost('/api/project/file', { path: filePath, content: 'привет из smoke-теста Discovery\n' });
     check('Workspace: файл сохранён', save.status === 200 || save.status === 201, `http=${save.status}`);
-    const read = await jget(`/api/project/file?path=${encodeURIComponent(path.join(r.body?.path ?? r.body?.dir ?? projDir, 'smoke-disco.txt'))}`);
-    check('Workspace: файл прочитан обратно', read.status === 200 && String(read.body?.content ?? read.body ?? '').includes('smoke-теста'),
+    const read = await jget(`/api/project/file?path=${encodeURIComponent(filePath)}`);
+    check('Workspace: файл прочитан обратно', read.status === 200 && JSON.stringify(read.body).includes('smoke-теста'),
       `http=${read.status}`);
-    const tree = await jget(`/api/project/tree?path=${encodeURIComponent(r.body?.path ?? r.body?.dir ?? projDir)}`);
+    const tree = await jget(`/api/project/tree?path=${encodeURIComponent(projDir)}`);
     check('Workspace: дерево файлов отдаёт файл', tree.status === 200 && JSON.stringify(tree.body).includes('smoke-disco.txt'),
       `http=${tree.status}`);
   }

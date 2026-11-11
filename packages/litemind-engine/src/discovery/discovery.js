@@ -113,6 +113,7 @@ export class DiscoveryManager {
       lastCheckAt: this.catalog.data.lastCheckAt,
       lastSuccessAt: this.catalog.data.lastSuccessAt,
       lastError: this.catalog.data.lastError,
+      lastRun: this.catalog.data.lastRun ?? null,
       nextCheckAt: enabled && last ? new Date(last + this.cfg.intervalHours * 3600000).toISOString() : null,
       counts
     };
@@ -205,7 +206,19 @@ export class DiscoveryManager {
       await Promise.all(workers);
 
       this._prune();
-      this.catalog.markCheck({ ok: true });
+      // Честная отметка (§11): если ни одно дерево файлов не удалось получить —
+      // это НЕ успешная проверка, а сбой сети/источника; каталог сохраняем,
+      // ошибку показываем в UI. Частичный успех (часть деревьев получена) —
+      // успешная проверка с числом ошибок в статистике.
+      const ok = reposChecked > 0 || errors === 0;
+      this.catalog.markCheck({
+        ok,
+        error: ok ? null : `Не удалось получить файлы ни от одного репозитория (в очереди ${queue.length}, ошибок ${errors}). Каталог сохранён.`
+      });
+      this.catalog.data.lastRun = {
+        at: new Date().toISOString(), reposChecked, added, updated, errors,
+        reposFound: repos.length, treesQueued: queue.length
+      };
       await this.catalog.save();
       this.logger?.info?.('discovery: проверка завершена', { reposChecked, added, updated, errors });
       return { reposChecked, added, updated, errors };

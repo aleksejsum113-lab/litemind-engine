@@ -104,7 +104,11 @@ export async function searchHuggingFaceGguf({
  * @returns {Array<{name:string, sizeBytes:number, sha256:string|null, url:string}>}
  */
 export async function listRepoGgufFiles({ repo, fetchImpl = fetch, timeoutMs = 15000 } = {}) {
-  const url = `${HF_BASE}/api/models/${encodeURIComponent(repo)}/tree/main`;
+  // ВАЖНО: слэш в «author/name» НЕ кодируем — HF API отвечает 400 на
+  // «author%2Fname» в пути (проверено на живом API 2026-11-11); кодируем
+  // только каждый сегмент отдельно (спецсимволы в именах авторов/репо).
+  const repoPath = String(repo || '').split('/').map(encodeURIComponent).join('/');
+  const url = `${HF_BASE}/api/models/${repoPath}/tree/main`;
   const res = await timedFetch(fetchImpl, url, { timeoutMs });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const tree = await res.json();

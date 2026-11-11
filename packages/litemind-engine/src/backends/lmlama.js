@@ -359,6 +359,22 @@ export class LlamaCppBackend {
     }
   }
 
+  /**
+   * Ждать /health === ok до deadlineMs. Пока модель грузится, /health отдаёт
+   * { status: 'loading' } — это норма, ждём дальше. Возвращаем true, если
+   * сервер готов; false — если процесс умер или время истекло.
+   */
+  async _waitHealth(deadlineMs = 30000) {
+    const deadline = Date.now() + deadlineMs;
+    while (Date.now() < deadline) {
+      if (this.proc && (this.proc.exitCode !== null || this.proc.signalCode !== null)) return false;
+      const h = await this._health(3000);
+      if (h?.status === 'ok') return true;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return false;
+  }
+
   _stopProc(force = false) {
     return new Promise((resolve) => {
       const proc = this.proc;
@@ -413,8 +429,23 @@ export class LlamaCppBackend {
    * cache-reuse/контекст) — процесс перезапускается с новыми аргументами.
    * Меньший контекст перезапуска НЕ вызывает (grow-only), чтобы частая смена
    * настройки контекста в UI не переигрывала загрузку модели.
+   *
+   * Сериализация: Chat и AI Agent могут стартовать модель ОДНОВРЕМЕННО
+   * (профиль balanced допускает 2 параллельных запроса). Без очереди оба
+   * вызова доходили до spawn и дважды запускали llama-server на одном
+   * порту — проигравший умирал («не смог загрузить модель, прожил 0.4 с»),
+   * а второй клон оставался жить и держать RAM. Запуски выстраиваются
+   * в цепочку: второй вызов видит уже загруженную модель и переиспользует её.
    */
-  async ensureServer({ file, contextTokens, threads, threadsBatch, numBatch, useMmap, cacheReuse, profile }) {
+  async ensureServer(opts) {
+    const run = (this._startChain ?? Promise.resolve())
+      .catch(() => {}) // ошибка предыдущего запуска не должна валить текущий
+      .then(() => this._ensureServerLocked(opts));
+    this._startChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  async _ensureServerLocked({ file, contextTokens, threads, threadsBatch, numBatch, useMmap, cacheReuse, profile }) {
     const bin = this.findServerBinary();
     if (!bin) {
       throw new BackendError(
@@ -429,11 +460,13 @@ export class LlamaCppBackend {
     const params = this._resolve({ file, contextTokens, threads, threadsBatch, numBatch, useMmap, cacheReuse, profile, fileSizeBytes });
     const key = runtimeStartKey(params);
 
-    // Уже загружен тот же файл с теми же параметрами — переиспользуем.
+    // Уже загружен (или ещё загружается) тот же файл с теми же параметрами —
+    // ждём /health до loadTimeoutMs: параллельный запрос (Chat ↔ Agent) ждёт
+    // окончания загрузки, а не убивает её посреди.
     if (this.proc && this.modelFile === params.file && this._startKeyStr === key) {
-      const h = await this._health(1500);
-      if (h?.status === 'ok') return this.baseUrl;
-      await this._stopProc(true); // загружается, но завис/умер — чистый перезапуск
+      const ok = await this._waitHealth(Math.max(1500, this.loadTimeoutMs));
+      if (ok) return this.baseUrl;
+      await this._stopProc(true); // мёртвый/завис — чистый перезапуск
     } else if (this.proc && this.modelFile === params.file) {
       // Параметры изменились — честный перезапуск (ТЗ Этапа 2 §8).
       const prev = this._runtimeParams;
@@ -491,9 +524,16 @@ export class LlamaCppBackend {
       if (proc.exitCode !== null || proc.signalCode !== null || this.exitInfo?.error) {
         const tail = (this.exitInfo?.stderrTail || stderrTail.slice(-10).join('\n') || '').slice(-800);
         const loadAttemptedMs = Date.now() - startedAt;
+        // Честная диагностика (§11): код выхода/сигнал — в сообщении, а не только в логе.
+        const diag = tail
+          || (this.exitInfo?.error ? `ошибка запуска: ${this.exitInfo.error}` : '')
+          || (this.exitInfo && (this.exitInfo.code != null || this.exitInfo.signal)
+            ? `код выхода=${this.exitInfo.code ?? '-'}${this.exitInfo.signal ? `, сигнал=${this.exitInfo.signal}` : ''} — процесс завершился без вывода в stderr`
+            : '')
+          || 'Процесс завершился без диагностики.';
         this._resetProc();
         throw new BackendError(
-          `llama-server не смог загрузить модель: ${path.basename(file)}. Прожил ${Math.round(loadAttemptedMs / 100) / 10} с. ${tail || 'Процесс завершился без диагностики.'}`,
+          `llama-server не смог загрузить модель: ${path.basename(file)}. Прожил ${Math.round(loadAttemptedMs / 100) / 10} с. ${diag}`,
           { code: 'RUNTIME_START_FAILED', status: 502 }
         );
       }

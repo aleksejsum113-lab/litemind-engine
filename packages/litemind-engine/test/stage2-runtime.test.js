@@ -279,6 +279,64 @@ wait \$CHILD
   assert.equal(info.gpu.probed !== undefined, true, 'gpu-диагностика присутствует');
 });
 
+test('ensureServer: одновременный старт Chat+Agent — ровно один llama-server (гонка портов)', async (t) => {
+  // Регрессия CI 2026-11-11: параллельные ensureServer дважды доходили до
+  // spawn, llama-server на том же порту умирал («прожил 0.4 с»), агент
+  // получал ошибку. Теперь запуски сериализуются: второй вызов видит
+  // загруженную модель и переиспользует её.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lm-runtime-race-'));
+  const fakeBin = path.join(tmp, 'fake-llama-server');
+  const spawnsFile = path.join(tmp, 'spawns.txt');
+  fs.writeFileSync(fakeBin, `#!/bin/sh
+if [ "\$1" = "--version" ]; then echo "fake version b1000"; exit 0; fi
+echo "\$@" >> "${spawnsFile}"
+PORT=""; prev=""
+for a in "\$@"; do
+  if [ "\$prev" = "--port" ]; then PORT="\$a"; fi
+  prev="\$a"
+done
+python3 - "\$PORT" >/dev/null 2>&1 <<'EOF' &
+import sys, json, time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+port = int(sys.argv[1])
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/health':
+            body = json.dumps({'status': 'ok'}).encode()
+            self.send_response(200)
+            self.send_header('content-type', 'application/json')
+            self.send_header('content-length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404); self.end_headers()
+    def log_message(self, *a): pass
+time.sleep(0.3)  # имитация «загрузки модели»: второй вызов должен ДОЖДАТЬСЯ, а не убить
+HTTPServer(('127.0.0.1', port), H).serve_forever()
+EOF
+CHILD=\$!
+trap 'kill \$CHILD 2>/dev/null; exit 0' TERM INT
+wait \$CHILD
+`, { mode: 0o755 });
+
+  const cfg = loadConfig(path.join(os.tmpdir(), `lm-cfg-${Date.now()}-race.json`));
+  cfg.backend.serverPath = fakeBin;
+  cfg.models.rootDir = tmp;
+  const backend = createBackend(cfg);
+  t.after(async () => { await backend.shutdown().catch(() => {}); });
+
+  const modelFile = path.join(tmp, 'race-model.gguf');
+  fs.writeFileSync(modelFile, Buffer.alloc(1024));
+  const args = { file: modelFile, contextTokens: 4096, threads: 3, threadsBatch: 4, numBatch: 1024, useMmap: false, cacheReuse: 0, profile: 'balanced' };
+
+  // Chat и Agent стартуют модель одновременно.
+  const [a, b] = await Promise.all([backend.ensureServer(args), backend.ensureServer(args)]);
+  assert.equal(a, b, 'оба запроса получили один и тот же baseUrl');
+  const spawns = fs.existsSync(spawnsFile) ? fs.readFileSync(spawnsFile, 'utf8').trim().split('\n').filter(Boolean) : [];
+  assert.equal(spawns.length, 1, `spawn был ровно один (фактически: ${spawns.length})`);
+  assert.ok(backend.proc, 'процесс жив');
+});
+
 /* ------------------------------ движок ---------------------------------- */
 
 function makeEngine({ backend, configOverrides = null, now = null } = {}) {
