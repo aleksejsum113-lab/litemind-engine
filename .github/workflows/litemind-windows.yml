@@ -315,16 +315,65 @@ jobs:
 
           node packages/litemind-engine/scripts/smoke-stage2-gui.mjs --out "$env:RUNNER_TEMP\smoke-gui.json"
           $exit = $LASTEXITCODE
+
+          # ── ТЗ v0.6.1: AI Agent — реальная многошаговая задача на живой модели,
+          # пока приложение запущено (движок на 8399). Уточнение + остановка + история.
+          Write-Host '=== AI Agent smoke: реальная задача с инструментами ==='
+          node packages/litemind-engine/scripts/smoke-stage2-agent.mjs --model "Qwen3-0.6B-Q8_0" --port 8399 --out "$env:RUNNER_TEMP\smoke-agent.json"
+          $agentExit = $LASTEXITCODE
+          Write-Host "agent smoke код: $agentExit"
+
           taskkill /IM LiteMind.exe /T /F 2>$null
           Start-Sleep -Seconds 3
           $app = Get-Process LiteMind -ErrorAction SilentlyContinue
           if ($app) { throw 'LiteMind.exe не завершился' }
-          if ($exit -ne 0) {
+          if ($exit -ne 0 -or $agentExit -ne 0) {
             Get-ChildItem "$env:APPDATA\LiteMind\logs" -ErrorAction SilentlyContinue |
               ForEach-Object { Write-Host "=== $($_.Name)"; Get-Content $_.FullName -Tail 30 | ForEach-Object { Write-Host "  $_" } }
-            throw "gui smoke завершился с кодом $exit"
+            throw "smoke завершился с кодом: gui=$exit, agent=$agentExit"
           }
           Write-Host 'приложение запустилось, отработало и корректно завершено'
+
+      - name: Uninstall preserves user data, reinstall works (ТЗ §1.6–1.7)
+        shell: pwsh
+        run: |
+          $base = "$env:LM_INSTALL_DIR"
+          if (-not $base) { throw 'LM_INSTALL_DIR не задан (прошлый шаг не выполнился?)' }
+          # Маркер пользовательских данных в %APPDATA%\LiteMind (конфиг уже создан smoke-шагом)
+          $dataDir = "$env:APPDATA\LiteMind"
+          if (-not (Test-Path "$dataDir\config.json")) { throw 'config.json отсутствует перед удалением — неожиданно' }
+          Set-Content "$dataDir\user-marker.txt" 'пользовательские данные должны пережить удаление' -Encoding utf8
+          $modelFile = "$env:RUNNER_TEMP\models\Qwen3-0.6B-Q8_0.gguf"
+          if (-not (Test-Path $modelFile)) { throw 'файл модели отсутствует перед удалением' }
+
+          # 1) Тихое удаление: Uninstall LiteMind.exe /S
+          $unins = Get-ChildItem $base -Filter 'Uninstall*.exe' | Select-Object -First 1
+          if (-not $unins) { throw 'деинсталлятор не найден' }
+          Write-Host "деинсталлятор: $($unins.FullName)"
+          $p = Start-Process -FilePath $unins.FullName -ArgumentList '/S' -Wait -PassThru
+          Write-Host "код удаления: $($p.ExitCode)"
+          Start-Sleep -Seconds 4
+          $left = Get-ChildItem (Split-Path $base -Parent) -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -eq $base }
+          if ($left -and (Test-Path "$base\LiteMind.exe")) { throw 'приложение всё ещё на месте после удаления' }
+          Write-Host 'папка приложения удалена'
+
+          # 2) Пользовательские данные НЕ удаляются (ТЗ §1): конфиг, маркер, модели
+          if (-not (Test-Path "$dataDir\config.json")) { throw 'ДАННЫЕ ПОТЕРЯНЫ: config.json удалён' }
+          if (-not (Test-Path "$dataDir\user-marker.txt")) { throw 'ДАННЫЕ ПОТЕРЯНЫ: пользовательский файл удалён' }
+          if (-not (Test-Path $modelFile)) { throw 'ДАННЫЕ ПОТЕРЯНЫ: скачанная модель удалена' }
+          Write-Host 'пользовательские данные пережили удаление (config.json, маркер, модель)'
+
+          # 3) Повторная установка поверх (обновление)
+          $p2 = Start-Process -FilePath $env:LM_INSTALLER -ArgumentList '/S' -Wait -PassThru
+          Write-Host "код переустановки: $($p2.ExitCode)"
+          Start-Sleep -Seconds 2
+          $exe2 = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Depth 2 -Filter 'LiteMind.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe2) { throw 'повторная установка не удалась: LiteMind.exe не найден' }
+          $ver2 = (Get-Item $exe2.FullName).VersionInfo.ProductVersion
+          Write-Host "переустановлено: $($exe2.DirectoryName), версия $ver2"
+          if (-not (Test-Path "$dataDir\user-marker.txt")) { throw 'после переустановки пропал пользовательский маркер' }
+          Write-Host 'переустановка поверх старой: пользовательские данные на месте'
 
       - name: Upload smoke results
         if: always()
@@ -334,6 +383,7 @@ jobs:
           path: |
             ${{ runner.temp }}/smoke-engine.json
             ${{ runner.temp }}/smoke-gui.json
+            ${{ runner.temp }}/smoke-agent.json
             ${{ runner.temp }}/llama-server-direct.log
             ${{ runner.temp }}/litemind-gui.png
           if-no-files-found: ignore

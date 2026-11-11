@@ -320,6 +320,9 @@ export class AgentManager {
   async stop(id) {
     const s = this.getSession(id);
     if (s._ctrl) { try { s._ctrl.abort(new Error('остановлено пользователем')); } catch { /* */ } }
+    // убить запущенные агентом команды (ТЗ: корректная остановка процессов)
+    for (const kill of s._termKills ?? []) { try { kill(); } catch { /* */ } }
+    s._termKills = [];
     if (s.state === 'running') {
       s.state = 'stopped';
       s.stats.endedAt = nowIso();
@@ -471,7 +474,9 @@ export class AgentManager {
     const ctx = {
       projectRoot: s.projectDir,
       web: this.webCtx(),
-      signal: s._ctrl.signal
+      signal: s._ctrl.signal,
+      // процессы терминала регистрируются в сессии — stop() убивает их дерево
+      onTermStart: (pid, kill) => { (s._termKills ??= []).push(kill); }
     };
     const startedAt = Date.now();
     let parseFails = 0;

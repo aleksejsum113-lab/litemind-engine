@@ -55,23 +55,28 @@ function cap(text, limit = MAX_OUTPUT_CHARS) {
   return s.slice(0, limit) + `\n… (сокращено, всего ${s.length} символов)`;
 }
 
-/** Выполнение команды: spawn shell в cwd, таймаут, декодер CP866/1251/UTF-8, kill дерева. */
-export function execCommand(command, cwd, { timeoutMs = TERM_TIMEOUT_MS_DEFAULT, maxBytes = TERM_OUTPUT_BYTES } = {}) {
+/** Выполнение команды: spawn shell в cwd, таймаут, декодер CP866/1251/UTF-8, kill дерева.
+ *  onStart(pid, kill) — даёт сессии агента шанс убить команду при остановке задачи. */
+export function execCommand(command, cwd, { timeoutMs = TERM_TIMEOUT_MS_DEFAULT, maxBytes = TERM_OUTPUT_BYTES, onStart = null } = {}) {
   timeoutMs = Math.max(1_000, Math.min(TERM_TIMEOUT_MS_MAX, Number(timeoutMs) || TERM_TIMEOUT_MS_DEFAULT));
   return new Promise((resolve) => {
     const startAt = Date.now();
     const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
     const shellArgs = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command];
     const child = spawn(shell, shellArgs, { cwd, windowsHide: true, detached: process.platform !== 'win32' });
+    const killTree = () => {
+      try {
+        if (process.platform === 'win32') { if (child.pid) spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }); }
+        else { try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); } }
+      } catch { try { child.kill('SIGKILL'); } catch { /* уже мёртв */ } }
+    };
+    if (typeof onStart === 'function') { try { onStart(child.pid, killTree); } catch { /* */ } }
     let out = Buffer.alloc(0);
     let truncated = false;
     let killed = false;
     const timer = setTimeout(() => {
       killed = true;
-      try {
-        if (process.platform === 'win32') { if (child.pid) spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }); }
-        else { try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); } }
-      } catch { try { child.kill('SIGKILL'); } catch { /* уже мёртв */ } }
+      killTree();
     }, timeoutMs);
 
     const collect = (chunk) => {
@@ -292,7 +297,10 @@ export function createToolRegistry({ config, logger } = {}) {
               backupId: null
             },
             _apply: async () => {
-              const r = await execCommand(command, root, { timeoutMs: (Number.isFinite(timeoutSec) ? timeoutSec : 120) * 1000 });
+              const r = await execCommand(command, root, {
+                timeoutMs: (Number.isFinite(timeoutSec) ? timeoutSec : 120) * 1000,
+                onStart: ctx?.onTermStart
+              });
               const head = `код завершения: ${r.exitCode}${r.timedOut ? ' (превышен таймаут, процесс остановлен)' : ''}`;
               const body = r.stdout ? cap(r.stdout) : '(stdout пуст)';
               const err = r.stderr ? `\nstderr: ${cap(r.stderr, 2000)}` : '';

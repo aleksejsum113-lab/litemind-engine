@@ -14,6 +14,7 @@ const state = { streaming: false, engineOnline: null, catalog: null, wsDir: null
 // системные кнопки окна и обновляем имя раздела; активная модель — в updateWelcomeHint.
 if (bridge()) document.body.classList.add('in-electron');
 const TAB_TITLES = {
+  agent: 'AI Agent',
   chat: 'Чат', models: 'Мои модели', catalog: 'Каталог моделей', downloads: 'Загрузки',
   projects: 'Проекты', workspace: 'Workspace', terminal: 'AI Terminal', home: 'Состояние',
   hardware: 'Железо', monitor: 'Мониторинг', control: 'Управление', settings: 'Настройки'
@@ -104,7 +105,8 @@ function switchTab(name) {
   document.querySelectorAll('[data-page]').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
   ({ catalog: loadCatalog, downloads: refreshDownloads, hardware: loadHardware, settings: loadSettings,
      models: loadMyModels, monitor: loadMonitor, control: refreshControl, home: refreshStatus,
-     chat: loadChat, projects: loadProjects, workspace: loadWorkspace, terminal: loadTerminal })[name]?.();
+     chat: loadChat, projects: loadProjects, workspace: loadWorkspace, terminal: loadTerminal,
+     agent: window.__litemindLoadAgent })[name]?.();
   const hash = '#' + name;
   if (location.hash !== hash) history.replaceState(null, '', hash);
   document.getElementById('app').classList.remove('sidebar-open');
@@ -3181,6 +3183,13 @@ async function loadSettings() {
     const s = await api('/api/settings');
     $('set-rootdir').value = s.modelsRootDir || '';
     if (s.profile) $('set-profile').value = s.profile;
+    // ТЗ §7: управляемый интернет
+    if ($('set-web-enabled')) {
+      $('set-web-enabled').checked = !!s.web?.enabled;
+      $('set-web-github').checked = s.web?.allowGithub !== false;
+      $('set-web-token').value = '';
+      $('set-web-token').placeholder = s.web?.hasToken ? 'токен сохранён (введите новый для замены)' : 'ghp_… (пусто — без токена)';
+    }
   } catch { /* — */ }
   try {
     const a = await api('/api/adaptive');
@@ -3355,11 +3364,17 @@ $('btn-set-pick').addEventListener('click', async () => {
 $('btn-save-settings').addEventListener('click', async () => {
   const rootDir = $('set-rootdir').value.trim();
   const profile = $('set-profile').value;
+  const webPayload = {
+    enabled: $('set-web-enabled')?.checked ?? false,
+    allowGithub: $('set-web-github')?.checked ?? true
+  };
+  const tok = $('set-web-token')?.value.trim();
+  if (tok) webPayload.githubToken = tok; // пусто = оставить прежнее значение
   try {
-    await api('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelsRootDir: rootDir || undefined, profile }) });
+    await api('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelsRootDir: rootDir || undefined, profile, web: webPayload }) });
     $('settings-note').textContent = 'сохранено';
     state.catalog = null;
-    event(`настройки сохранены (профиль: ${profile})`);
+    event(`настройки сохранены (профиль: ${profile}, интернет: ${webPayload.enabled ? 'вкл' : 'выкл'})`);
     refreshStatus();
   } catch (err) {
     $('settings-note').textContent = '';

@@ -222,7 +222,8 @@ const getBase = (appId: string): Configuration => {
       verifyUpdateCodeSignature: false,
     },
     nsis: {
-      artifactName: "litemind-desktop-win-x64.${ext}",
+      // ТЗ §1: один понятный файл установщика — LiteMind-Engine-Setup-x64.exe
+      artifactName: "LiteMind-Engine-Setup-x64.${ext}",
       include: path.join(packageDir, "resources", "windows", "installer.nsh"),
       // Своё имя удаления — чтобы в «Установка и удаление программ» LiteMind
       // не смешивался с OpenCode.

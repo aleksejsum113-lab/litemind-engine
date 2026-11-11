@@ -27,11 +27,12 @@
 
       <nav id="nav">
         <div class="nav-label">Инструменты</div>
+        <button class="nav-item" data-tab="agent"><i>✦</i><span>AI Agent</span> <span id="agent-badge" class="nav-badge agent-badge" hidden></span></button>
+        <button class="nav-item" data-tab="projects"><i>△</i><span>Проекты</span></button>
+        <button class="nav-item" data-tab="workspace"><i>▤</i><span>Workspace</span></button>
         <button class="nav-item" data-tab="models"><i>▣</i><span>Мои модели</span></button>
         <button class="nav-item" data-tab="catalog"><i>◫</i><span>Каталог моделей</span></button>
         <button class="nav-item" data-tab="downloads"><i>⇩</i><span>Загрузки</span> <span id="dl-count" class="nav-badge" hidden></span></button>
-        <button class="nav-item" data-tab="projects"><i>△</i><span>Проекты</span></button>
-        <button class="nav-item" data-tab="workspace"><i>▤</i><span>Workspace</span></button>
         <button class="nav-item" data-tab="terminal"><i>▸_</i><span>AI Terminal</span></button>
         <div class="nav-label">Система</div>
         <button class="nav-item" data-tab="home"><i>⌂</i><span>Состояние</span></button>
@@ -120,6 +121,67 @@
               <span id="run-state" class="muted small"></span>
               <span class="spacer"></span>
               <span id="timings" class="muted small"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- AI AGENT — диалоговое рабочее пространство (ТЗ v0.6.1) -->
+      <section id="tab-agent" data-page hidden>
+        <div class="chat-shell">
+          <header class="chat-header">
+            <button id="agent-menu-btn" class="icon-btn mobile-only" title="Панель">☰</button>
+            <div class="chat-title">AI Agent <span id="agent-state" class="agent-state-badge st-idle">Готов</span></div>
+            <span class="spacer"></span>
+            <button id="agent-sessions-btn" class="icon-btn" title="Задачи агента">☰ Задачи</button>
+            <button id="agent-new" class="new-chat-btn small" title="Новая задача агента">＋ Новая задача</button>
+          </header>
+
+          <div id="agent-sessions" class="agent-sessions" hidden></div>
+
+          <div class="agent-ctx">
+            <label class="composer-select grow" title="Папка проекта, внутри которой агент работает с файлами и командами">
+              <span>Проект</span>
+              <input id="agent-project" type="text" placeholder="Папка проекта, напр. E:\LiteMind\workspace" spellcheck="false" />
+            </label>
+            <label class="composer-select" title="Модель, которой думает агент">
+              <span>Модель</span>
+              <select id="agent-model"></select>
+            </label>
+            <label class="switch agent-auto" title="Применять изменения без подтверждения. Только для доверенных задач!">
+              <input type="checkbox" id="agent-auto" />
+              <span>Автоприменение</span>
+            </label>
+          </div>
+
+          <div id="agent-log" class="chat-log agent-log">
+            <div id="agent-welcome" class="chat-welcome">
+              <div class="welcome-logo">✦</div>
+              <h2>AI Agent</h2>
+              <p class="muted">Агент выполняет задачи по шагами: анализирует проект, создаёт и меняет файлы (показывая diff и создавая резервные копии), запускает команды — с вашим подтверждением.</p>
+              <div class="welcome-hints">
+                <button class="hint-card" data-agent-hint="Посмотри структуру проекта и расскажи, как он устроен.">Разбор проекта</button>
+                <button class="hint-card" data-agent-hint="Создай файл hello.js с функцией hello(), которая возвращает строку «Привет, LiteMind!», и проверь его запуском.">Создать hello.js</button>
+                <button class="hint-card" data-agent-hint="Найди в проекте TODO-комментарии и составь список задач.">Найти TODO</button>
+              </div>
+              <p class="muted small">Выберите папку проекта и модель выше, затем опишите задачу.</p>
+            </div>
+          </div>
+
+          <div class="composer-wrap">
+            <div id="agent-attach-bar" class="attach-bar" hidden></div>
+            <div class="composer">
+              <button id="agent-attach" class="icon-btn composer-icon" title="Прикрепить файл к сообщению агента">📎</button>
+              <input id="agent-file-input" type="file" multiple hidden
+                     accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.xml,.html,.js,.mjs,.ts,.tsx,.jsx,.py,.rb,.go,.rs,.java,.kt,.c,.h,.cpp,.hpp,.cs,.php,.sh,.ps1,.sql,.css,.log,.pdf,.docx" />
+              <textarea id="agent-prompt" rows="1" placeholder="Опишите задачу или уточнение агенту…  (Enter — отправить, Shift+Enter — новая строка)"></textarea>
+              <button id="agent-send" class="send-btn" title="Отправить агенту">↑</button>
+              <button id="agent-stop" class="stop-btn" title="Остановить задачу агента" hidden>■</button>
+            </div>
+            <div class="composer-meta">
+              <span id="agent-stage" class="muted small"></span>
+              <span class="spacer"></span>
+              <span id="agent-hint-line" class="muted small">агент спрашивает подтверждение на изменения файлов и команды</span>
             </div>
           </div>
         </div>
@@ -563,6 +625,24 @@
           <p class="muted">Профиль управляет: числом одновременных запросов, контекстом, лимитом ответа, потоками CPU, резервом RAM и автовыгрузкой модели. Настройки хранятся локально (config.json), ничего не отправляется в сеть.</p>
         </div>
         <div class="card">
+          <h2>Интернет (управляемый доступ)</h2>
+          <label class="switch"><input type="checkbox" id="set-web-enabled" /> Разрешить доступ к интернету (чтение страниц, GitHub)</label>
+          <label class="switch"><input type="checkbox" id="set-web-github" /> Разрешить просмотр публичных репозиториев GitHub</label>
+          <label class="field">GitHub-токен (необязательно, повышает лимиты API; хранится только в config.json)
+            <input id="set-web-token" type="password" placeholder="ghp_… (пусто — без токена)" spellcheck="false" autocomplete="off" />
+          </label>
+          <p class="muted">По умолчанию интернет выключен: приложение полностью работает локально. При включении доступ разрешается только публичным адресам — локальные и приватные сети заблокированы. Доступ к GitHub-репозиториям — только чтение; публикация, push и merge из приложения не выполняются.</p>
+        </div>
+        <div class="card">
+          <h2>Мультимодальность (в разработке)</h2>
+          <dl class="kv">
+            <dt>Распознавание речи (Whisper)</dt><dd class="muted">планируется — заглушки не выдаются за готовое</dd>
+            <dt>Озвучивание текста (Kokoro)</dt><dd class="muted">планируется</dd>
+            <dt>Генерация изображений</dt><dd class="muted">планируется</dd>
+          </dl>
+          <p class="muted">Архитектура движка поддерживает подключение этих runtime позже; разделы появятся в меню только тогда, когда будут реально работать.</p>
+        </div>
+        <div class="card">
           <h2>Adaptive Engine</h2>
           <label class="switch"><input type="checkbox" id="set-adaptive" /> Адаптивное управление (классификация задач, бюджет генерации)</label>
           <label class="switch"><input type="checkbox" id="set-compaction" /> Уплотнение контекста (экономия RAM, стабильный префикс для prompt-cache)</label>
@@ -612,5 +692,6 @@
   </div>
 
   <script src="app.js"></script>
+  <script src="agent-ui.js"></script>
 </body>
 </html>

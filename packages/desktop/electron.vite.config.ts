@@ -37,7 +37,8 @@ const litemindUiPlugin = (): Plugin => ({
     })
   },
   generateBundle() {
-    for (const name of ["index.html", "app.js", "style.css"]) {
+    // agent-ui.js — AI Agent (ТЗ v0.6.1); правки списка синхронизировать с index.html
+    for (const name of ["index.html", "app.js", "agent-ui.js", "style.css"]) {
       this.emitFile({
         type: "asset",
         fileName: `litemind/${name}`,
