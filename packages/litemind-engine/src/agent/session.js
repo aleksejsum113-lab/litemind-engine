@@ -242,8 +242,12 @@ export class AgentManager {
     return { ok: true };
   }
 
-  /** Сообщение пользователя (в любой момент: во время задачи — учтётся на границе шага). */
-  async postMessage(id, { text = '', attachments = null, projectDir = null, autoApprove = null } = {}) {
+  /**
+   * Сообщение пользователя (в любой момент: во время задачи — учтётся на границе шага).
+   * По умолчанию НЕ ждёт завершения прогона (HTTP и UI не блокируются);
+   * тесты передают { wait: true }.
+   */
+  async postMessage(id, { text = '', attachments = null, projectDir = null, autoApprove = null, wait = false } = {}) {
     const s = this.getSession(id);
     if (projectDir) s.projectDir = path.resolve(String(projectDir));
     if (autoApprove !== null) s.autoApprove = autoApprove === true;
@@ -269,14 +273,19 @@ export class AgentManager {
       ? full.replace(/\s+/g, ' ').slice(0, 60) : s.title;
 
     // если агент ждёт ответа/стоял — запускаем цикл; если работает — сообщение
-    // подхватится на ближайшей границе шага
-    if (s.state !== 'running') await this._kick(s);
-    else void this._persist(s);
+    // подхватится на ближайшей границе шага. Цикл живёт в фоне: HTTP и UI
+    // не блокируются на время задачи (ТЗ: уточнения во время выполнения).
+    if (s.state !== 'running') {
+      if (wait) await this._kick(s);
+      else void this._kick(s);
+    } else {
+      void this._persist(s);
+    }
     return this.publicView(s);
   }
 
-  /** Решение по подтверждению (diff-карточка): approve/reject + отзыв. */
-  async decide(id, { approvalId, approved, feedback = '' } = {}) {
+  /** Решение по подтверждению (diff-карточка): approve/reject + отзыв. Не блокирует HTTP. */
+  async decide(id, { approvalId, approved, feedback = '', wait = false } = {}) {
     const s = this.getSession(id);
     if (!s.pendingApproval || s.pendingApproval.id !== approvalId) {
       throw Object.assign(new Error('нет активного подтверждения с таким id'), { status: 409 });
@@ -303,7 +312,8 @@ export class AgentManager {
       s.state = 'running';
       s.currentStage = 'продолжение после подтверждения';
       void this._persist(s);
-      if (s.state === 'running') await this._kick(s);
+      if (wait) await this._kick(s);
+      else void this._kick(s);
     } else {
       this._append(s, { role: 'event', type: 'confirmation', decision: 'rejected', text: `изменение отклонено: ${pa.tool}`, change: pa.change });
       this._append(s, {
@@ -312,7 +322,8 @@ export class AgentManager {
       });
       s.state = 'running';
       void this._persist(s);
-      await this._kick(s);
+      if (wait) await this._kick(s);
+      else void this._kick(s);
     }
     return this.publicView(s);
   }
@@ -374,17 +385,25 @@ export class AgentManager {
   // ── Цикл агента ──────────────────────────────────────────────────────────
 
   async _kick(s) {
-    if (s._running) return;   // цикл уже жив — сообщение подхватится
+    // Если прежний прогон ещё разматывается (стоп/подтверждение) — ставим
+    // очередь: новый запуск произойдёт сразу после его завершения.
+    if (s._running) { s._kickQueued = true; return; }
     s._running = true;
     try {
-      await this._runLoop(s);
-    } catch (err) {
-      if (s.state !== 'stopped') {
-        s.state = 'error';
-        s.error = String(err?.message ?? err).slice(0, 400);
-        s.stats.endedAt = nowIso();
-        this._append(s, { role: 'event', type: 'error', text: `ошибка агента: ${s.error}` });
-      }
+      do {
+        s._kickQueued = false;
+        try {
+          await this._runLoop(s);
+        } catch (err) {
+          if (s.state !== 'stopped') {
+            s.state = 'error';
+            s.error = String(err?.message ?? err).slice(0, 400);
+            s.stats.endedAt = nowIso();
+            this._append(s, { role: 'event', type: 'error', text: `ошибка агента: ${s.error}` });
+          }
+        }
+        await this._persist(s);
+      } while (s._kickQueued);
     } finally {
       s._running = false;
       s._ctrl = null;

@@ -20,6 +20,18 @@ function tmpConfigDir() {
   return { dir, cfgPath };
 }
 
+
+/** Неблокирующий postMessage: ждать терминального состояния сессии. */
+async function settle(mgr, id, states = ['idle', 'done', 'error', 'stopped', 'awaiting_confirmation', 'waiting_user'], timeoutMs = 8000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 15));
+    const st = mgr.getSession(id).state;
+    if (states.includes(st)) return mgr.publicView(mgr.getSession(id));
+  }
+  return mgr.publicView(mgr.getSession(id));
+}
+
 function makeManager({ cfgPath, replies, projectDir, configPatch = {} }) {
   const config = loadConfig(cfgPath);
   Object.assign(config.agent ??= {}, { maxSteps: 12 });
@@ -61,7 +73,7 @@ test('агент: обычный диалог (TEXT) не требует про�
   const { dir, cfgPath } = tmpConfigDir();
   const { mgr } = makeManager({ cfgPath, replies: ['TEXT: {"text":"Здравствуйте! Чем помочь?"}'] });
   const s = mgr.createSession({});
-  const view = await mgr.postMessage(s.id, { text: 'привет' });
+  const view = await mgr.postMessage(s.id, { text: 'привет', wait: true });
   assert.equal(view.state, 'idle');
   const full = mgr.fullView(s.id);
   const asst = full.messages.find((m) => m.role === 'assistant');
@@ -84,7 +96,7 @@ test('полный цикл: план → write_file → подтвержден�
     ]
   });
   const s = mgr.createSession({ projectDir: proj });
-  const v1 = await mgr.postMessage(s.id, { text: 'обнови README' });
+  const v1 = await mgr.postMessage(s.id, { text: 'обнови README', wait: true });
   assert.equal(v1.state, 'awaiting_confirmation');
   assert.ok(v1.pendingApproval, 'есть карточка подтверждения');
   assert.equal(v1.pendingApproval.tool, 'write_file');
@@ -93,7 +105,7 @@ test('полный цикл: план → write_file → подтвержден�
   assert.ok(v1.pendingApproval.change.backupId, 'бэкап создан до применения');
   assert.ok(!fs.existsSync(path.join(proj, 'README.md')) || fs.readFileSync(path.join(proj, 'README.md'), 'utf8') === 'старое содержимое\n', 'файл ещё НЕ изменён до подтверждения');
 
-  const v2 = await mgr.decide(s.id, { approvalId: v1.pendingApproval.id, approved: true });
+  const v2 = await mgr.decide(s.id, { approvalId: v1.pendingApproval.id, approved: true, wait: true });
   assert.equal(v2.state, 'done');
   assert.equal(fs.readFileSync(path.join(proj, 'README.md'), 'utf8'), 'новое содержимое\n');
   const full = mgr.fullView(s.id);
@@ -114,8 +126,8 @@ test('отклонение изменения: агент получает от�
     ]
   });
   const s = mgr.createSession({ projectDir: proj });
-  const v1 = await mgr.postMessage(s.id, { text: 'запиши файл' });
-  const v2 = await mgr.decide(s.id, { approvalId: v1.pendingApproval.id, approved: false, feedback: 'не надо' });
+  const v1 = await mgr.postMessage(s.id, { text: 'запиши файл', wait: true });
+  const v2 = await mgr.decide(s.id, { approvalId: v1.pendingApproval.id, approved: false, feedback: 'не надо', wait: true });
   assert.equal(v2.state, 'idle');
   assert.ok(!fs.existsSync(path.join(proj, 'x.txt')));
   assert.ok(mgr.fullView(s.id).messages.some((m) => m.role === 'tool' && m.ok === false && String(m.result).includes('ОТКЛОНИЛ')));
@@ -140,10 +152,8 @@ test('уточнение во время выполнения: попадает 
     ]
   });
   const s = mgr.createSession({ projectDir: proj });
-  await mgr.postMessage(s.id, { text: 'покажи файлы' });
-  // «во время выполнения»: перехитрим через сообщение пока состояние idle→успел завершиться —
-  // вместо гонки проверяем дренаж inbox на границе: шлём до второго прогона
-  await mgr.postMessage(s.id, { text: 'уточнение: используй папку src' });
+  await mgr.postMessage(s.id, { text: 'покажи файлы', wait: true });
+  await mgr.postMessage(s.id, { text: 'уточнение: используй папку src', wait: true });
   // второй прогон: модель получает уточнение в payload (вызовы фиксируются)
   const full = mgr.fullView(s.id);
   assert.ok(full.messages.some((m) => m.role === 'user' && m.text.includes('используй папку src')));
@@ -162,9 +172,9 @@ test('ASK: агент ждёт ответа и продолжается посл
     ]
   });
   const s = mgr.createSession({ projectDir: proj });
-  const v1 = await mgr.postMessage(s.id, { text: 'создай конфиг' });
+  const v1 = await mgr.postMessage(s.id, { text: 'создай конфиг', wait: true });
   assert.equal(v1.state, 'waiting_user');
-  const v2 = await mgr.postMessage(s.id, { text: 'формат JSON' });
+  const v2 = await mgr.postMessage(s.id, { text: 'формат JSON', wait: true });
   assert.equal(v2.state, 'idle');
   const asst = mgr.fullView(s.id).messages.filter((m) => m.role === 'assistant');
   assert.ok(asst.some((m) => m.text.includes('формат файла нужен')));
@@ -192,11 +202,11 @@ test('остановка задачи: state=stopped, запуск возобн�
   release();
   assert.equal(v.state, 'stopped');
   await p;
-  // возобновление
-  const replies2 = ['TEXT: {"text":"продолжили"}'];
-  const { mgr: mgr2 } = mgr; // тот же менеджер
-  mgr.generateFn = async () => ({ text: replies2[0] });
-  const v2 = await mgr.postMessage(s.id, { text: 'продолжай' });
+  // возобновление (дать прежнему прогону размотаться — кик встанет в очередь и выполнится)
+  await new Promise((r) => setTimeout(r, 50));
+  mgr.generateFn = async () => ({ text: 'TEXT: {"text":"продолжили"}' });
+  await mgr.postMessage(s.id, { text: 'продолжай' });
+  const v2 = await settle(mgr, s.id, ['idle'], 5000);
   assert.equal(v2.state, 'idle');
   assert.ok(mgr.fullView(s.id).messages.some((m) => m.role === 'assistant' && m.text.includes('продолжили')));
   fs.rmSync(dir, { recursive: true, force: true });
@@ -209,7 +219,7 @@ test('персистентность: сессия восстанавливае�
   {
     const { mgr } = makeManager({ cfgPath, replies: ['TEXT: {"text":"записал"}'] });
     const s = mgr.createSession({ projectDir: proj, title: 'Моя задача' });
-    await mgr.postMessage(s.id, { text: 'сделай что-то' });
+    await mgr.postMessage(s.id, { text: 'сделай что-то', wait: true });
     await mgr._persistChain;
   }
   {
@@ -239,7 +249,7 @@ test('изоляция путей: write_file за пределы проекта
     replies: ['ACTION: {"tool":"write_file","args":{"path":"../evil.txt","content":"bad"}}', 'TEXT: {"text":"не смог, путь отклонён"}']
   });
   const s = mgr.createSession({ projectDir: proj });
-  const v = await mgr.postMessage(s.id, { text: 'запиши' });
+  const v = await mgr.postMessage(s.id, { text: 'запиши', wait: true });
   assert.equal(v.state, 'idle'); // цикл выжил после ошибки инструмента
   assert.ok(mgr.fullView(s.id).messages.some((m) => m.role === 'tool' && m.ok === false));
   assert.ok(!fs.existsSync(path.join(dir, 'evil.txt')), 'файл вне проекта не создан');
@@ -260,7 +270,7 @@ test('инструменты: read_file/search/terminal реально рабо�
     ]
   });
   const s = mgr.createSession({ projectDir: proj, autoApprove: true });
-  const v = await mgr.postMessage(s.id, { text: 'проверь файл и терминал' });
+  const v = await mgr.postMessage(s.id, { text: 'проверь файл и терминал', wait: true });
   assert.equal(v.state, 'done');
   const tools = mgr.fullView(s.id).messages.filter((m) => m.role === 'tool');
   assert.equal(tools.length, 2);
@@ -287,7 +297,7 @@ test('отказ от «пустого DONE»: без инструментов �
   ];
   const { mgr } = makeManager({ cfgPath, replies });
   const s = mgr.createSession({ projectDir: proj });
-  const v = await mgr.postMessage(s.id, { text: 'сделай задачу' });
+  const v = await mgr.postMessage(s.id, { text: 'сделай задачу', wait: true });
   assert.equal(v.state, 'done'); // после 2 подсказок DONE принят
   const full = mgr.fullView(s.id);
   assert.ok(full.messages.some((m) => m.type === 'note' && String(m.text).includes('без выполнения')));
