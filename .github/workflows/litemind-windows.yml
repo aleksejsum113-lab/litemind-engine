@@ -120,6 +120,10 @@ jobs:
         run: |
           git clone https://github.com/leejet/stable-diffusion.cpp "$env:RUNNER_TEMP\sd-src"
           git -C "$env:RUNNER_TEMP\sd-src" checkout 32d516c
+          # ggml (leejet/ggml) и остальные зависимости — субмодули. Без
+          # `submodule update --init --recursive` каталог ggml пуст и CMake
+          # падает на add_subdirectory (прогон №49, 2026-11-12).
+          git -C "$env:RUNNER_TEMP\sd-src" submodule update --init --recursive
           cmake -S "$env:RUNNER_TEMP\sd-src" -B "$env:RUNNER_TEMP\sd-build" `
             -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_AVX=OFF `
             -DGGML_AVX2=OFF -DGGML_SSE42=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF `
