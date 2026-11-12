@@ -53,6 +53,9 @@ const APP_IDS = {
 // resources\llamacpp\llama-server.exe (собирается в CI без AVX — см. workflow).
 const llamacppResourceDir = path.join(packageDir, "resources", "llamacpp")
 const hasLlamaRuntime = fs.existsSync(path.join(llamacppResourceDir, "llama-server.exe"))
+// sd.exe — бэкенд Генератора изображений (stable-diffusion.cpp, без AVX; собирается в CI).
+const sdResourceDir = path.join(packageDir, "resources", "sd")
+const hasSdRuntime = fs.existsSync(path.join(sdResourceDir, "sd.exe"))
 
 // libappimage (used by AppImageLauncher) resolves the .desktop entry inside an
 // AppImage by globbing `*.desktop` at the squashfs root. If the main
@@ -120,6 +123,7 @@ const getBase = (appId: string): Configuration => {
       ...(hasLlamaRuntime
         ? [{ from: "resources/llamacpp", to: "llamacpp", filter: ["**/*"] }]
         : []),
+      ...(hasSdRuntime ? [{ from: "resources/sd", to: "sd", filter: ["**/*"] }] : []),
     ],
     afterPack: async (context) => {
       const arch = Arch[context.arch]
@@ -168,6 +172,17 @@ const getBase = (appId: string): Configuration => {
           throw new Error(
             `Bundled llama.cpp runtime looks incomplete: ${llamaDir} (total ${llamacppTotal} bytes, expected >= 20 MB)`,
           )
+        }
+      }
+
+      // sd.exe (Генератор изображений, ТЗ v0.6.1 §3) обязателен в Windows-установке:
+      // без него вкладка «Генератор изображений» честно сообщит об отсутствии бэкенда.
+      if (hasSdRuntime) {
+        const sdDir = path.join(resources, "sd")
+        const sdExe = path.join(sdDir, "sd.exe")
+        const sdStat = await stat(sdExe)
+        if (!sdStat.isFile() || sdStat.size < 1_000_000) {
+          throw new Error(`Bundled sd.exe looks wrong: ${sdExe} (${sdStat.size} bytes)`)
         }
       }
 
