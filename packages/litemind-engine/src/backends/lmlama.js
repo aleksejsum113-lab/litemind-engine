@@ -109,6 +109,16 @@ export class LlamaCppBackend {
     this.serverTimings = [];    // разобранные тайминги llama-server (последние 32)
     this._timingAcc = null;     // накапливаемые поля одного print_timings
     this.gpu = { probed: false, devices: [], note: null };
+
+    // v0.6.1: сериализация жизненного цикла. Раньше два одновременных вызова
+    // ensureServer (задача агента + кнопка «Запустить»/чат с другими
+    // параметрами) устраивали гонку: второй честно убивал llama-server первого,
+    // и генерация падала с «Стрим прервался»/«fetch failed». Все переходы
+    // (spawn/stop/restart) теперь выстраиваются в цепочку, а смена параметров
+    // во время активной генерации получает честный отказ RUNTIME_BUSY вместо
+    // убийства чужого стрима.
+    this._startChain = Promise.resolve(); // мьютекс жизненного цикла запусков
+    this._activeStreams = 0;               // сколько генераций идёт прямо сейчас
   }
 
   capabilities() {
@@ -382,9 +392,17 @@ export class LlamaCppBackend {
       const killed = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* уже мёртв */ } }, 3000);
       proc.once('close', () => { clearTimeout(killed); this._resetProc(); resolve(); });
       try { proc.kill(force ? 'SIGKILL' : 'SIGTERM'); } catch { clearTimeout(killed); this._resetProc(); resolve(); }
-      if (process.platform === 'win32' && !force) {
+      if (process.platform === 'win32') {
         // SIGTERM на Windows убивает процесс сразу — гарантия освобождения RAM.
-        try { spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true }); } catch { /* fallback выше */ }
+        // v0.6.1: у spawn обязателен обработчик 'error' — без него отказ
+        // taskkill (нет PID, ENOENT) становился uncaughtException и убивал
+        // весь процесс движка.
+        if (proc.pid) {
+          try {
+            const tk = spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true });
+            tk.on('error', () => { /* процесс уже мёртв или taskkill недоступен — SIGTERM выше */ });
+          } catch { /* fallback выше */ }
+        }
       }
     });
   }
@@ -430,12 +448,14 @@ export class LlamaCppBackend {
    * Меньший контекст перезапуска НЕ вызывает (grow-only), чтобы частая смена
    * настройки контекста в UI не переигрывала загрузку модели.
    *
-   * Сериализация: Chat и AI Agent могут стартовать модель ОДНОВРЕМЕННО
-   * (профиль balanced допускает 2 параллельных запроса). Без очереди оба
-   * вызова доходили до spawn и дважды запускали llama-server на одном
-   * порту — проигравший умирал («не смог загрузить модель, прожил 0.4 с»),
-   * а второй клон оставался жить и держать RAM. Запуски выстраиваются
-   * в цепочку: второй вызов видит уже загруженную модель и переиспользует её.
+   * v0.6.1 + Этап 3: публичный ensureServer сериализован (_startChain):
+   * Chat и AI Agent могут стартовать модель ОДНОВРЕМЕННО (профиль balanced
+   * допускает 2 параллельных запроса). Без очереди оба вызова доходили до
+   * spawn и дважды запускали llama-server на одном порту — проигравший
+   * умирал («не смог загрузить модель, прожил 0.4 с»), а второй клон
+   * оставался жить и держать RAM. Запуски выстраиваются в цепочку: второй
+   * вызов видит уже загруженную модель и переиспользует её; ошибка одного
+   * запуска не ломает цепочку для следующих.
    */
   async ensureServer(opts) {
     const run = (this._startChain ?? Promise.resolve())
@@ -460,10 +480,23 @@ export class LlamaCppBackend {
     const params = this._resolve({ file, contextTokens, threads, threadsBatch, numBatch, useMmap, cacheReuse, profile, fileSizeBytes });
     const key = runtimeStartKey(params);
 
+    // v0.6.1: пока идёт генерация, работающий llama-server — не наша
+    // собственность. Смена параметров/модели здесь убивала бы стрим живого
+    // запроса (воспроизведено локально: агент получал «Стрим прервался:
+    // terminated» после параллельного /api/models/run). Честный отказ вместо
+    // тихой порчи: вызывающий повторит запрос после завершения генерации.
+    const sameRuntime = this.proc && this.modelFile === params.file && this._startKeyStr === key;
+    if (this.proc && !sameRuntime && this._activeStreams > 0) {
+      throw new BackendError(
+        'Runtime занят: идёт генерация. Смена модели/параметров будет применена после её завершения — повторите запрос.',
+        { code: 'RUNTIME_BUSY', status: 409 }
+      );
+    }
+
     // Уже загружен (или ещё загружается) тот же файл с теми же параметрами —
     // ждём /health до loadTimeoutMs: параллельный запрос (Chat ↔ Agent) ждёт
     // окончания загрузки, а не убивает её посреди.
-    if (this.proc && this.modelFile === params.file && this._startKeyStr === key) {
+    if (sameRuntime) {
       const ok = await this._waitHealth(Math.max(1500, this.loadTimeoutMs));
       if (ok) return this.baseUrl;
       await this._stopProc(true); // мёртвый/завис — чистый перезапуск
@@ -607,7 +640,24 @@ export class LlamaCppBackend {
 
     const tServer0 = Date.now();
     const wasRunning = Boolean(this.proc && this.modelFile === meta.file);
-    const baseUrl = await this.ensureServer({ file: meta.file, contextTokens, threads, threadsBatch, numBatch, useMmap, cacheReuse, profile });
+    // v0.6.1: считаем активные генерации УЖЕ на этапе загрузки модели — иначе
+    // между «health-ok первого запроса» и «першей порцией стрима» остаётся окно,
+    // в котором чужой ensureServer с другими параметрами успевает убить runtime.
+    this._activeStreams++;
+    try {
+      const baseUrl = await this.ensureServer({ file: meta.file, contextTokens, threads, threadsBatch, numBatch, useMmap, cacheReuse, profile });
+      return await this._generateStreaming({ model, messages, baseUrl, meta, contextTokens, maxOutputTokens,
+        threads, threadsBatch, numBatch, useMmap, cacheReuse, profile, signal, onToken, onServerReady, onHeaders,
+        tServer0, wasRunning });
+    } finally {
+      this._activeStreams = Math.max(0, this._activeStreams - 1);
+    }
+  }
+
+  async _generateStreaming({ model, messages, baseUrl, meta, contextTokens = 4096, maxOutputTokens = 512,
+                            threads = 0, threadsBatch = 0, numBatch = 0, useMmap = null, cacheReuse = 0,
+                            profile = null, signal, onToken, onServerReady = null, onHeaders = null,
+                            tServer0, wasRunning }) {
     const serverInfo = {
       restarted: !wasRunning,
       loadMs: this.lastLoadMs,
@@ -655,7 +705,20 @@ export class LlamaCppBackend {
       clearTimeout(connectTimer);
       signal?.removeEventListener('abort', onAbort);
       if (signal?.aborted) throw err;
-      throw new BackendError(`Запрос к llama-server (${baseUrl}) не удался: ${err.message}. Процесс мог завершиться — попробуйте снова.`, { code: 'BACKEND_UNREACHABLE', cause: err });
+      // v0.6.1: если llama-server умер МЕЖДУ health-ok и этим запросом —
+      // диагностируем честно (код выхода + хвост stderr), а не голое
+      // «fetch failed». Состояние процесса сбрасываем: следующий запрос
+      // перезапустит runtime с нуля.
+      const proc = this.proc;
+      const died = proc && (proc.exitCode !== null || proc.signalCode !== null);
+      let extra = '';
+      if (died) {
+        const info = this.exitInfo || {};
+        const tail = String(info.stderrTail || '').slice(-400);
+        extra = ` Процесс llama-server завершился (код ${info.code ?? '?'}${info.signal ? `, сигнал ${info.signal}` : ''}).${tail ? ` stderr: ${tail}` : ''}`;
+        this._resetProc();
+      }
+      throw new BackendError(`Запрос к llama-server (${baseUrl}) не удался: ${err.message}.${extra || ' Процесс мог завершиться — попробуйте снова.'}`, { code: died ? 'RUNTIME_DIED' : 'BACKEND_UNREACHABLE', cause: err });
     }
 
     if (res.status === 404) {
@@ -709,6 +772,16 @@ export class LlamaCppBackend {
         e.code = 'CANCELLED';
         e.name = 'CancelledError';
         throw e;
+      }
+      // v0.6.1: смерть llama-server посреди стрима — та же честная диагностика:
+      // код выхода и хвост stderr вместо голого «terminated».
+      const proc = this.proc;
+      const died = proc && (proc.exitCode !== null || proc.signalCode !== null);
+      if (died) {
+        const info = this.exitInfo || {};
+        const tail = String(info.stderrTail || '').slice(-400);
+        this._resetProc();
+        throw new BackendError(`Стрим прервался: llama-server завершился (код ${info.code ?? '?'}${info.signal ? `, сигнал ${info.signal}` : ''}).${tail ? ` stderr: ${tail}` : ' Процесс завершился без диагностики.'}`, { code: 'RUNTIME_DIED', cause: err });
       }
       throw new BackendError(`Стрим прервался: ${err.message}`, { code: 'BACKEND_ERROR', cause: err });
     } finally {

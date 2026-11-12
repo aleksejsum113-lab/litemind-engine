@@ -19,6 +19,12 @@ import * as wsx from '../project/workspace.js';
 import { extractText } from '../attachments/extract.js';
 import { saveConfig } from '../config.js';
 import { AgentManager } from '../agent/session.js';
+// ТЗ v0.6.1 §2–5: Генератор изображений (stable-diffusion.cpp) — CLI-процесс,
+// без сторонних портов; память проверяется тем же gate'ом, что и у LLM.
+import { ImageGenManager, sanitizeParams } from '../image/generate.js';
+import { ImageGallery } from '../image/gallery.js';
+import { checkStartBudget, dynamicReserveMb } from '../resource/gate.js';
+import { safeImageModelName } from '../image/models.js';
 import { createWebContext, DEFAULT_WEB_CONFIG } from '../web/fetcher.js';
 import { DiscoveryManager } from '../discovery/discovery.js';
 import {
@@ -150,6 +156,17 @@ function readBody(req, maxBytes = MAX_BODY) {
 }
 
 export function createServer({ config, engine, logger, downloads: downloadsOverride = null, onEngineStopped = null }) {
+  // v0.6.1: предохранители процесса. Без них ЛЮБОЕ необработанное отклонение
+  // (Node >= 15 — crash по умолчанию) или редкое событие 'error' на потоке
+  // убивало весь движок: smoke в CI показывал «после приёма задачи движок
+  // целиком не отвечает». Теперь сбой пишется в журнал, сервер продолжает
+  // отвечать остальным запросам (не маскировка ошибки — её фиксация).
+  process.on('unhandledRejection', (reason) => {
+    try { logger?.error('unhandledRejection (сервер продолжает работу)', { error: String(reason?.stack || reason).slice(0, 1200) }); } catch { /* */ }
+  });
+  process.on('uncaughtException', (err) => {
+    try { logger?.error('uncaughtException (сервер продолжает работу)', { error: String(err?.stack || err).slice(0, 1200) }); } catch { /* */ }
+  });
   // --- LiteMind v0.2 services -----------------------------------------
   // DownloadManager можно передать снаружи (index.js/Desktop), чтобы полный
   // stop() хоста отменял те же загрузки, что видит API (ТЗ §16.3).
@@ -173,6 +190,38 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
   const webCtx = createWebContext(config);
   const agent = new AgentManager({ config, engine, logger });
   agent.setWebContext(webCtx);
+  // ТЗ v0.6.1 §5: генерация изображений и LLM делят одну память — при
+  // нехватке честно предлагаем выгрузить модель, а не висим/падаем.
+  const imageGateVerdict = async (est) => {
+    const m = engine.sampler?.latest ?? await engine.sampler?.sample?.().catch(() => null) ?? null;
+    if (!m || !Number.isFinite(m.availableRamMb)) {
+      return { allowed: true, severity: 'warn', reason: 'Память не измерена — запуск с предупреждением.' };
+    }
+    const reserve = dynamicReserveMb({
+      baseReserveMb: 1024,
+      availableRamMb: m.availableRamMb,
+      totalRamMb: m.totalRamMb,
+      hardFaultsPerSec: m.hardFaultsPerSec ?? null,
+      systemCpuPercent: m.cpuPercent ?? null
+    });
+    const verdict = checkStartBudget({
+      estimatedMb: est.estimateMb,
+      availableRamMb: m.availableRamMb,
+      totalRamMb: m.totalRamMb,
+      reserveMb: reserve.reserveMb,
+      maxRamUsageFraction: config.resource?.maxRamUsageFraction ?? 0.75
+    });
+    const llm = engine.backend?.runtimeInfo?.();
+    if (llm?.running && !verdict.allowed) {
+      verdict.reason = 'Недостаточно памяти для генерации изображения. Сейчас загружена чат-модель — нажмите «Выгрузить» в разделе «Мои модели», затем повторите.' + (verdict.reason ? ` (${verdict.reason})` : '');
+    }
+    return verdict;
+  };
+  const imageGallery = new ImageGallery(
+    config.image?.galleryDir ?? path.join(path.dirname(path.resolve(config.models.rootDir)), 'images')
+  );
+  const imageGen = new ImageGenManager({ config, log: logger, gallery: imageGallery, gate: imageGateVerdict });
+
   // ТЗ v0.6.2: Model Discovery — общий загрузчик, общий compat, общая папка моделей.
   const discovery = new DiscoveryManager({ config, logger, downloads });
   discovery.schedule();
@@ -372,6 +421,7 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
           engine.beginStop();
           await downloads.cancelAll();
           await engine.stopAllModels();
+          await imageGen.shutdown(); // v0.6.1: корректное завершение генерации изображений
         } catch (err) {
           logger?.error('engine stop sequence failed', { error: err.message });
         }
@@ -956,6 +1006,7 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
             engine.beginStop();
             await downloads.cancelAll();
             await engine.stopAllModels();
+            await imageGen.shutdown(); // v0.6.1: корректное завершение генерации изображений
           } catch (err) {
             logger?.error('shutdown sequence failed', { error: err.message });
           }
@@ -971,7 +1022,85 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       return;
     }
 
-    // --- OpenAI compatible ----------------------------------------------
+    // --- ТЗ v0.6.1 §2: Генератор изображений ----------------------------
+
+    if (req.method === 'GET' && p === '/api/image/status') {
+      const info = await imageGen.backendInfo();
+      const st = imageGen.status();
+      return json(res, 200, {
+        backend: info,
+        busy: st.busy,
+        job: st.job,
+        modelsDir: imageGen.imageModelsDir(),
+        galleryDir: imageGallery.dir,
+        defaults: {
+          steps: config.image?.defaultSteps ?? 12,
+          cfg: config.image?.defaultCfg ?? 7,
+          threads: config.image?.threads ?? 0
+        },
+        llmRunning: Boolean(engine.backend?.runtimeInfo?.().running)
+      });
+    }
+
+    if (req.method === 'GET' && p === '/api/image/models') {
+      const models = await imageGen.listModels();
+      return json(res, 200, { models, modelsDir: imageGen.imageModelsDir() });
+    }
+
+    if (req.method === 'POST' && p === '/api/image/generate') {
+      const body = await readBody(req);
+      const params = sanitizeParams(body);
+      if (!params.prompt.trim()) {
+        return openaiError(res, 400, 'Введите текстовое описание изображения (промпт).', 'invalid_request_error');
+      }
+      try {
+        const st = await imageGen.generate({
+          modelFile: body.modelFile ?? null,
+          modelName: body.model ?? null,
+          params
+        });
+        return json(res, 200, st);
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, err.code || 'image_error', err.details ?? null);
+      }
+    }
+
+    if (req.method === 'GET' && p === '/api/image/job') {
+      return json(res, 200, imageGen.status());
+    }
+
+    if (req.method === 'POST' && p === '/api/image/stop') {
+      return json(res, 200, await imageGen.stop());
+    }
+
+    if (req.method === 'GET' && p === '/api/image/gallery') {
+      return json(res, 200, { items: await imageGallery.list(), dir: imageGallery.dir });
+    }
+
+    if (req.method === 'GET' && p === '/api/image/file') {
+      let file;
+      try { file = imageGallery.fileFor(url.searchParams.get('name') ?? ''); }
+      catch { return openaiError(res, 400, 'Недопустимое имя файла галереи.', 'invalid_request_error'); }
+      let st;
+      try { st = await fs.promises.stat(file); }
+      catch { return openaiError(res, 404, 'Файл не найден.', 'invalid_request_error'); }
+      res.writeHead(200, { 'content-type': 'image/png', 'content-length': st.size, 'cache-control': 'no-cache' });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+
+    if ((req.method === 'POST' && p === '/api/image/delete') || (req.method === 'DELETE' && p === '/api/image/item')) {
+      const name = req.method === 'DELETE'
+        ? url.searchParams.get('name')
+        : (await readBody(req)).name;
+      try {
+        await imageGallery.remove(name ?? '');
+        return json(res, 200, { deleted: name });
+      } catch (err) {
+        return openaiError(res, err.code === 'ENOENT' ? 404 : 400, `Не удалось удалить: ${err.message}`, 'invalid_request_error');
+      }
+    }
+
 
     // --- LiteMind v0.2: hardware, catalog, downloads, install -----------
     await refreshInstalled();
@@ -1113,7 +1242,14 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
             const byId = new Map(catalog.map((m) => [m.id, m]));
             for (const m of remote.models) {
               if (!m || typeof m.id !== 'string' || !Array.isArray(m.files) || !m.files.length) continue;
-              byId.set(m.id, { ...(byId.get(m.id) ?? {}), ...m });
+              // v0.6.1: из удалённого каталога берём только честные записи —
+              // у каждого файла обязаны быть проверяемые размер и SHA-256.
+              // Иначе Discovery тащит в список готовых моделей битые/фиктивные
+              // файлы (случай smoke №48: 512-байтовый указатель LFS).
+              const okFiles = m.files.filter((f) => f && typeof f.url === 'string' && f.url.startsWith('https://')
+                && Number(f.sizeBytes) > 0 && typeof f.sha256 === 'string' && /^[0-9a-fA-F]{64}$/.test(f.sha256));
+              if (!okFiles.length) continue;
+              byId.set(m.id, { ...(byId.get(m.id) ?? {}), ...m, files: okFiles });
             }
             catalog = [...byId.values()];
             overrideSource = 'remote';
@@ -1147,15 +1283,17 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       const model = catalogEntry(body.modelId);
       if (!model) return openaiError(res, 404, `Unknown catalog model: ${body.modelId}`, 'invalid_request_error');
       const file = model.files.find((f) => f.name === body.fileName) ?? model.files[model.files.length - 1];
-      // Этап 1Б §5.5: безопасность — источник, имя файла и папка проверяются
-      // до старта (исполняемые файлы, обход папок и посторонние хосты запрещены).
-      const urlCheck = checkDownloadUrl(file.url);
+      // ТЗ v0.6.1 §4: модели изображений (категория image-*) — safetensors/gguf
+      // в папку моделей изображений; LLM — gguf в папку моделей.
+      const isImageModel = String(model.category ?? '').startsWith('image-');
+      const kind = isImageModel ? 'image' : 'llm';
+      const urlCheck = checkDownloadUrl(file.url, { ext: kind === 'llm' ? 'gguf' : ['safetensors', 'gguf'] });
       if (!urlCheck.ok) return openaiError(res, 400, `Ссылка отклонена: ${urlCheck.reason}`, 'invalid_request_error', 'URL_REJECTED');
       let name;
       let targetDir;
       try {
-        name = safeGgufName(file.name);
-        targetDir = safeTargetDir(body.targetDir || config.models.rootDir);
+        name = isImageModel ? safeImageModelName(file.name) : safeGgufName(file.name);
+        targetDir = safeTargetDir(body.targetDir || (isImageModel ? imageGen.imageModelsDir() : config.models.rootDir));
       } catch (err) {
         return openaiError(res, 400, err.message, 'invalid_request_error', err.code);
       }
@@ -1180,7 +1318,7 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       } catch {
         /* каталог ещё не создан — mkdir сделает менеджер; проверка free места невозможна */
       }
-      const job = await downloads.start({ id: model.id, url: file.url, name, targetDir, sizeBytes: file.sizeBytes, sha256: file.sha256 ?? null });
+      const job = await downloads.start({ id: model.id, url: file.url, name, targetDir, sizeBytes: file.sizeBytes, sha256: file.sha256 ?? null, kind });
       return json(res, 202, job);
     }
 
@@ -1758,11 +1896,15 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       connection: 'keep-alive',
       'x-accel-buffering': 'no'
     });
-    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    // v0.6.1: запись в сокет, который клиент уже закрыл, выбрасывала
+    // событие 'error' без слушателя → uncaughtException → смерть движка.
+    const send = (obj) => {
+      if (res.writableEnded) return;
+      try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* клиент ушёл */ }
+    };
     const finish = (reason) => {
       send({ id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: {}, finish_reason: reason }] });
-      res.write('data: [DONE]\n\n');
-      res.end();
+      try { if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); } } catch { /* */ }
     };
 
     const abort = new AbortController();

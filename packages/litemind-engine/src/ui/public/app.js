@@ -14,8 +14,8 @@ const state = { streaming: false, engineOnline: null, catalog: null, wsDir: null
 // системные кнопки окна и обновляем имя раздела; активная модель — в updateWelcomeHint.
 if (bridge()) document.body.classList.add('in-electron');
 const TAB_TITLES = {
-  agent: 'AI Agent',
-  chat: 'Чат', models: 'Мои модели', catalog: 'Каталог моделей', discovery: 'Новые модели', downloads: 'Загрузки',
+  agent: 'AI Agent', imagegen: 'Генератор изображений', discovery: 'Новые модели',
+  chat: 'Чат', models: 'Мои модели', catalog: 'Каталог моделей', downloads: 'Загрузки',
   projects: 'Проекты', workspace: 'Workspace', terminal: 'AI Terminal', home: 'Состояние',
   hardware: 'Железо', monitor: 'Мониторинг', control: 'Управление', settings: 'Настройки'
 };
@@ -106,7 +106,7 @@ function switchTab(name) {
   ({ catalog: loadCatalog, downloads: refreshDownloads, hardware: loadHardware, settings: loadSettings,
      models: loadMyModels, monitor: loadMonitor, control: refreshControl, home: refreshStatus,
      chat: loadChat, projects: loadProjects, workspace: loadWorkspace, terminal: loadTerminal,
-     agent: window.__litemindLoadAgent, discovery: window.__litemindLoadDiscovery })[name]?.();
+     agent: window.__litemindLoadAgent, imagegen: loadImageGen, discovery: window.__litemindLoadDiscovery })[name]?.();
   const hash = '#' + name;
   if (location.hash !== hash) history.replaceState(null, '', hash);
   document.getElementById('app').classList.remove('sidebar-open');
@@ -3394,6 +3394,224 @@ $('set-adaptive').addEventListener('change', (e) =>
   api('/api/adaptive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: e.target.checked }) }).catch((err) => showError(err.message)));
 $('set-compaction').addEventListener('change', (e) =>
   api('/api/adaptive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contextCompaction: e.target.checked }) }).catch((err) => showError(err.message)));
+
+/* ==================== Генератор изображений (ТЗ v0.6.1 §2–5) ==================== */
+// Локальная генерация через stable-diffusion.cpp: задание, прогресс, галерея,
+// повторы, сохранение. Никаких сторонних сайтов — всё через API движка.
+const ig = { poll: null, models: [], lastParams: null };
+
+function igFileUrl(name) { return `${ENGINE_BASE}/api/image/file?name=${encodeURIComponent(name)}`; }
+
+function igFmtMs(ms) {
+  if (!Number.isFinite(ms)) return '—';
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s} с` : `${Math.floor(s / 60)} мин ${s % 60} с`;
+}
+
+async function igLoadModels() {
+  try {
+    const r = await api('/api/image/models');
+    ig.models = r.models || [];
+    const sel = $('ig-model');
+    const prev = sel.value;
+    sel.innerHTML = ig.models.length
+      ? ig.models.map((m) => `<option value="${esc(m.file)}">${esc(m.name)} · ${fmtSize(m.sizeBytes)}${m.ok ? '' : ' (повреждена)'}</option>`).join('')
+      : '<option value="">— скачайте модель в «Каталоге моделей» —</option>';
+    if (prev && ig.models.some((m) => m.file === prev)) sel.value = prev;
+  } catch { /* статус покажет проблему */ }
+}
+
+async function igLoadGallery() {
+  try {
+    const r = await api('/api/image/gallery');
+    const items = r.items || [];
+    const box = $('ig-gallery');
+    if (!items.length) { box.innerHTML = '<span class="muted">Пока пусто</span>'; return; }
+    box.innerHTML = items.map((it) => `
+      <figure class="ig-item" data-name="${esc(it.name)}">
+        <img src="${igFileUrl(it.name)}" loading="lazy" alt="${esc(it.prompt || 'изображение')}" title="${esc(it.prompt || '')}" />
+        <figcaption>
+          <div class="ig-item-meta">${esc(it.model || '—')} · ${it.width ?? '?'}×${it.height ?? '?'} · ${it.steps ?? '—'} шаг. · ${igFmtMs(it.durationMs)}</div>
+          <div class="ig-item-btns">
+            <button class="link-btn ig-view" title="Открыть в полном размере">открыть</button>
+            <button class="link-btn ig-del" title="Удалить">удалить</button>
+          </div>
+        </figcaption>
+      </figure>`).join('');
+  } catch { /* офлайн */ }
+}
+
+function igSetBusy(busy) {
+  $('ig-generate').disabled = busy;
+  $('ig-stop').disabled = !busy;
+  $('ig-progress-wrap').hidden = !busy;
+  if (!busy) $('ig-progress-bar').style.width = '0%';
+}
+
+function igApplyStatus(st) {
+  igSetBusy(Boolean(st.busy));
+  if (st.job) {
+    const j = st.job;
+    $('ig-phase').textContent = `${j.phaseRu || '—'} · ${j.percent ?? 0}% · прошло ${igFmtMs(j.elapsedMs)}${j.etaMs != null ? ` · осталось ≈ ${igFmtMs(j.etaMs)}` : ''}`;
+    $('ig-progress-bar').style.width = `${j.percent ?? 0}%`;
+  }
+}
+
+function igStartPoll() {
+  clearInterval(ig.poll);
+  ig.poll = setInterval(async () => {
+    let st;
+    try { st = await api('/api/image/job'); } catch { return; }
+    igApplyStatus(st);
+    const j = st.job;
+    if (!j) return;
+    if (j.state === 'done') {
+      clearInterval(ig.poll);
+      igSetBusy(false);
+      $('ig-phase').textContent = `Готово за ${igFmtMs(j.durationMs)}`;
+      if (j.result?.name) {
+        $('ig-result-card').hidden = false;
+        $('ig-preview').src = igFileUrl(j.result.name);
+        $('ig-preview').dataset.name = j.result.name;
+        $('ig-result-meta').textContent = `Модель: ${j.model} · ${j.params.width}×${j.params.height} · шагов: ${j.params.steps} · CFG ${j.params.cfg} · seed: ${j.result.seed ?? j.params.seed} · время: ${igFmtMs(j.durationMs)}`;
+      }
+      igLoadGallery();
+    } else if (j.state === 'error') {
+      clearInterval(ig.poll);
+      igSetBusy(false);
+      $('ig-error').hidden = false;
+      $('ig-error').textContent = j.error || 'Генерация не удалась.';
+    } else if (j.state === 'stopped') {
+      clearInterval(ig.poll);
+      igSetBusy(false);
+      $('ig-phase').textContent = 'Остановлено пользователем';
+    }
+  }, 1500);
+}
+
+async function igGenerate() {
+  $('ig-error').hidden = true;
+  const modelFile = $('ig-model').value;
+  if (!modelFile) {
+    $('ig-error').hidden = false;
+    $('ig-error').textContent = 'Сначала скачайте модель: «Каталог моделей» → «Генерация изображений · SD 1.5» (квант Q4_0 — самый лёгкий для слабых ПК).';
+    return;
+  }
+  const [w, h] = ($('ig-size').value || '512x512').split('x').map(Number);
+  const body = {
+    modelFile,
+    prompt: $('ig-prompt').value.trim(),
+    negative: $('ig-negative').value.trim(),
+    width: w, height: h,
+    steps: Number($('ig-steps').value) || 12,
+    cfg: Number($('ig-cfg').value) || 7,
+    seed: $('ig-seed').value === '' ? -1 : Number($('ig-seed').value),
+    threads: Number($('ig-threads').value) || 0
+  };
+  if (!body.prompt) {
+    $('ig-error').hidden = false;
+    $('ig-error').textContent = 'Введите описание изображения (промпт).';
+    return;
+  }
+  ig.lastParams = { ...body };
+  igSetBusy(true);
+  $('ig-phase').textContent = 'Запуск генерации…';
+  try {
+    const st = await api('/api/image/generate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    igApplyStatus(st);
+    igStartPoll();
+  } catch (err) {
+    // ТЗ §5: нехватка памяти — честно снижаем разрешение и пробуем ещё раз.
+    if (/памят/i.test(err.message) && body.width * body.height > 384 * 384) {
+      $('ig-size').value = '384x384';
+      igSetBusy(false);
+      $('ig-error').hidden = false;
+      $('ig-error').textContent = 'Недостаточно памяти — пробую 384×384. ' + err.message;
+      setTimeout(() => igGenerate(), 600);
+      return;
+    }
+    igSetBusy(false);
+    $('ig-error').hidden = false;
+    $('ig-error').textContent = err.message;
+  }
+}
+
+async function loadImageGen() {
+  try {
+    const st = await api('/api/image/status');
+    $('ig-backend-note').textContent = st.backend?.found
+      ? `бэкенд: stable-diffusion.cpp — ${st.backend.version}`
+      : 'бэкенд генерации не найден — переустановите приложение';
+    let ramNote = '';
+    try {
+      const hw = await api('/api/hardware');
+      const freeGb = hw?.memory?.availableMb != null ? Math.round(hw.memory.availableMb / 1024) : null;
+      if (freeGb != null) ramNote = ` Свободно RAM ≈ ${freeGb} ГБ.`;
+    } catch { /* необязательно */ }
+    $('ig-perf-note').textContent = 'Режим: CPU, совместимая сборка без AVX-требований.' + ramNote
+      + ' Ориентир для слабого 4-ядерного CPU: 512×512 при 12 шагах — примерно 5–20 минут, точное время показывается под результатом. Если памяти мало, движок предложит выгрузить чат-модель или снизит разрешение.'
+      + (st.llmRunning ? ' ВНИМАНИЕ: сейчас загружена чат-модель — для генерации может понадобиться выгрузить её («Мои модели» → «Выгрузить»).' : '');
+    await igLoadModels();
+    await igLoadGallery();
+    igApplyStatus(st);
+    clearInterval(ig.poll);
+    if (st.busy) igStartPoll();
+  } catch (err) {
+    $('ig-backend-note').textContent = 'движок недоступен: ' + err.message;
+  }
+}
+
+$('ig-generate').addEventListener('click', igGenerate);
+$('ig-stop').addEventListener('click', async () => { try { await api('/api/image/stop', { method: 'POST' }); } catch { /* уже остановлено */ } });
+$('ig-refresh').addEventListener('click', loadImageGen);
+$('ig-seed-rnd').addEventListener('click', () => { $('ig-seed').value = Math.floor(Math.random() * 2147483647); });
+$('ig-steps').addEventListener('input', () => { $('ig-steps-val').textContent = $('ig-steps').value; });
+$('ig-cfg').addEventListener('input', () => { $('ig-cfg-val').textContent = $('ig-cfg').value; });
+$('ig-copy-prompt').addEventListener('click', async () => {
+  const t = $('ig-prompt').value.trim();
+  if (!t) return;
+  try { await navigator.clipboard.writeText(t); $('ig-copy-prompt').textContent = 'Скопировано'; setTimeout(() => { $('ig-copy-prompt').textContent = 'Копировать промпт'; }, 1500); } catch { /* нет доступа к буферу */ }
+});
+$('ig-regen').addEventListener('click', () => {
+  const p = ig.lastParams;
+  if (!p) { $('ig-error').hidden = false; $('ig-error').textContent = 'Ещё не было генераций в этой сессии.'; return; }
+  $('ig-prompt').value = p.prompt; $('ig-negative').value = p.negative || '';
+  $('ig-size').value = `${p.width}x${p.height}`; $('ig-steps').value = p.steps; $('ig-cfg').value = p.cfg;
+  $('ig-steps-val').textContent = p.steps; $('ig-cfg-val').textContent = p.cfg;
+  $('ig-seed').value = p.seed >= 0 ? p.seed : '';
+  $('ig-threads').value = p.threads ?? 0;
+  igGenerate();
+});
+$('ig-save').addEventListener('click', () => {
+  const name = $('ig-preview').dataset.name;
+  if (!name) return;
+  const a = document.createElement('a');
+  a.href = igFileUrl(name); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+});
+$('ig-open-full').addEventListener('click', () => {
+  const name = $('ig-preview').dataset.name;
+  if (name) window.open(igFileUrl(name), '_blank');
+});
+$('ig-gallery').addEventListener('click', (e) => {
+  const fig = e.target.closest('.ig-item');
+  if (!fig) return;
+  const name = fig.dataset.name;
+  if (e.target.classList.contains('ig-del')) {
+    if (!confirm('Удалить это изображение?')) return;
+    api('/api/image/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) })
+      .then(() => igLoadGallery())
+      .catch((err) => alert(err.message));
+  } else if (e.target.classList.contains('ig-view')) {
+    window.open(igFileUrl(name), '_blank');
+  } else {
+    // Клик по миниатюре — показать как текущий результат с параметрами.
+    $('ig-result-card').hidden = false;
+    $('ig-preview').src = igFileUrl(name);
+    $('ig-preview').dataset.name = name;
+    $('ig-result-meta').textContent = 'Из галереи: ' + name;
+  }
+});
 
 /* ============================ запуск ============================ */
 loadChat();

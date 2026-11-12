@@ -40,7 +40,7 @@ const ALLOWED_HOST_SUFFIXES = ['.huggingface.co', '.hf.co'];
  *  allowLoopbackHttp — только для тестового стенда (локальный http-сервер
  *  вместо HF); в продакшне выключен по умолчанию и не ослабляет проверку
  *  реальных источников. */
-export function checkDownloadUrl(rawUrl, { allowLoopbackHttp = false } = {}) {
+export function checkDownloadUrl(rawUrl, { allowLoopbackHttp = false, ext = 'gguf' } = {}) {
   let u;
   try { u = new URL(rawUrl); } catch { return { ok: false, reason: 'URL не распознан' }; }
   if (u.protocol !== 'https:') {
@@ -53,7 +53,18 @@ export function checkDownloadUrl(rawUrl, { allowLoopbackHttp = false } = {}) {
     const allowed = ALLOWED_DOWNLOAD_HOSTS.includes(host) || ALLOWED_HOST_SUFFIXES.some((s) => host.endsWith(s));
     if (!allowed) return { ok: false, reason: `Источник ${host} не входит в список разрешённых (официальные Hugging Face).` };
   }
-  if (!/\.gguf$/i.test(u.pathname)) return { ok: false, reason: 'Загружать можно только файлы .gguf — исполняемые файлы под видом моделей запрещены.' };
+  // v0.6.1 §4: расширение зависит от вида модели — LLM: .gguf;
+  // генерация изображений: .safetensors и .gguf. Исполняемые файлы запрещены.
+  const exts = (Array.isArray(ext) ? ext : [ext]).map((e) => String(e).toLowerCase());
+  const extRe = new RegExp(`\\.(${exts.map((e) => e.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})$`, 'i');
+  if (!extRe.test(u.pathname)) {
+    return {
+      ok: false,
+      reason: exts.length === 1 && exts[0] === 'gguf'
+        ? 'Загружать можно только файлы .gguf — исполняемые файлы под видом моделей запрещены.'
+        : `Загружать можно только файлы моделей: ${exts.map((e) => '.' + e).join(', ')}.`
+    };
+  }
   return { ok: true };
 }
 

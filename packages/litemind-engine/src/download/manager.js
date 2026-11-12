@@ -51,10 +51,14 @@ export class DownloadManager {
   /**
    * Начать загрузку. Если в targetDir уже есть <name>.part — продолжит с offset.
    */
-  async start({ id, url, name, targetDir, sizeBytes = null, sha256 = null }) {
+  async start({ id, url, name, targetDir, sizeBytes = null, sha256 = null, kind = 'llm' }) {
     // Этап 1Б §5.5: даже при программном вызове менеджер не качает ничего,
-    // кроме официальных GGUF-источников (защита от исполняемых файлов).
-    const urlCheck = checkDownloadUrl(url, { allowLoopbackHttp: this.allowLoopbackHttp });
+    // кроме официальных источников моделей (защита от исполняемых файлов).
+    // v0.6.1 §4: kind='image' разрешает также .safetensors (SD-чекпоинты).
+    const urlCheck = checkDownloadUrl(url, {
+      allowLoopbackHttp: this.allowLoopbackHttp,
+      ext: kind === 'llm' ? 'gguf' : ['safetensors', 'gguf']
+    });
     if (!urlCheck.ok) throw new DownloadError(`Ссылка отклонена: ${urlCheck.reason}`, { code: 'URL_REJECTED', status: 400 });
     if ([...this.jobs.values()].some((j) => j.key === `${id}:${name}` && ['downloading', 'paused'].includes(j.state))) {
       throw new DownloadError('Эта модель уже скачивается', { code: 'ALREADY_DOWNLOADING', status: 409 });
@@ -79,6 +83,7 @@ export class DownloadManager {
       id: `dl_${NEXT_ID++}`,
       key: `${id}:${name}`,
       modelId: id,
+      kind,
       url,
       name,
       targetDir,
@@ -217,27 +222,76 @@ export class DownloadManager {
     if (job.sizeBytes && size !== job.sizeBytes) {
       throw new DownloadError(`Размер файла не совпал: получено ${size}, ожидалось ${job.sizeBytes}. Файл .part сохранён — нажмите «Продолжить».`, { code: 'SIZE_MISMATCH' });
     }
-    await fs.promises.rename(job.partPath, job.finalPath);
-    // ТЗ §4: проверка SHA-256 после скачивания (каталог содержит эталон).
-    // Несовпадение не удаляет файл, но честно помечает загрузку ошибкой.
+
+    // v0.6.1: валидация содержимого ДО финализации. Случай smoke №48: источник
+    // отдал 512-байтовый указатель git-lfs (или HTML/JSON-ошибку), при неизвестном
+    // эталонном размере проверка размера пропускалась, файл честно переименовывался
+    // в .gguf и попадал в «готовые модели». Теперь фиктивный файл не пройдёт:
+    //  1) первые 4 байта обязаны быть GGUF-магией 'GGUF' (для kind='image' —
+    //     либо GGUF, либо заголовок safetensors: 8 байт длины + '{');
+    //  2) LFS-указатель распознаётся и отвергается явно;
+    //  3) минимальный размер: GGUF LLM — 1 МиБ, чекпоинт SD — 64 МиБ;
+    //  4) SHA-256 проверяется ДО переименования, битый файл удаляется.
+    const MIN_GGUF_BYTES = job.kind === 'image' ? 64 * 1024 * 1024 : 1024 * 1024;
+    if (size < MIN_GGUF_BYTES) {
+      const head = await this._readHead(job.partPath, 256);
+      await fs.promises.rm(job.partPath, { force: true });
+      const lfs = /^version https:\/\/git-lfs/i.test(head);
+      throw new DownloadError(
+        lfs
+          ? `Источник вернул LFS-указатель (${size} байт) вместо файла модели. Файл удалён — модель недоступна по этой ссылке.`
+          : `Файл подозрительно мал (${size} байт) — это не файл модели. Загрузка отклонена, файл удалён.`,
+        { code: lfs ? 'LFS_POINTER' : 'TOO_SMALL', status: 422 }
+      );
+    }
+    {
+      const magic = await this._readHead(job.partPath, 16);
+      const isGgufMagic = magic.startsWith('GGUF');
+      const isSafetensors = magic.length >= 9 && magic[8] === '{';
+      const magicOk = job.kind === 'image' ? (isGgufMagic || isSafetensors) : isGgufMagic;
+      if (!magicOk) {
+        const head = await this._readHead(job.partPath, 256);
+        await fs.promises.rm(job.partPath, { force: true });
+        const lfs = /^version https:\/\/git-lfs/i.test(head);
+        const kindTxt = lfs ? 'LFS-указатель вместо файла модели' : head.startsWith('<') || head.startsWith('{') ? 'HTML/JSON-ответ источника вместо файла' : job.kind === 'image' ? 'файл без магии GGUF/safetensors' : 'файл без GGUF-магии';
+        throw new DownloadError(`Источник вернул ${kindTxt}. Загрузка отклонена, файл удалён.`, { code: 'NOT_GGUF', status: 422 });
+      }
+    }
+
+    // ТЗ §4: проверка SHA-256 (каталог содержит эталон) — до переименования.
     if (job.sha256) {
-      try {
-        const actual = (await sha256File(job.finalPath)).toLowerCase();
+      let actual = null;
+      try { actual = (await sha256File(job.partPath)).toLowerCase(); } catch { actual = null; }
+      if (actual) {
         job.shaVerified = actual === job.sha256;
         if (!job.shaVerified) {
+          await fs.promises.rm(job.partPath, { force: true });
           job.state = 'error';
-          job.error = `SHA-256 не совпал (ожидался ${job.sha256.slice(0, 12)}…, получен ${actual.slice(0, 12)}…). Файл оставлен на диске — удалите его и скачайте заново.`;
+          job.error = `SHA-256 не совпал (ожидался ${job.sha256.slice(0, 12)}…, получен ${actual.slice(0, 12)}…). Повреждённый файл удалён — скачайте заново.`;
           this._emit({ type: 'verify', shaVerified: false, ...this._snapshot(job) });
           return;
         }
         this._emit({ type: 'verify', shaVerified: true, ...this._snapshot(job) });
-      } catch (err) {
+      } else {
         job.shaVerified = null; // не смогли посчитать — не блокируем результат
       }
     }
+    await fs.promises.rename(job.partPath, job.finalPath);
     job.state = 'done';
     job.etaSeconds = 0;
     this._emit({ type: 'done', ...this._snapshot(job) });
+  }
+
+  /** v0.6.1: первые n байт файла как ASCII (для магии GGUF и распознавания LFS). */
+  async _readHead(filePath, n) {
+    const fh = await fs.promises.open(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(n);
+      const { bytesRead } = await fh.read(buf, 0, n, 0);
+      return buf.subarray(0, bytesRead).toString('latin1');
+    } finally {
+      await fh.close();
+    }
   }
 
   /** Пауза: закрывает соединение, .part сохраняется, resume продолжит с offset. */

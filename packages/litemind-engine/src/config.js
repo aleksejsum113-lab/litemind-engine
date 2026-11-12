@@ -139,6 +139,24 @@ export const DEFAULT_CONFIG = {
     stepMaxOutputTokens: 800, // лимит ответа модели на один шаг
     maxRuntimeMs: 1200000     // предохранитель по времени на прогон (20 мин)
   },
+  // Генератор изображений (ТЗ v0.6.1 §2–5): stable-diffusion.cpp как CLI-процесс.
+  image: {
+    // Путь к sd(.exe). null → поиск: env LITEMIND_SD_BIN →
+    // <установка>\resources\sd\ → PATH.
+    sdPath: null,
+    // null → <models.rootDir>/image (Windows: E:\LiteMind\models\image).
+    modelsDir: null,
+    // null → <корень моделей>/../images (Windows: E:\LiteMind\images).
+    galleryDir: null,
+    threads: 0,            // 0 = авто (ядра-1, не больше 4 — Low Resource)
+    vaeOnCpu: true,        // экономия RAM на ПК без GPU
+    clipOnCpu: true,
+    vaeTiling: true,
+    diffusionFa: true,     // flash-attention диффузии; недоступный флаг снимается автоматически
+    defaultSteps: 12,      // слабые ПК: меньше шагов = быстрее
+    defaultCfg: 7,
+    idleTimeoutMs: 600000  // нет вывода 10 мин → честная ошибка задания
+  },
   // Model Discovery (ТЗ v0.6.2): автоматическое обнаружение новых моделей.
   // Качаются ТОЛЬКО метаданные (списки моделей и деревья файлов, ~десятки
   // запросов раз в сутки); веса — исключительно по кнопке пользователя.

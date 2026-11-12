@@ -26,7 +26,7 @@ function build({ withServer = false } = {}) {
   const logger = new Logger({ dir: config.diagnostics.dir, level: config.diagnostics.level, console: withServer });
   const sampler = new MetricsSampler({ intervalMs: config.resource.pollIntervalMs });
   const perf = new PerfRecorder();
-  const backend = createBackend(config);
+  const backend = createBackend(config, { log: logger }); // v0.6.1: логи llama-server (spawn/health/exit) больше не теряются — в CI журнал был пуст именно из-за этого
   const engine = new Engine({ config, backend, sampler, logger, perf });
   return { config, logger, sampler, perf, backend, engine };
 }

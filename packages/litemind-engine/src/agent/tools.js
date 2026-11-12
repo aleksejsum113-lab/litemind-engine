@@ -231,10 +231,17 @@ export function createToolRegistry({ config, logger } = {}) {
 
       switch (name) {
         case 'list_files': {
+          // v0.6.1: listTree возвращает {dirs, files, skipped, truncated, totalEntries},
+          // а не массив — прежний tree.map() падал с TypeError на каждом вызове.
           const dir = rel(args.dir);
-          const tree = await listTree(root, dir, { limit: MAX_TREE_ENTRIES });
-          const lines = tree.map((e) => `${e.type === 'dir' ? '📁' : '📄'} ${e.path}${e.type === 'file' ? ` (${e.sizeBytes} б)` : ''}`);
-          return { ok: true, result: cap(lines.length ? lines.join('\n') : '(пусто)') };
+          const t = await listTree(root, dir, { limit: MAX_TREE_ENTRIES });
+          const lines = [
+            ...(t.dirs ?? []).map((e) => `📁 ${e.rel}/`),
+            ...(t.files ?? []).map((e) => `📄 ${e.rel}${e.sizeBytes != null ? ` (${e.sizeBytes} б)` : ''}`)
+          ];
+          if (t.truncated) lines.push(`… показаны первые ${t.dirs.length + t.files.length} из ${t.totalEntries} записей`);
+          if (t.skipped?.length) lines.push(`(скрыто: ${t.skipped.join(', ')})`);
+          return { ok: true, result: cap(lines.join('\n') || '(пусто)') };
         }
 
         case 'read_file':

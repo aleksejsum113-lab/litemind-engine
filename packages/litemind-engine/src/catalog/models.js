@@ -29,7 +29,8 @@ export const CATEGORIES = {
   "reasoning": "Логика и анализ (reasoning)",
   "russian": "Русский язык",
   "uncensored-coding": "Ослабленные ограничения · Coding",
-  "uncensored-chat": "Ослабленные ограничения · Общение"
+  "uncensored-chat": "Ослабленные ограничения · Общение",
+  "image-sd15": "Генерация изображений · SD 1.5"
 };
 
 // Назначения моделей (Этап 1Б §2.1). Ключи используются в поле purposes записей.
@@ -53,7 +54,8 @@ export const RUNTIME_VERIFIED_FAMILIES = new Set([
   "vikhr", "gemma2", "gemma3", "llama3.2", "tinyllama", "mistral",
   "ministral", "phi4", "phi3.5", "deepseek-r1", "deepseek-coder",
   "saiga", "starcoder2", "granite-code", "dolphin",
-  "huihui-qwen2.5", "huihui-qwen3", "huihui-qwen3.5", "huihui-llama3.2"
+  "huihui-qwen2.5", "huihui-qwen3", "huihui-qwen3.5", "huihui-llama3.2",
+  "stable-diffusion" // SD 1.5 — проверен вживую через stable-diffusion.cpp (Генератор изображений)
 ]);
 
 export const CATALOG = [
@@ -3338,6 +3340,70 @@ export const CATALOG = [
         "sha256": "b8769fc34d064ccb52667504931bb4ae997eab5d8a22842f18dc55eea378b9b8"
       }
     ]
+  },
+  {
+    "id": "sd15-imagegen",
+    "ollamaName": null,
+    "displayName": "Stable Diffusion 1.5 — генерация изображений",
+    "category": "image-sd15",
+    "restrictions": "standard",
+    "uncensored": false,
+    "uncensoredLabel": null,
+    "tags": [
+      "image",
+      "imagegen",
+      "sd15"
+    ],
+    "languages": [],
+    "params": "0.86B (UNet) + CLIP + VAE",
+    "family": "stable-diffusion",
+    "purpose": "Локальная генерация изображений по текстовому описанию во вкладке «Генератор изображений». Квант Q4_0 — лучший выбор для слабых ПК без AVX: меньше всего RAM, 512×512 за считанные минуты на CPU.",
+    "quality": "Классика Stable Diffusion: предсказуемые результаты, тысячи готовых промптов и LoRA-навыков сообщества.",
+    "speed": "slow",
+    "license": "creatML OpenRAIL-M",
+    "licenseNote": "Базовая модель — CreativeML Open RAIL-M (Runway/CompVis). GGUF-кванты — second-state. Использование — в терминах OpenRAIL-M.",
+    "source": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "repo": "second-state/stable-diffusion-v1-5-GGUF",
+    "quantAuthor": "second-state (GGUF-кванты); базовая модель — Runway ML / CompVis",
+    "contextTokens": null,
+    "tools": false,
+    "vision": false,
+    "notes": "Требуется бэкенд stable-diffusion.cpp (входит в установщик). SHA-256 — официальные LFS-хеши HuggingFace (проверены перекрёстно с локальной загрузкой Q4_0).",
+    "files": [
+      {
+        "quant": "Q4_0 (рекомендуется для слабых ПК)",
+        "name": "stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf",
+        "url": "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf",
+        "sizeBytes": 1566768416,
+        "sha256": "b8944e9fe0b69b36ae1b5bb0185b3a7b8ef14347fe0fa9af6c64c4829022261f"
+      },
+      {
+        "quant": "Q8_0",
+        "name": "stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf",
+        "url": "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf",
+        "sizeBytes": 1763578176,
+        "sha256": "d0555243938c62faeefb4ac93f6c7a053ad373a4290c5256bce229aeb193bf94"
+      },
+      {
+        "quant": "f16 GGUF",
+        "name": "stable-diffusion-v1-5-pruned-emaonly-f16.gguf",
+        "url": "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-f16.gguf",
+        "sizeBytes": 2132586944,
+        "sha256": "da017009aa86a3f46468857d95833435fe55e4a2856afab76ba7722ef8ee4d8b"
+      },
+      {
+        "quant": "safetensors fp32 (pruned emaonly)",
+        "name": "v1-5-pruned-emaonly.safetensors",
+        "url": "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors",
+        "sizeBytes": 4265146304,
+        "sha256": "6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa"
+      }
+    ],
+    "developer": "Runway ML / CompVis / LAION (SD 1.5)",
+    "purposes": [
+      "creative"
+    ],
+    "verifiedAt": "2026-11-12"
   }
 ];
 

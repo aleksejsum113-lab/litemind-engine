@@ -494,6 +494,34 @@ export class AgentManager {
     ].join('\n');
   }
 
+  /**
+   * v0.6.1: модель сессии по умолчанию. Раньше сессия без явной модели уходила
+   * в engine.generate с model: undefined и падала с «Model "undefined" is not
+   * available locally» — локальные тесты этого не ловили, потому что мокали
+   * generateFn. Теперь: явная модель сессии → загруженная прямо сейчас →
+   * первая совместимая локальная модель (выбор запоминается в сессии).
+   */
+  async _resolveModel(s) {
+    if (s.model) return s.model;
+    try {
+      const runtime = await this.engine?.modelRuntime?.();
+      const active = (runtime ?? []).find((m) => m?.id && m.state === 'running');
+      if (active?.id) { s.model = active.id; return s.model; }
+    } catch { /* движок может быть ещё не запущен — попробуем список моделей */ }
+    try {
+      const models = await this.engine?.listModels?.();
+      const compatible = (models ?? []).filter((m) => m?.compatible !== false);
+      const pick = compatible[0] ?? (models ?? [])[0];
+      if (pick?.id) { s.model = pick.id; this._append(s, { role: 'event', type: 'note', text: `модель не задана — использую «${pick.id}»` }); return s.model; }
+    } catch { /* нет ни одной модели — честная ошибка ниже */ }
+    // Живой движок без моделей — честный отказ; тестовый режим (engine: null,
+    // generateFn — мок) принимает undefined, как до появления _resolveModel.
+    if (this.engine) {
+      throw Object.assign(new Error('нет доступной локальной модели: установите или скачайте GGUF-модель и повторите'), { status: 409 });
+    }
+    return undefined;
+  }
+
   async _runLoop(s) {
     this._assertProject(s);
     s.stats.runs++;
@@ -543,7 +571,7 @@ export class AgentManager {
           }
         };
         const res = await this.generateFn({
-          model: s.model ?? undefined,
+          model: await this._resolveModel(s),
           messages: payload,
           maxOutputTokens: this.limits.stepMaxOutputTokens,
           signal: s._ctrl.signal,

@@ -21,13 +21,24 @@ import { makeEngine, fakeMetrics } from './helpers/fixtures.js';
 test('catalog: every entry is complete and internally consistent', () => {
   assert.ok(CATALOG.length >= 10, `expected >= 10 verified models, got ${CATALOG.length}`);
   for (const m of CATALOG) {
-    assert.ok(m.id && m.ollamaName && m.displayName && m.category, `${m.id}: base fields`);
+    // image-модели (Генератор изображений) не приходят из Ollama — ollamaName допустимо null.
+    if (String(m.category).startsWith('image-')) {
+      assert.ok(m.id && m.displayName && m.category, `${m.id}: base fields (image)`);
+    } else {
+      assert.ok(m.id && m.ollamaName && m.displayName && m.category, `${m.id}: base fields`);
+    }
     assert.ok(CATEGORIES[m.category], `${m.id}: category must exist in CATEGORIES`);
     assert.ok(m.purpose && m.license && m.source.startsWith('https://huggingface.co/'), `${m.id}: purpose/license/source`);
     assert.ok(m.files.length >= 1, `${m.id}: at least one quant file`);
     for (const f of m.files) {
-      assert.match(f.url, new RegExp(`^https://huggingface.co/${m.repo.replace(/\//g, '\\/')}/resolve/main/`), `${m.id}: url matches repo`);
-      assert.match(f.name, /\.gguf$/i, `${m.id}: gguf file`);
+      if (String(m.category).startsWith('image-')) {
+        // image-модели: safetensors/gguf, источник — HF, репо может отличаться от m.repo (fp32-оригинал).
+        assert.match(f.url, /^https:\/\/huggingface\.co\/[^/]+\/[^/]+\/resolve\//, `${m.id}: image url matches HF`);
+        assert.match(f.name, /\.(gguf|safetensors)$/i, `${m.id}: image file format`);
+      } else {
+        assert.match(f.url, new RegExp(`^https://huggingface.co/${m.repo.replace(/\//g, '\\/')}/resolve/main/`), `${m.id}: url matches repo`);
+        assert.match(f.name, /\.gguf$/i, `${m.id}: gguf file`);
+      }
       assert.ok(f.sizeBytes > 100 * 1024 * 1024, `${m.id}: size looks realistic (> 100 MB)`);
     }
   }
@@ -56,12 +67,20 @@ test('catalog v2: families, languages, tags and per-file quants/checksums', () =
   for (const expected of ['qwen2.5', 'qwen3', 'llama3.2', 'gemma2', 'phi4', 'mistral', 'smollm2', 'tinyllama', 'deepseek-r1', 'vikhr', 'dolphin'])
     assert.ok(families.has(expected), `family ${expected} must be present`);
   for (const m of CATALOG) {
-    assert.ok(Array.isArray(m.languages) && m.languages.length >= 1, `${m.id}: languages`);
+    // image-модели внетекстовые: список языков к ним неприменим.
+    if (String(m.category).startsWith('image-')) {
+      assert.ok(Array.isArray(m.languages), `${m.id}: languages (image)`);
+    } else {
+      assert.ok(Array.isArray(m.languages) && m.languages.length >= 1, `${m.id}: languages`);
+    }
     assert.ok(Array.isArray(m.tags) && m.tags.length >= 1, `${m.id}: tags`);
     assert.ok(['fast', 'medium', 'slow'].includes(m.speed), `${m.id}: speed class`);
     assert.ok(m.quantAuthor, `${m.id}: quant author`);
     for (const f of m.files) {
-      assert.match(f.quant, /^(Q[2-8]_K(_[SML])?|Q8_0)$/, `${m.id}: quant label`);
+      // image-модели: свободная метка кванта (Q4_0/Q8_0/f16/safetensors fp32), строгий LLM-регекс не применим.
+      if (!String(m.category).startsWith('image-')) {
+        assert.match(f.quant, /^(Q[2-8]_K(_[SML])?|Q8_0)$/, `${m.id}: quant label`);
+      }
       if (f.sha256) assert.match(f.sha256, /^[0-9a-f]{64}$/, `${m.id}: sha256 format`);
     }
   }
@@ -147,7 +166,7 @@ async function startRangeServer(body, { chunkSize = 256 * 1024, chunkDelayMs = 4
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'lm-dl-'));
 
 test('download: full flow with progress, then done and size verified', async () => {
-  const body = Buffer.from('A'.repeat(3 * 1024 * 1024));
+  const body = Buffer.concat([Buffer.from('GGUF'), Buffer.from('A'.repeat(3 * 1024 * 1024 - 4))]); // GGUF-магия: валидатор DownloadManager требует её честно
   const srv = await startRangeServer(body);
   const dir = tmpDir();
   const mgr = new DownloadManager({ allowLoopbackHttp: true });
@@ -162,7 +181,7 @@ test('download: full flow with progress, then done and size verified', async () 
 });
 
 test('download: pause keeps .part, resume completes with Range', async () => {
-  const body = Buffer.from('B'.repeat(6 * 1024 * 1024));
+  const body = Buffer.concat([Buffer.from('GGUF'), Buffer.from('B'.repeat(6 * 1024 * 1024 - 4))]); // GGUF-магия
   const srv = await startRangeServer(body);
   const dir = tmpDir();
   const mgr = new DownloadManager({ allowLoopbackHttp: true });

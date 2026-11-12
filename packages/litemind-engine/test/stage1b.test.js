@@ -481,7 +481,7 @@ const waitFor = async (fn, ms = 15000) => {
 };
 
 test('загрузка: прогресс и SHA-256 скачанного файла совпадают с расчётным', async () => {
-  const body = Buffer.from('C'.repeat(2 * 1024 * 1024));
+  const body = Buffer.concat([Buffer.from('GGUF'), Buffer.from('C'.repeat(2 * 1024 * 1024 - 4))]); // GGUF-магия (валидация DownloadManager)
   const srv = await startRangeServer(body);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'litemind-1b-dl-'));
   const mgr = new DownloadManager({ allowLoopbackHttp: true });
@@ -500,7 +500,7 @@ test('загрузка: прогресс и SHA-256 скачанного фай�
 });
 
 test('загрузка: незавершённый файл не выдаётся за установленную модель (.part)', async () => {
-  const body = Buffer.alloc(6 * 1024 * 1024, 3);
+  const body = Buffer.concat([Buffer.from('GGUF'), Buffer.alloc(6 * 1024 * 1024 - 4, 3)]); // GGUF-магия
   const srv = await startRangeServer(body, { chunkDelayMs: 30 });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'litemind-1b-dlp-'));
   const mgr = new DownloadManager({ allowLoopbackHttp: true });
