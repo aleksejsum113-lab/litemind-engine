@@ -97,10 +97,14 @@ jobs:
         shell: pwsh
         run: |
           git clone --depth 1 https://github.com/ggml-org/llama.cpp "$env:RUNNER_TEMP\llamacpp-src"
+          # GGML_BMI2: при GGML_NATIVE=OFF дефолтится в ON (ShlX/BZHI/PEXT — Haswell+);
+          # на целевом N5095A (Tremont) BMI2 НЕТ — GCC вставляет ShlX в неохраняемые
+          # циклы (fp16-таблица), MSVC — не гарантирует отсутствие. Явно OFF (см. скан #52).
           cmake -S "$env:RUNNER_TEMP\llamacpp-src" -B "$env:RUNNER_TEMP\llamacpp-build" `
             -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_SSE42=OFF `
             -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF `
-            -DGGML_AVX_VNNI=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF `
+            -DGGML_AVX_VNNI=OFF -DGGML_BMI2=OFF `
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF `
             -DLLAMA_BUILD_TOOLS=ON -DLLAMA_CURL=OFF `
             -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON
           cmake --build "$env:RUNNER_TEMP\llamacpp-build" --config Release --target llama-server
@@ -127,6 +131,7 @@ jobs:
           cmake -S "$env:RUNNER_TEMP\sd-src" -B "$env:RUNNER_TEMP\sd-build" `
             -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_AVX=OFF `
             -DGGML_AVX2=OFF -DGGML_SSE42=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF `
+            -DGGML_AVX_VNNI=OFF -DGGML_BMI2=OFF `
             -DSD_BUILD_SERVER=OFF -DSD_BUILD_EXAMPLES=ON
           # На коммите 32d516c CLI-таргет называется sd-cli (файл sd-cli.exe),
           # таргета "sd" больше нет — прогон №50 падал на MSB1009 sd.vcxproj.
