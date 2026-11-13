@@ -72,3 +72,14 @@ test('MetricsSampler computes cpuPercent from deltas and keeps bounded history',
   assert.ok(sampler.history.length >= 2, 'polling happened');
   assert.ok(sampler.history.length <= 180, 'history bounded');
 });
+
+test('applyPriorityToPid всегда возвращает Promise (регрессия image/generate)', async () => {
+  // Прогон smoke v0.6.2 №6: generate.js вешает .catch() на результат, а
+  // функция возвращала undefined → TypeError «Cannot read properties of
+  // undefined (reading 'catch')» на первой же генерации изображения.
+  const { applyPriorityToPid } = await import('../src/resource/priority.js');
+  assert.equal(typeof applyPriorityToPid(12345, 'low')?.catch, 'function', 'PID задан');
+  assert.equal(typeof applyPriorityToPid(null, 'low')?.catch, 'function', 'PID отсутствует');
+  assert.equal(typeof applyPriorityToPid('не число', 'low')?.catch, 'function', 'PID не число');
+  await applyPriorityToPid(null, 'low');
+});

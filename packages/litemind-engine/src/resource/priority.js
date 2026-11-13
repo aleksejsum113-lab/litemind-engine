@@ -13,9 +13,12 @@ import { execFile } from 'node:child_process';
 const WIN_PRIORITY = { low: 'BelowNormal', balanced: 'Normal', high: 'Normal' };
 const NICE = { low: 10, balanced: 0, high: 0 };
 
-/** Применить приоритет к конкретному PID (наш собственный llama-server). */
+/** Применить приоритет к конкретному PID (наш собственный llama-server).
+ *  Всегда возвращает Promise: часть вызовов вешает .catch (image/generate.js),
+ *  и до фикса undefined.catch ронял первую же генерацию изображения
+ *  (TypeError «Cannot read properties of undefined (reading 'catch')»). */
 export function applyPriorityToPid(pid, profile, log = null) {
-  if (!pid || !Number.isFinite(Number(pid))) return;
+  if (!pid || !Number.isFinite(Number(pid))) return Promise.resolve();
   try {
     if (process.platform === 'win32') {
       const priority = WIN_PRIORITY[profile] ?? 'Normal';
@@ -26,13 +29,14 @@ export function applyPriorityToPid(pid, profile, log = null) {
         (err) => { if (err) log?.debug?.('priority(pid) apply failed', { pid, error: err.message }); });
     } else {
       const nice = NICE[profile] ?? 0;
-      if (!nice) return; // normal — ничего делать не надо
+      if (!nice) return Promise.resolve(); // normal — ничего делать не надо
       execFile('renice', ['-n', String(nice), '-p', String(pid)], { timeout: 5000 }, () => {});
     }
     log?.info?.('backend priority applied by pid', { pid, profile });
   } catch {
     /* приоритет — необязательная оптимизация */
   }
+  return Promise.resolve();
 }
 
 /** Применить приоритет по имени процесса (усыновлённые серверы, PID неизвестен). */
