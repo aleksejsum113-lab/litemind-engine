@@ -479,8 +479,11 @@ jobs:
             modelFile = $sdModel; prompt = 'a small red apple on a white table'; width = 256; height = 256; steps = 6; cfg = 7; seed = 42
           } | ConvertTo-Json -Depth 4) -TimeoutSec 60
           Write-Host "задание генерации: $($gen.job.id), состояние: $($gen.job.state)"
+          # 150 × 6 c ≈ 15 мин: на раннере без AVX VAE-фаза доходит до 100% и
+          # ещё декодирует несколько минут (прогон №13 сняли на ~10 мин при
+          # vae 100%; прогон №10 прошёл в пределах лимита).
           $imgDone = $false
-          foreach ($i in 1..100) {
+          foreach ($i in 1..150) {
             Start-Sleep -Seconds 6
             $st = Invoke-RestMethod 'http://127.0.0.1:8399/api/image/job' -TimeoutSec 10
             Write-Host ("  фаза: {0}, {1}%, прошло {2} c" -f $st.job.phase, $st.job.percent, [int]($st.job.elapsedMs / 1000))

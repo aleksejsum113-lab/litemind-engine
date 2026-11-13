@@ -80,7 +80,9 @@ async function main() {
     messages: [{ role: 'user', content: 'Ответь одним словом: работает? /no_think' }]
   }, 180000);
 
-  const fin1 = await waitForState(id1, ['done', 'error', 'stopped'], 8 * 60_000);
+  // let (не const): ниже фаза повтора переназначает fin1 — прогон №13 падал
+  // целиком с «TypeError: Assignment to constant variable» на этой строке.
+  let fin1 = await waitForState(id1, ['done', 'error', 'stopped'], 8 * 60_000);
   result.agentTask1 = { state: fin1?.state, steps: fin1?.stats?.steps, error: fin1?.error ?? null };
   // Qwen3-0.6B стохастична от прогона к прогону (№8: write_file не создал файл;
   // №11: 6 шагов TEXT-петли без единого инструментального вызова, повторная
