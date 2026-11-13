@@ -116,6 +116,65 @@ jobs:
           # идут отдельными DLL рядом с exe — копируем их все.
           Get-ChildItem $exe.DirectoryName -Filter *.dll | ForEach-Object { Copy-Item $_.FullName packages/desktop/resources/llamacpp/ }
           Get-ChildItem packages/desktop/resources/llamacpp | Select-Object Name, Length
+      # ── Runtime-зависимости (ТЗ v0.6.2 §1): фикс 0xC0000135 на чистой Windows 11.
+      # llama-server-impl.dll импортирует libssl-3-x64.dll/libcrypto-3-x64.dll
+      # (OpenSSL, найденный CMake на раннере), ggml-base.dll и ggml-cpu-*.dll —
+      # VCOMP140.DLL (OpenMP). На машине пользователя без VC++ Redistributable
+      # всё это отсутствует → llama-server умирал за 0,4 с (код 3221225781 =
+      # 0xC0000135 STATUS_DLL_NOT_FOUND), Electron при этом работал (статически
+      # слинкован). Решение — app-local deployment: кладём DLL рядом с exe.
+      - name: Bundle VC++ runtime and OpenSSL DLLs (app-local)
+        shell: pwsh
+        run: |
+          $err = @()
+          $sys = "$env:SystemRoot\System32"
+          $vc = 'msvcp140.dll','msvcp140_codecvt_ids.dll','vcruntime140.dll','vcruntime140_1.dll','vcomp140.dll'
+          $llamaDir = 'packages/desktop/resources/llamacpp'
+          $sdDir = 'packages/desktop/resources/sd'
+          foreach ($f in $vc) {
+            $src = Join-Path $sys $f
+            if (Test-Path $src) {
+              Copy-Item $src $llamaDir/ -Force
+              Copy-Item $src $sdDir/ -Force
+            } else { $err += "VC++ runtime не найден в System32: $f" }
+          }
+          # OpenSSL 3: locate libssl-3-x64.dll / libcrypto-3-x64.dll на раннере.
+          # Источник №1 — CMakeCache сборки llama.cpp: FindOpenSSL записывает туда
+          # OPENSSL_INCLUDE_DIR, значит сами DLL лежат в <каталог>\bin. Это ровно
+          # та OpenSSL, с которой llama-server был слинкован (поиск по всему диску
+          # мог бы найти чужую версию — риск 0xC000007B/смешанных версий).
+          $sslDir = $null
+          $cache = "$env:RUNNER_TEMP\llamacpp-build\CMakeCache.txt"
+          if (Test-Path $cache) {
+            $m = Select-String -Path $cache -Pattern '^OPENSSL_INCLUDE_DIR:PATH=(.+)$' | Select-Object -First 1
+            if ($m) {
+              # <root>\include → <root>\bin (C:/Strawberry/c/include → C:/Strawberry/c/bin)
+              $bin = Join-Path (Split-Path (Split-Path $m.Matches[0].Groups[1].Value -Parent) -Parent) 'bin'
+              if (Test-Path (Join-Path $bin 'libssl-3-x64.dll')) { $sslDir = $bin }
+            }
+          }
+          # Источник №2 — известные каталоги установки OpenSSL/Strawberry Perl.
+          if (-not $sslDir) {
+            foreach ($cand in "$env:ProgramFiles\OpenSSL\bin", "$env:ProgramFiles\OpenSSL-Win64\bin", 'C:\Strawberry\c\bin', "$env:ProgramFiles\CMake\bin") {
+              if (Test-Path (Join-Path $cand 'libssl-3-x64.dll')) { $sslDir = $cand; break }
+            }
+          }
+          # Источник №3 — ограниченный поиск по диску (последний шанс).
+          if (-not $sslDir) {
+            $hit = Get-ChildItem 'C:\Program Files','C:\Strawberry','C:\vcpkg' -Recurse -Depth 4 -Filter 'libssl-3-x64.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $hit) { $hit = Get-ChildItem "$env:RUNNER_TEMP" -Recurse -Depth 5 -Filter 'libssl-3-x64.dll' -ErrorAction SilentlyContinue | Select-Object -First 1 }
+            if ($hit) { $sslDir = $hit.DirectoryName }
+          }
+          if ($sslDir) {
+            foreach ($f in 'libssl-3-x64.dll','libcrypto-3-x64.dll') {
+              $src = Join-Path $sslDir $f
+              if (Test-Path $src) { Copy-Item $src $llamaDir/ -Force }
+              else { $err += "OpenSSL DLL не найден: $src" }
+            }
+          } else { $err += 'Каталог OpenSSL не найден на раннере' }
+          if ($err.Count) { $err | ForEach-Object { Write-Host "::error::$_" }; throw "Недостающие runtime DLL: $($err -join '; ')" }
+          Write-Host "OpenSSL взят из: $sslDir"
+          Get-ChildItem $llamaDir, $sdDir | Select-Object Name, Length | Format-Table -AutoSize | Out-String | Write-Host
       # ── Генератор изображений (ТЗ v0.6.1 §3): бэкенд stable-diffusion.cpp.
       # Собирается так же, как llama.cpp: БЕЗ AVX/AVX2 (целевой CPU N5095A/
       # Tremont), один CLI-процесс на генерацию, порт не занимает.
@@ -234,8 +293,13 @@ jobs:
           $rt = "$dir\resources\llamacpp"
           Get-ChildItem $rt | Select-Object Name, Length | Format-Table -AutoSize | Out-String | Write-Host
           foreach ($f in 'llama-server.exe','llama-server-impl.dll','llama.dll','llama-common.dll',
-                         'ggml.dll','ggml-base.dll','ggml-cpu-sse42.dll','ggml-cpu-x64.dll') {
-            if (-not (Test-Path "$rt\$f")) { throw "файл runtime отсутствует: $f" }
+                         'ggml.dll','ggml-base.dll','ggml-cpu-sse42.dll','ggml-cpu-x64.dll',
+                         'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','vcomp140.dll',
+                         'libssl-3-x64.dll','libcrypto-3-x64.dll') {
+            if (-not (Test-Path "$rt\$f")) { throw "файл runtime отсутствует (0xC0000135-фикс): $f" }
+          }
+          foreach ($f in 'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','vcomp140.dll') {
+            if (-not (Test-Path "$dir\resources\sd\$f")) { throw "файл runtime отсутствует у sd.exe: $f" }
           }
           # Генератор изображений: sd.exe обязан ехать в установщике (ТЗ v0.6.1 §3).
           $sd = "$dir\resources\sd\sd.exe"

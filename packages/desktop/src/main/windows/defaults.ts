@@ -1,7 +1,10 @@
+import { desktopZoomLevels } from "@opencode/app/desktop-menu"
 import { resolveThemeVariant } from "@opencode/ui/theme/resolve"
 import type { DesktopTheme } from "@opencode/ui/theme/types"
-import { desktopZoomLevels } from "@opencode/app/desktop-menu"
-import { nativeTheme, type BrowserWindowConstructorOptions } from "electron"
+import { existsSync } from "node:fs"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
+import { app, nativeTheme, type BrowserWindowConstructorOptions } from "electron"
 import { Predicate } from "effect"
 import oc2ThemeJson from "../../../../ui/src/theme/themes/oc-2.json"
 import { BACKGROUND_COLOR_KEY, ZOOM_LEVEL_KEY } from "../storage/keys"
@@ -46,12 +49,36 @@ export function storedZoomLevel() {
   return desktopZoomLevels.find((level) => level === stored) ?? 1
 }
 
+// ТЗ v0.6.1 §2: полностью прозрачный оверлей (#00000000) делал системные кнопки
+// min/max/close невидимыми на тёмном интерфейсе («нет управления окном»), поэтому оверлей
+// рисуется сплошным цветом шапки. Высоту (44px, масштабируется зумом) не трогаем: она совпадает
+// с высотой шапки рендерера, и updateTitlebar() повторно применяет её при смене зума.
+const overlayColors = {
+  dark: { color: "#111318", symbolColor: "#E5E7EB" },
+  light: { color: "#F3F4F6", symbolColor: "#111318" },
+} as const
+
 export function titlebarOverlay(mode: "light" | "dark" = tone(), zoom = 1) {
   return {
-    color: "#00000000",
-    symbolColor: mode === "dark" ? "white" : "black",
+    ...overlayColors[mode],
     height: Math.max(titlebarHeight, Math.round(titlebarHeight * zoom)),
   }
+}
+
+// ТЗ v0.6.1 §2: иконка окна LiteMind на Windows. В установленном приложении icon.ico лежит рядом
+// с app.asar (extraResources) с резервной копией внутри архива (files: "resources/**/*"); в dev —
+// в resources/icons репозитория, откуда её копирует script/copy-icons.ts. Файла может не быть
+// (dev без копирования иконок), поэтому undefined означает «опцию icon не задавать» — так dev
+// не ссылается на несуществующий путь. Для macOS/Linux иконку выбирают appearance.ts и early.ts.
+export function windowIconFile(): string | undefined {
+  if (process.platform !== "win32") return undefined
+
+  const icon = path.join("icons", "icon.ico")
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, icon), path.join(process.resourcesPath, "app.asar", "resources", icon)]
+    : [path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "resources", icon)]
+
+  return candidates.find((candidate) => existsSync(candidate))
 }
 
 // macOS and Windows hide the titlebar; Windows draws its window controls in an overlay sized to the zoom.

@@ -6,6 +6,8 @@
 /* global api, esc, showError, event, mdToHtml, ENGINE_BASE */
 (() => {
   const $ = (id) => document.getElementById(id);
+  // Безопасная привязка: сбой одного обработчика не отменяет остальные.
+  const on = (id, ev, fn) => { try { $(id)?.addEventListener(ev, fn); } catch (err) { console.error(`agent init: #${id} (${ev}):`, err); } };
   const BASE = (typeof ENGINE_BASE !== 'undefined') ? ENGINE_BASE : 'http://127.0.0.1:8399';
   const LS_ACTIVE = 'litemind-agent-active';
   const LS_PROJECT = 'litemind-agent-project';
@@ -478,7 +480,7 @@
     }
     // проект по умолчанию: из Workspace (общий ключ) или из памяти агента
     if (!$('agent-project').value) {
-      const ws = localStorage.getItem('litemind-project') || localStorage.getItem(LS_PROJECT);
+      const ws = localStorage.getItem('litemind-project-dir') || localStorage.getItem(LS_PROJECT);
       if (ws) $('agent-project').value = ws;
     }
     await refreshSessions();
@@ -495,17 +497,17 @@
 
   // ── Обработчики ─────────────────────────────────────────────────────────
 
-  $('agent-send').addEventListener('click', sendAgentMessage);
-  $('agent-stop').addEventListener('click', stopAgent);
-  $('agent-new').addEventListener('click', newSession);
-  $('agent-sessions-btn').addEventListener('click', () => { $('agent-sessions').hidden = !$('agent-sessions').hidden; refreshSessions(); });
-  $('agent-menu-btn').addEventListener('click', () => document.getElementById('app').classList.toggle('sidebar-open'));
-  $('agent-prompt').addEventListener('input', () => autoGrowEl($('agent-prompt')));
-  $('agent-prompt').addEventListener('keydown', (e) => {
+  on('agent-send', 'click', sendAgentMessage);
+  on('agent-stop', 'click', stopAgent);
+  on('agent-new', 'click', newSession);
+  on('agent-sessions-btn', 'click', () => { $('agent-sessions').hidden = !$('agent-sessions').hidden; refreshSessions(); });
+  on('agent-menu-btn', 'click', () => document.getElementById('app').classList.toggle('sidebar-open'));
+  on('agent-prompt', 'input', () => autoGrowEl($('agent-prompt')));
+  on('agent-prompt', 'keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAgentMessage(); }
   });
-  $('agent-attach').addEventListener('click', () => $('agent-file-input').click());
-  $('agent-file-input').addEventListener('change', async (e) => {
+  on('agent-attach', 'click', () => $('agent-file-input').click());
+  on('agent-file-input', 'change', async (e) => {
     const files = [...e.target.files];
     e.target.value = '';
     for (const f of files.slice(0, 6)) {
@@ -519,7 +521,7 @@
     }
     renderAttachBar();
   });
-  $('agent-log').addEventListener('click', (e) => {
+  on('agent-log', 'click', (e) => {
     const hint = e.target.closest('[data-agent-hint]');
     if (hint) { $('agent-prompt').value = hint.dataset.agentHint; $('agent-prompt').focus(); autoGrowEl($('agent-prompt')); }
   });
@@ -527,4 +529,9 @@
 
   // экспорт в глобальную область для switchTab
   window.__litemindLoadAgent = loadAgent;
+
+  // Если приложение открыто сразу с #agent в адресе — грузим раздел после init.
+  if (document.querySelector('.nav-item.active')?.dataset.tab === 'agent') {
+    setTimeout(() => { try { loadAgent(); } catch { /* инициализация повторится при переходе на вкладку */ } }, 0);
+  }
 })();

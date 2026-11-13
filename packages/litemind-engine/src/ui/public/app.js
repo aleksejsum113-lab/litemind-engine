@@ -4,18 +4,32 @@
 // в Desktop добавляется IPC-мост Electron.
 // AI Chat — главный экран: сессии, Markdown, вложения, стриминг, стоп.
 const $ = (id) => document.getElementById(id);
+/* Безопасная привязка обработчиков: отсутствующий элемент или сбой внутри
+   одного init-блока не должны оставлять остальные кнопки мёртвыми
+   (реальный баг: «Новый чат» не реагировал, когда любой верхнеуровневый
+   оператор app.js падал и обрывал привязку ниже по коду). */
+function on(id, ev, fn) {
+  try {
+    const el = $(id);
+    if (!el) { console.error(`init: элемент #${id} не найден — обработчик «${ev}» не привязан`); return; }
+    el.addEventListener(ev, fn);
+  } catch (err) {
+    console.error(`init: сбой привязки #${id} (${ev}):`, err);
+  }
+}
 const ENGINE_BASE = location.protocol.startsWith('http') && location.port === '8399' ? '' : 'http://127.0.0.1:8399';
 const bridge = () => (typeof window !== 'undefined' && window.electron?.litemindEngine) || null;
 
-const state = { streaming: false, engineOnline: null, catalog: null, wsDir: null, wsFile: null, projDir: null, stickBottom: true, chatSearch: '' };
+const state = { streaming: false, engineOnline: null, catalog: null, wsDir: null, wsFile: null, projDir: null, stickBottom: true, chatSearch: '',
+  runtimeModels: [], scanModels: [], startingModel: null };
 
 /* ============================ title bar окна ============================ */
 // В Desktop (frame:false + titleBarOverlay) резервируем справа место под
 // системные кнопки окна и обновляем имя раздела; активная модель — в updateWelcomeHint.
 if (bridge()) document.body.classList.add('in-electron');
 const TAB_TITLES = {
-  agent: 'AI Agent', imagegen: 'Генератор изображений', discovery: 'Новые модели',
-  chat: 'Чат', models: 'Мои модели', catalog: 'Каталог моделей', downloads: 'Загрузки',
+  agent: 'AI Agent', imagegen: 'Изображения', discovery: 'Новые модели',
+  chat: 'ИИ-чат', models: 'Модели', catalog: 'Каталог', downloads: 'Загрузки',
   projects: 'Проекты', workspace: 'Workspace', terminal: 'AI Terminal', home: 'Состояние',
   hardware: 'Железо', monitor: 'Мониторинг', control: 'Управление', settings: 'Настройки'
 };
@@ -54,6 +68,20 @@ function showError(msg) {
   errTimer = setTimeout(() => el.remove(), 6000);
 }
 
+/* Красная строка над полем ввода чата (#chat-error): ошибки, которые нужно
+   видеть не покидая чат — прежде всего реальный ответ API при запуске модели
+   ({error:{message}} извлекает api()). Пустая строка — скрыть строку. */
+let chatErrTimer;
+function chatError(msg) {
+  const el = $('chat-error');
+  if (!el) { if (msg) showError(msg); return; }
+  clearTimeout(chatErrTimer);
+  if (!msg) { el.hidden = true; el.textContent = ''; return; }
+  el.hidden = false;
+  el.textContent = msg;
+  chatErrTimer = setTimeout(() => { el.hidden = true; el.textContent = ''; }, 15000);
+}
+
 function event(msg) {
   const ul = $('events');
   if (!ul) return;
@@ -74,39 +102,79 @@ function bar(id, pct, text) {
 }
 
 /* ============================ тема ============================ */
+/* Все обращения к localStorage — под try/catch: в некоторых контекстах
+   (приватный режим, запрет хранилища для file://-происхождения) любое
+   обращение бросает SecurityError. Это был последний незащищённый
+   верхнеуровневый оператор: без защиты сбой темы обрывал привязку ВСЕХ
+   обработчиков ниже — вплоть до кнопки «Новый чат». */
 function applyTheme(mode) {
   const resolved = mode === 'system'
     ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
     : mode;
   document.documentElement.dataset.theme = resolved;
-  localStorage.setItem('litemind-theme', mode);
+  try { localStorage.setItem('litemind-theme', mode); } catch { /* хранилище недоступно — тема только на сеанс */ }
   document.querySelectorAll('[data-theme-btn]').forEach((b) => b.classList.toggle('active', b.dataset.themeBtn === mode));
 }
 document.querySelectorAll('[data-theme-btn]').forEach((b) =>
-  b.addEventListener('click', () => applyTheme(b.dataset.themeBtn)));
+  b.addEventListener('click', () => { try { applyTheme(b.dataset.themeBtn); } catch (err) { console.error('тема:', err); } }));
 matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => {
-  if (localStorage.getItem('litemind-theme') === 'system') applyTheme('system');
+  try {
+    if (localStorage.getItem('litemind-theme') === 'system') applyTheme('system');
+  } catch { /* хранилище недоступно */ }
 });
-applyTheme(localStorage.getItem('litemind-theme') || 'dark');
+try { applyTheme(localStorage.getItem('litemind-theme') || 'dark'); } catch (err) { console.error('init: тема:', err); }
 
 /* ============================ боковая панель ============================ */
-$('sidebar-toggle').addEventListener('click', () => {
-  document.getElementById('app').classList.toggle('sidebar-collapsed');
+const SIDEBAR_COLLAPSED_KEY = 'litemind-sidebar-collapsed';
+function applySidebarCollapsed(collapsed) {
+  document.getElementById('app')?.classList.toggle('sidebar-collapsed', collapsed);
+  const t = $('sidebar-toggle');
+  if (t) { t.textContent = collapsed ? '⟩' : '⟨'; t.title = collapsed ? 'Развернуть панель' : 'Свернуть панель'; }
+}
+/* Подсказки для иконок: нужны всегда, но особенно в свёрнутой панели (только иконки). */
+function bindNavTooltips() {
+  document.querySelectorAll('.nav-item').forEach((btn) => {
+    const label = btn.querySelector('span:not(.nav-badge)')?.textContent?.trim();
+    if (label && !btn.title) btn.title = label;
+  });
+}
+try {
+  bindNavTooltips();
+  applySidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1');
+} catch (err) { console.error('init: боковая панель:', err); }
+on('sidebar-toggle', 'click', () => {
+  const collapsed = !document.getElementById('app').classList.contains('sidebar-collapsed');
+  try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* приватный режим */ }
+  applySidebarCollapsed(collapsed);
 });
-$('chat-menu-btn').addEventListener('click', () => document.getElementById('app').classList.toggle('sidebar-open'));
-$('sidebar-overlay').addEventListener('click', () => document.getElementById('app').classList.remove('sidebar-open'));
+on('chat-menu-btn', 'click', () => document.getElementById('app').classList.toggle('sidebar-open'));
+on('sidebar-overlay', 'click', () => document.getElementById('app').classList.remove('sidebar-open'));
 
 /* ============================ навигация ============================ */
-function switchTab(name) {
-  name = name || 'chat';
+/* «Модели» — объединённый раздел: страница «Мои модели» + страница «Каталог».
+   Старые ссылки #catalog ведут в объединённый раздел (алиас). */
+const TAB_ALIASES = { catalog: 'models' };
+const MODEL_TAB_PAGES = ['tab-models', 'tab-catalog']; // обе страницы показываются вместе
+const TAB_LOADERS = {
+  catalog: () => { loadMyModels(); loadCatalog(); },
+  models: () => { loadMyModels(); loadCatalog(); },
+  downloads: refreshDownloads, hardware: loadHardware, settings: loadSettings,
+  monitor: loadMonitor, control: refreshControl, home: refreshStatus,
+  chat: loadChat, projects: loadProjects, workspace: loadWorkspace, terminal: loadTerminal,
+  agent: () => window.__litemindLoadAgent?.(), imagegen: loadImageGen,
+  discovery: () => window.__litemindLoadDiscovery?.()
+};
+
+function switchTab(rawName) {
+  let name = rawName || 'chat';
+  name = TAB_ALIASES[name] || name;
   const btn = document.querySelector(`.nav-item[data-tab="${name}"]`);
   if (!btn) name = 'chat';
   document.querySelectorAll('.nav-item').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
-  document.querySelectorAll('[data-page]').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
-  ({ catalog: loadCatalog, downloads: refreshDownloads, hardware: loadHardware, settings: loadSettings,
-     models: loadMyModels, monitor: loadMonitor, control: refreshControl, home: refreshStatus,
-     chat: loadChat, projects: loadProjects, workspace: loadWorkspace, terminal: loadTerminal,
-     agent: window.__litemindLoadAgent, imagegen: loadImageGen, discovery: window.__litemindLoadDiscovery })[name]?.();
+  document.querySelectorAll('[data-page]').forEach((p) => {
+    p.hidden = !(p.id === `tab-${name}` || (name === 'models' && MODEL_TAB_PAGES.includes(p.id)));
+  });
+  try { TAB_LOADERS[name]?.(); } catch (err) { console.error('tab loader:', name, err); }
   const hash = '#' + name;
   if (location.hash !== hash) history.replaceState(null, '', hash);
   document.getElementById('app').classList.remove('sidebar-open');
@@ -114,10 +182,10 @@ function switchTab(name) {
   $('main').scrollTop = 0;
 }
 document.querySelectorAll('.nav-item').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
-window.addEventListener('hashchange', () => switchTab(location.hash.slice(1)));
+window.addEventListener('hashchange', () => { try { switchTab(location.hash.slice(1)); } catch (err) { console.error('hashchange:', err); } });
 const openTab = (name) => switchTab(name);
-$('home-open-chat').addEventListener('click', () => openTab('chat'));
-$('home-open-catalog').addEventListener('click', () => openTab('catalog'));
+on('home-open-chat', 'click', () => openTab('chat'));
+on('home-open-catalog', 'click', () => openTab('models'));
 
 /* ============================ статус ============================ */
 let statusCache = null;
@@ -144,7 +212,9 @@ async function refreshStatus() {
     const s = await api('/api/status');
     statusCache = s;
     online = true;
+    state.lastStatusError = null;
     const healthy = s.backend.health.ok;
+    setConn(true); // до отрисовки списков: подсказка «движок недоступен» должна скрыться
     $('home-engine').textContent = 'Запущен';
     $('home-engine').className = 'state-value ok';
     $('home-backend').textContent = healthy ? 'онлайн' : 'не обнаружен';
@@ -173,6 +243,10 @@ async function refreshStatus() {
     monFill(s);
   } catch (err) {
     online = false;
+    state.lastStatusError = err.message; // показывается в подсказке под селектором моделей
+    // Движок недоступен — селектор моделей всё равно заполняется из скана папки.
+    setConn(false); // до отрисовки селектора: подсказка «движок недоступен» видна сразу
+    renderModelOptions();
     $('home-engine').textContent = 'Не отвечает';
     $('home-engine').className = 'state-value bad';
     $('home-backend').textContent = '—';
@@ -182,7 +256,6 @@ async function refreshStatus() {
     monOffline();
     setEngineDot(false, false, null);
   }
-  setConn(online);
   if ($('ctl-engine')) refreshControl(online);
   refreshDlBadge();
 }
@@ -193,7 +266,7 @@ function updateWelcomeHint(models, healthy) {
   setTitlebarModel(active);
   if (!el) return;
   if (!models || !models.length) {
-    el.innerHTML = 'Модель не установлена — <a href="#catalog" onclick="openTab(\'catalog\');return false">откройте каталог</a> и скачайте GGUF.';
+    el.innerHTML = 'Модель не установлена — <a href="#models" onclick="openTab(\'models\');return false">откройте раздел «Модели»</a> и скачайте GGUF.';
   } else if (!healthy) {
     el.textContent = 'Модели найдены, но runtime не готов. Проверьте вкладку «Мои модели».';
   } else {
@@ -332,7 +405,7 @@ function monOffline() {
   fillStagesPanel(null);
 }
 
-$('saver').addEventListener('change', async (e) => {
+on('saver', 'change', async (e) => {
   try {
     await api('/api/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ profile: e.target.checked ? 'low' : 'balanced' }) });
     event(e.target.checked ? 'включён режим экономии ресурсов' : 'выключен режим экономии ресурсов');
@@ -340,26 +413,105 @@ $('saver').addEventListener('change', async (e) => {
   refreshStatus();
 });
 
+/* Профиль производительности: переключение из «Мониторинга» (раздел
+   «Управление» скрыт). Пока запрос выполняется — «Применение профиля…»,
+   после ответа честно показываем applied (применён сразу) или pending
+   (вступит в силу после завершения текущей генерации). */
+const PROFILE_LABELS = { low: 'Экономный', balanced: 'Сбалансированный', high: 'Максимальная производительность' };
+let profileSwitching = false;
+
 document.querySelectorAll('[data-profile]').forEach((b) => b.addEventListener('click', async () => {
+  if (profileSwitching) return;
+  const profile = b.dataset.profile;
+  const note = $('res-profile-note');
+  profileSwitching = true;
+  if (note) { note.hidden = false; note.textContent = 'Применение профиля…'; }
   try {
-    await api('/api/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ profile: b.dataset.profile }) });
-    event(`профиль: ${b.textContent}`);
-  } catch (err) { showError(err.message); }
+    const r = await api('/api/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ profile }) });
+    const label = PROFILE_LABELS[profile] ?? profile;
+    if (note) {
+      note.textContent = r?.applied
+        ? `Профиль «${label}» применён.`
+        : r?.pending
+          ? `Профиль «${label}» будет применён после завершения текущей генерации.`
+          : `Профиль «${label}» сохранён.`;
+    }
+    event(`профиль: ${label}`);
+    if (statusCache) { statusCache.engine = { ...(statusCache.engine ?? {}), profile, profileLabel: label }; fillProfilePanel(statusCache); }
+  } catch (err) {
+    if (note) { note.hidden = false; note.textContent = ''; }
+    showError('профиль: ' + err.message);
+  }
+  profileSwitching = false;
   refreshStatus();
 }));
 
-$('btn-stop-gen').addEventListener('click', async () => {
+on('btn-stop-gen', 'click', async () => {
   try { const r = await api('/api/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); event(`остановлено генераций: ${r.cancelled}`); }
   catch (err) { showError(err.message); }
 });
-$('btn-unload-all').addEventListener('click', async () => {
+on('btn-unload-all', 'click', async () => {
   try { const r = await api('/api/unload', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); event(`выгружено: ${(r.unloaded || []).join(', ') || 'нет загруженных моделей'}`); }
   catch (err) { showError(err.message); }
   refreshStatus();
 });
 
 /* ============================ Мониторинг ============================ */
-function loadMonitor() { refreshStatus(); }
+/* ==================== Ресурсы и профиль (новая панель) ==================== */
+/* Данные: GET /api/resources (эндпоинт движка). Опрос раз в 3 с и только пока
+   вкладка «Мониторинг» видима. Чего эндпоинт не прислал — честное «—».
+   Предупреждение о нехватке памяти: свободно < 3500 МБ. */
+const RES_STATE_RU = { running: 'работает', ready: 'готова', loaded: 'в памяти', loading: 'загружается', stopping: 'останавливается', stopped: 'остановлена', error: 'ошибка' };
+
+let resPollBusy = false;
+async function pollResources() {
+  if (resPollBusy) return;
+  resPollBusy = true;
+  const kv = $('res-kv');
+  try {
+    const r = await api('/api/resources');
+    if (!kv) return;
+    const s = r.sampler ?? {};
+    const rt = r.runtime ?? {};
+    const profileText = (PROFILE_LABELS[r.profile] ?? r.profile ?? '—')
+      + (r.profileApplied === false ? ' (ожидает применения)' : '');
+    const modelText = rt.model
+      ? `${rt.model} — ${RES_STATE_RU[rt.state] ?? rt.state ?? '—'}`
+      : (RES_STATE_RU[rt.state] ?? rt.state ?? 'не запущена');
+    const rows = [
+      ['Профиль', profileText],
+      ['RAM: занято / свободно / всего', s.totalRamMb != null
+        ? `${Math.round(s.usedRamMb ?? 0)} / ${Math.round(s.availableRamMb ?? 0)} / ${Math.round(s.totalRamMb)} МБ`
+        : '—'],
+      ['CPU', s.cpuPercent != null ? `${Math.round(s.cpuPercent)} %` : '—'],
+      ['Модель', modelText],
+      ['Потоки генерации', rt.threads != null ? String(rt.threads) : '—'],
+      ['Контекст', rt.contextTokens != null ? `${rt.contextTokens} ток.` : '—'],
+      ['tokens/sec', r.tokensPerSec != null ? Number(r.tokensPerSec).toFixed(1) : '—']
+    ];
+    kv.innerHTML = rows.map(([k, v]) => kvRow(esc(k), esc(String(v)))).join('');
+    const warn = $('res-warn');
+    const warnings = Array.isArray(r.warnings) ? r.warnings.filter(Boolean).map(String) : [];
+    if (s.availableRamMb != null && s.availableRamMb < 3500) {
+      warnings.unshift('Мало памяти для Windows — уменьшите контекст или выгрузите модель');
+    }
+    if (warn) {
+      warn.hidden = !warnings.length;
+      warn.textContent = warnings.join(' · ');
+    }
+  } catch (err) {
+    if (kv) kv.innerHTML = kvRow('Данные ресурсов', 'недоступны: движок не отвечает или ещё не отдаёт /api/resources');
+    const warn = $('res-warn');
+    if (warn) { warn.hidden = false; warn.textContent = 'Сведения о ресурсах недоступны: ' + err.message; }
+  } finally {
+    resPollBusy = false;
+  }
+}
+
+function loadMonitor() {
+  refreshStatus();
+  pollResources();
+}
 
 /* ============================ Markdown рендер ============================ */
 // Минимальный безопасный Markdown: код-блоки с языком и копированием,
@@ -442,7 +594,47 @@ function mdInline(s) {
 }
 
 /* ============================ модели (выбор в чате) ============================ */
+/* Два источника списков моделей:
+   1) /api/status и /api/models — модели, известные запущенному runtime;
+   2) /api/models/scan — сканирование папки моделей БЕЗ runtime (работает,
+      даже когда runtime не стартовал и /api/models отвечает 503).
+   Списки объединяются с дедупликацией по пути файла: селектор никогда не
+   остаётся пустым, если GGUF-файлы на диске есть. */
 function fillModels(models, _current) {
+  state.runtimeModels = Array.isArray(models) ? models : [];
+  renderModelOptions();
+}
+
+async function refreshScanModels() {
+  try {
+    const s = await api('/api/models/scan');
+    state.scanModels = Array.isArray(s?.models) ? s.models : [];
+  } catch {
+    state.scanModels = []; // скан недоступен — остаётся только runtime-список
+  }
+  renderModelOptions();
+}
+
+function mergedModelOptions() {
+  const byKey = new Map();
+  const seenIds = new Set(); // id и путь — чтобы одна модель не появилась дважды из двух источников
+  for (const m of state.runtimeModels) {
+    if (!m?.id) continue;
+    byKey.set(String(m.file || m.path || m.id).toLowerCase(), m);
+    seenIds.add(String(m.id).toLowerCase());
+  }
+  for (const m of state.scanModels) {
+    if (!m?.id) continue;
+    const idKey = String(m.id).toLowerCase();
+    const pathKey = String(m.path || m.file || m.id).toLowerCase();
+    if (seenIds.has(idKey) || byKey.has(pathKey)) continue; // дедупликация по файлу/id
+    byKey.set(pathKey || idKey, { id: m.id, sizeBytes: m.sizeBytes, file: m.path ?? m.file });
+    seenIds.add(idKey);
+  }
+  return [...byKey.values()];
+}
+
+function renderModelOptions() {
   const sel = $('model');
   if (!sel) return;
   // Пре-выбор модели из каталога: /?model=litemind-... (кнопка «Открыть в AI Chat»).
@@ -454,10 +646,11 @@ function fillModels(models, _current) {
     }
   } catch { /* ignore */ }
   const wanted = localStorage.getItem('litemind-selected-model') || sel.value;
-  const ids = models.map((m) => m.id);
+  const merged = mergedModelOptions();
+  const ids = merged.map((m) => m.id);
   if (sel.dataset.ids !== ids.join('|')) {
     sel.innerHTML = '';
-    for (const m of models) {
+    for (const m of merged) {
       const o = document.createElement('option');
       o.value = m.id;
       o.textContent = m.id + (m.sizeBytes ? ` · ${fmtSize(m.sizeBytes)}` : '');
@@ -472,19 +665,128 @@ function fillModels(models, _current) {
     o.textContent = 'модели не установлены';
     sel.appendChild(o);
   }
+  // Подсказка под селектором: файлы моделей есть, но движок недоступен.
+  const hint = $('model-hint');
+  if (hint) {
+    if (state.scanModels.length && state.engineOnline === false) {
+      hint.hidden = false;
+      hint.textContent = 'Файлы найдены; движок недоступен — смотрите ошибку запуска' + (state.lastStatusError ? ` (${state.lastStatusError})` : '');
+    } else {
+      hint.hidden = true;
+      hint.textContent = '';
+    }
+  }
 }
-$('model')?.addEventListener('change', () => {
-  localStorage.setItem('litemind-selected-model', $('model').value);
-  setTitlebarModel($('model').value);
+
+/* Автозапуск выбранной модели: выбор в селекторе сам запускает модель
+   (POST /api/models/run), отдельное нажатие «Запустить» не нужно —
+   кнопка в разделе «Мои модели» остаётся ручным резервом. Пока модель
+   стартует, в строке состояния видно «Запуск модели…», реальная ошибка API —
+   красной строкой над полем ввода. */
+const MODEL_READY_STATES = new Set(['running', 'ready', 'loaded']);
+
+function modelRuntimeState(id) {
+  return (statusCache?.models || []).find((x) => x.id === id)?.state ?? null;
+}
+
+/* Модель уже в памяти runtime? /api/status пока не отдаёт поле state у моделей,
+   поэтому честный источник истины — runtimeInfo() (runtime.running + modelId).
+   Поле state проверяем тоже — на будущее. */
+function isModelReady(id) {
+  if (MODEL_READY_STATES.has(modelRuntimeState(id))) return true;
+  const rt = statusCache?.runtime;
+  return Boolean(rt?.running && rt?.modelId === id);
+}
+
+async function startModelIfNeeded(id) {
+  if (!id) return;
+  if (isModelReady(id)) return; // уже работает — не перезапускаем
+  if (state.startingModel === id) return; // запуск уже идёт
+  state.startingModel = id;
+  const runState = $('run-state');
+  const setRun = (t) => { if (runState) runState.textContent = t; };
+  setRun('Запуск модели…');
+  chatError('');
+  try {
+    /* /api/models/run понимает {modelId} только для записей каталога
+       (каталог.id ≠ имени скачанного файла), поэтому для любого GGUF из папки
+       моделей запускаем по {file}: путь берём из /api/models/scan — того же
+       источника, что заполнил селектор. {modelId} остаётся запасным вариантом
+       (скан недоступен, а модель известна каталогу). */
+    const scanEntry = state.scanModels.find((m) => m.id === id && m.file);
+    const payload = scanEntry?.file ? { file: scanEntry.file } : { modelId: id };
+    const r = await api('/api/models/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    if (r?.ok === false) {
+      // HTTP 200, но движок отказал (не скачана / несовместима) — причина в message.
+      setRun('');
+      chatError(r.message || 'Запуск модели не удался.');
+      return;
+    }
+    const t0 = Date.now();
+    for (;;) {
+      await new Promise((res) => setTimeout(res, 1500));
+      if (state.startingModel !== id) return; // пользователь выбрал другую модель
+      let st = null;
+      try { st = await api('/api/status'); statusCache = st; } catch { st = null; }
+      const stModel = st?.models?.find((x) => x.id === id)?.state;
+      const rtReady = Boolean(st?.runtime?.running && st?.runtime?.modelId === id);
+      if (rtReady || (stModel && MODEL_READY_STATES.has(stModel))) {
+        setRun('Модель запущена — можно писать');
+        chatError('');
+        setTimeout(() => { if (runState && runState.textContent.startsWith('Модель запущена')) runState.textContent = ''; }, 5000);
+        refreshStatus();
+        return;
+      }
+      if (stModel === 'error' || stModel === 'failed') {
+        setRun('');
+        chatError(st?.backend?.health?.error ? `Запуск модели не удался: ${st.backend.health.error}` : 'Запуск модели не удался — смотрите «Мониторинг».');
+        refreshStatus();
+        return;
+      }
+      setRun('Запуск модели…');
+      if (Date.now() - t0 > 120000) {
+        setRun('');
+        chatError('Модель не перешла в рабочее состояние за отведённое время — смотрите «Мониторинг».');
+        return;
+      }
+    }
+  } catch (err) {
+    setRun('');
+    // Реальный текст ошибки API (из {error:{message}}) — в красной строке над вводом.
+    chatError('Запуск модели: ' + err.message);
+  } finally {
+    if (state.startingModel === id) state.startingModel = null;
+  }
+}
+
+on('model', 'change', () => {
+  const v = $('model').value;
+  localStorage.setItem('litemind-selected-model', v);
+  setTitlebarModel(v);
   const c = activeChat();
-  if (c) { c.model = $('model').value; saveChats(); }
+  if (c) { c.model = v; saveChats(); }
+  void startModelIfNeeded(v);
 });
 
 /* ============================ AI Chat — сессии ============================ */
 const CHATS_KEY = 'litemind-chats-v2';
 const ACTIVE_CHAT_KEY = 'litemind-active-chat-v2';
 let chats = [];
-try { chats = JSON.parse(localStorage.getItem(CHATS_KEY) || '[]'); } catch { chats = []; }
+/* Нормализация сохранённых чатов: запись без массива messages (старая версия
+   схемы или повреждённая строка) раньше роняла renderChatList()/newChat()
+   прямо внутри обработчика клика — кнопка «Новый чат» молча переставала
+   работать, и никакой ошибки пользователь не видел. Чинится на входе. */
+try {
+  chats = (JSON.parse(localStorage.getItem(CHATS_KEY) || '[]') || [])
+    .filter((c) => c && typeof c === 'object' && typeof c.id === 'string')
+    .map((c) => ({
+      title: 'Новый чат', createdAt: Date.now(), updatedAt: Date.now(), model: null, messages: [],
+      ...c,
+      messages: Array.isArray(c.messages)
+        ? c.messages.filter((m) => m && typeof m === 'object' && typeof m.content === 'string')
+        : []
+    }));
+} catch { chats = []; }
 let activeChatId = localStorage.getItem(ACTIVE_CHAT_KEY) || null;
 let pendingAttachments = []; // [{name, kind, chars, text, warning}]
 let currentAbort = null;
@@ -494,9 +796,9 @@ function saveChats() {
   try { localStorage.setItem(CHATS_KEY, JSON.stringify(chats.slice(0, 60))); }
   catch { // переполнение localStorage — оставляем только последние чаты
     chats = chats.slice(0, 10);
-    localStorage.setItem(CHATS_KEY, JSON.stringify(chats));
+    try { localStorage.setItem(CHATS_KEY, JSON.stringify(chats)); } catch { /* хранилище недоступно */ }
   }
-  localStorage.setItem(ACTIVE_CHAT_KEY, activeChatId ?? '');
+  try { localStorage.setItem(ACTIVE_CHAT_KEY, activeChatId ?? ''); } catch { /* хранилище недоступно */ }
 }
 
 const activeChat = () => chats.find((c) => c.id === activeChatId) ?? null;
@@ -505,17 +807,17 @@ function newChat(silent) {
   // Пустую заготовку не дублируем: если активный чат пуст и ещё не
   // переименован — повторное нажатие «Новый чат» просто возвращается к нему.
   const cur = activeChat();
-  if (cur && !cur.messages.length && cur.title === 'Новый чат') {
-    if (!silent) $('prompt').focus();
+  if (cur && !(cur.messages || []).length && cur.title === 'Новый чат') {
+    if (!silent) $('prompt')?.focus();
     return cur;
   }
   const c = { id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6), title: 'Новый чат', createdAt: Date.now(), updatedAt: Date.now(), messages: [], model: null };
   chats.unshift(c);
   activeChatId = c.id;
-  saveChats();
+  saveChats(); // предыдущий чат уже сохранён выше (saveChats пишет весь список)
   renderChatList();
   renderMessages();
-  if (!silent) $('prompt').focus();
+  if (!silent) $('prompt')?.focus();
   return c;
 }
 
@@ -545,15 +847,28 @@ function chatWhen(ts) {
   return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getFullYear()).slice(2)}`;
 }
 
+/* Имя чата в списке: заданное вручную название, иначе первое сообщение
+   пользователя (обрезанное до ~40 символов), иначе «Новый чат». */
+function chatTitle(c) {
+  if (c?.title && c.title !== 'Новый чат') return c.title;
+  const first = (c?.messages || []).find((m) => m.role === 'user' && m.content?.trim());
+  if (first) {
+    const t = first.content.trim().replace(/\s+/g, ' ');
+    return t.slice(0, 40) + (t.length > 40 ? '…' : '');
+  }
+  return 'Новый чат';
+}
+
 function renderChatList() {
   const wrap = $('chat-list');
+  if (!wrap) return;
   wrap.innerHTML = '';
   if (!chats.length) { newChat(true); return; }
   const q = (state.chatSearch || '').trim().toLowerCase();
   // Сортировка по последней активности — свежие сверху, независимо от порядка создания.
   const ordered = chats.slice().sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
   const visible = q
-    ? ordered.filter((c) => c.title?.toLowerCase().includes(q) || c.messages.some((m) => m.content?.toLowerCase().includes(q)))
+    ? ordered.filter((c) => c.title?.toLowerCase().includes(q) || (c.messages || []).some((m) => m.content?.toLowerCase().includes(q)))
     : ordered;
   if (!visible.length) {
     const empty = document.createElement('div');
@@ -565,15 +880,15 @@ function renderChatList() {
   for (const c of visible) {
     const item = document.createElement('div');
     item.className = 'chat-list-item' + (c.id === activeChatId ? ' active' : '');
-    item.title = c.messages.length ? c.messages.map((m) => m.content).join('\n').slice(0, 600) : 'Пустой чат';
+    item.title = (c.messages || []).length ? (c.messages || []).map((m) => m.content).join('\n').slice(0, 600) : 'Пустой чат';
     const main = document.createElement('div');
     main.className = 'chat-list-main';
     const title = document.createElement('span');
     title.className = 'chat-list-title';
-    title.textContent = c.title || 'Новый чат';
+    title.textContent = chatTitle(c);
     const meta = document.createElement('span');
     meta.className = 'chat-list-meta';
-    meta.textContent = chatWhen(c.updatedAt || c.createdAt);
+    meta.textContent = [c.model, chatWhen(c.updatedAt || c.createdAt)].filter(Boolean).join(' · ');
     main.append(title, meta);
     const actions = document.createElement('div');
     actions.className = 'chat-list-actions';
@@ -703,15 +1018,17 @@ function scrollChat(force) {
 function renderMessages() {
   const c = activeChat();
   const log = $('chat-log');
+  if (!log) return;
   log.innerHTML = '';
-  $('chat-title').textContent = c?.title ?? 'Новый чат';
-  if (!c || !c.messages.length) {
+  $('chat-title').textContent = chatTitle(c);
+  const msgs = c?.messages || [];
+  if (!c || !msgs.length) {
     log.appendChild(welcomeBlock());
     return;
   }
-  for (let mi = 0; mi < c.messages.length; mi++) {
-    const m = c.messages[mi];
-    log.appendChild(msgBubble(m, { last: m.role === 'assistant' && mi === c.messages.length - 1 }));
+  for (let mi = 0; mi < msgs.length; mi++) {
+    const m = msgs[mi];
+    log.appendChild(msgBubble(m, { last: m.role === 'assistant' && mi === msgs.length - 1 }));
   }
   log.querySelectorAll('.code-copy').forEach(bindCopy);
   scrollChat(true);
@@ -735,7 +1052,7 @@ function bindCopy(btn) {
 }
 
 // Копирование кода — делегирование (кнопки создаются динамически при рендере)
-$('chat-log').addEventListener('click', (e) => {
+on('chat-log', 'click', (e) => {
   const btn = e.target.closest('.code-copy');
   if (!btn) return;
   const code = btn.closest('.code-block')?.querySelector('code')?.textContent ?? '';
@@ -746,7 +1063,7 @@ $('chat-log').addEventListener('click', (e) => {
 });
 
 // Автоскролл: прилипаем к низу, пока пользователь не проскроллил вверх
-$('chat-log').addEventListener('scroll', () => {
+on('chat-log', 'scroll', () => {
   const log = $('chat-log');
   state.stickBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
 });
@@ -759,9 +1076,9 @@ function loadChat() {
   restoreChatModel(activeChat());
 }
 
-$('btn-newchat').addEventListener('click', () => newChat());
-$('chat-search').addEventListener('input', () => { state.chatSearch = $('chat-search').value; renderChatList(); });
-$('btn-clear-chats').addEventListener('click', () => {
+on('btn-newchat', 'click', () => newChat());
+on('chat-search', 'input', () => { state.chatSearch = $('chat-search').value; renderChatList(); });
+on('btn-clear-chats', 'click', () => {
   if (!confirm('Удалить все чаты? Это действие необратимо.')) return;
   chats = [];
   activeChatId = null;
@@ -770,7 +1087,7 @@ $('btn-clear-chats').addEventListener('click', () => {
 });
 
 // Подсказки на экране приветствия
-$('chat-log').addEventListener('click', (e) => {
+on('chat-log', 'click', (e) => {
   const hint = e.target.closest('[data-hint]');
   if (hint) {
     $('prompt').value = hint.dataset.hint;
@@ -780,9 +1097,9 @@ $('chat-log').addEventListener('click', (e) => {
 });
 
 /* ============================ AI Chat — вложения ============================ */
-$('btn-attach').addEventListener('click', () => $('file-input').click());
+on('btn-attach', 'click', () => $('file-input').click());
 
-$('file-input').addEventListener('change', async (e) => {
+on('file-input', 'change', async (e) => {
   const files = [...e.target.files];
   e.target.value = '';
   for (const f of files) await addAttachment(f);
@@ -873,7 +1190,7 @@ function autoGrow() {
   ta.style.height = 'auto';
   ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
 }
-$('prompt').addEventListener('input', autoGrow);
+on('prompt', 'input', autoGrow);
 
 function composerBusy(busy) {
   state.streaming = busy;
@@ -888,7 +1205,7 @@ async function sendChat() {
   if (!promptText && !pendingAttachments.length) return;
   if (state.streaming) return;
   const model = $('model').value;
-  if (!model) { showError('Модели не установлены — скачайте модель в «Каталоге моделей».'); return; }
+  if (!model) { showError('Модели не установлены — скачайте модель в разделе «Модели» → «Каталог».'); return; }
 
   let chat = activeChat();
   if (!chat) chat = newChat(true);
@@ -908,7 +1225,8 @@ async function sendChat() {
   const userMsg = { role: 'user', content, attachments: attachMeta.length ? attachMeta : undefined };
   chat.messages.push(userMsg);
   if (chat.title === 'Новый чат' && promptText) {
-    chat.title = promptText.slice(0, 48) + (promptText.length > 48 ? '…' : '');
+    // Имя чата — первое сообщение пользователя, обрезанное до ~40 символов.
+    chat.title = promptText.trim().replace(/\s+/g, ' ').slice(0, 40) + (promptText.trim().length > 40 ? '…' : '');
     $('chat-title').textContent = chat.title;
   }
   chat.updatedAt = Date.now();
@@ -1062,9 +1380,9 @@ async function runCompletion(chat) {
   }
 }
 
-$('btn-send').addEventListener('click', sendChat);
-$('btn-stop').addEventListener('click', () => currentAbort?.abort(new Error('user stop')));
-$('prompt').addEventListener('keydown', (e) => {
+on('btn-send', 'click', sendChat);
+on('btn-stop', 'click', () => currentAbort?.abort(new Error('user stop')));
+on('prompt', 'keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
 });
 
@@ -1177,10 +1495,10 @@ async function quitApp() {
   try { await b.control('quit'); } catch { /* приложение закрывается */ }
 }
 
-$('ctl-start').addEventListener('click', startEngine);
-$('ctl-stop-models').addEventListener('click', stopAllModels);
-$('ctl-stop-engine').addEventListener('click', stopEngine);
-$('ctl-quit').addEventListener('click', quitApp);
+on('ctl-start', 'click', startEngine);
+on('ctl-stop-models', 'click', stopAllModels);
+on('ctl-stop-engine', 'click', stopEngine);
+on('ctl-quit', 'click', quitApp);
 
 /* ============================ Менеджер моделей (Этап 1Б §4) ============================ */
 /* Статусы отражают действительное состояние: «запущена» — только если runtime
@@ -1271,6 +1589,10 @@ async function loadMyModels() {
             sel.value = m.id;
             localStorage.setItem('litemind-selected-model', m.id);
             setTitlebarModel(m.id);
+            const c = activeChat();
+            if (c) { c.model = m.id; saveChats(); }
+            // Как и выбор в селекторе чата: открытие модели в чате сразу запускает её.
+            void startModelIfNeeded(m.id);
             openTab('chat');
           } else {
             showError('Модель ещё не видна движку — подождите пару секунд или обновите вкладку.');
@@ -1379,8 +1701,8 @@ async function loadMyModels() {
 /* §6: «Добавить свою модель» — выбор GGUF через проводник Windows (Desktop)
    или ввод пути вручную. Проверка формата и SHA-256 выполняются движком;
    метаданные — только из заголовка GGUF, ничего не придумывается. */
-$('mym-search')?.addEventListener('input', () => loadMyModels());
-$('btn-add-own').addEventListener('click', async () => {
+on('mym-search', 'input', () => loadMyModels());
+on('btn-add-own', 'click', async () => {
   let file = null;
   const b = bridge();
   if (b?.pickGgufFile) {
@@ -1412,7 +1734,7 @@ async function optimizeModel(id, reportEl) {
   } catch (err) { reportEl.textContent = 'ошибка: ' + err.message; }
 }
 
-$('btn-install-gguf').addEventListener('click', async () => {
+on('btn-install-gguf', 'click', async () => {
   const sel = document.querySelector('input[name="gguf"]:checked');
   if (!sel) { showError('Выберите GGUF-файл.'); return; }
   $('install-note').textContent = 'применяю…';
@@ -1547,12 +1869,16 @@ async function loadCatalog() {
     try { state.catalog = await api('/api/catalog'); } catch (err) { event('каталог: ' + err.message); return; }
   }
   const c = state.catalog;
-  $('hw-hint').textContent =
-    `Ваш компьютер: CPU: ${c.hardware.cpu.model || '—'} · AVX/AVX2: ${c.hardware.cpu.avx === null ? 'неизвестно' : `${c.hardware.cpu.avx}/${c.hardware.cpu.avx2}`} · ` +
-    `RAM: ${(c.hardware.totalRamMb / 1024).toFixed(1)} ГБ (свободно ${(c.hardware.freeRamMb / 1024).toFixed(1)}) · ` +
-    `доступно для моделей ≈ ${(c.hardware.recommendation.usableModelRamMb / 1024).toFixed(1)} ГБ · контекст по умолчанию ≤ ${c.hardware.recommendation.maxContextTokens} ток.` +
-    (c.hardware.cpu.avx === false ? ' · CPU без AVX/AVX2 — сборка LiteMind совместима, пометки «не рекомендуется» учитывают скорость.' : '') +
-    (c.overrideSource ? ` · каталог дополнен (${c.overrideSource === 'remote' ? 'удалённый источник' : 'локальный файл-оверрайд'})` : '');
+  /* Железо может отсутствовать в ответе (например, анализ железа не удался) —
+     каталог всё равно показываем, без рекомендаций и без падения вкладки. */
+  const hw = c.hardware;
+  $('hw-hint').textContent = !hw
+    ? 'Сведения о железе недоступны — каталог показан без рекомендаций под ваш ПК.'
+    : `Ваш компьютер: CPU: ${hw.cpu?.model || '—'} · AVX/AVX2: ${hw.cpu?.avx === null || hw.cpu?.avx == null ? 'неизвестно' : `${hw.cpu.avx}/${hw.cpu.avx2}`} · ` +
+      `RAM: ${((hw.totalRamMb ?? 0) / 1024).toFixed(1)} ГБ (свободно ${((hw.freeRamMb ?? 0) / 1024).toFixed(1)}) · ` +
+      `доступно для моделей ≈ ${((hw.recommendation?.usableModelRamMb ?? 0) / 1024).toFixed(1)} ГБ · контекст по умолчанию ≤ ${hw.recommendation?.maxContextTokens ?? '—'} ток.` +
+      (hw.cpu?.avx === false ? ' · CPU без AVX/AVX2 — сборка LiteMind совместима, пометки «не рекомендуется» учитывают скорость.' : '') +
+      (c.overrideSource ? ` · каталог дополнен (${c.overrideSource === 'remote' ? 'удалённый источник' : 'локальный файл-оверрайд'})` : '');
 
   fillCatalogControls(c);
   renderCatalog();
@@ -1650,8 +1976,8 @@ function openModelDetails(m, c) {
   $('model-dialog-body').innerHTML = html;
   $('model-dialog').hidden = false;
 }
-$('model-dialog-close').addEventListener('click', () => { $('model-dialog').hidden = true; });
-$('model-dialog').addEventListener('click', (e) => { if (e.target === $('model-dialog')) $('model-dialog').hidden = true; });
+on('model-dialog-close', 'click', () => { $('model-dialog').hidden = true; });
+on('model-dialog', 'click', (e) => { if (e.target === $('model-dialog')) $('model-dialog').hidden = true; });
 
 /* Выбор модели по задаче (§3): фильтрует каталог и объясняет, почему
    модели подходят. Автопереключение активной модели чата не выполняется. */
@@ -1671,6 +1997,7 @@ document.querySelectorAll('#task-picks button[data-task]').forEach((b) =>
 
 const bindCatFilter = (id, key, ev = 'change') => {
   const el = $(id);
+  if (!el) return;
   el.addEventListener(ev, () => {
     catFilters[key] = el.type === 'checkbox' ? el.checked : el.value;
     renderCatalog();
@@ -1777,10 +2104,10 @@ async function updateDlSpace() {
   $('dl-go').disabled = !enough;
 }
 
-$('dl-dir').addEventListener('input', () => updateDlSpace());
-$('dl-cancel').addEventListener('click', closeDownloadDialog);
-$('dl-dialog').addEventListener('click', (e) => { if (e.target === $('dl-dialog')) closeDownloadDialog(); });
-$('dl-pick').addEventListener('click', async () => {
+on('dl-dir', 'input', () => updateDlSpace());
+on('dl-cancel', 'click', closeDownloadDialog);
+on('dl-dialog', 'click', (e) => { if (e.target === $('dl-dialog')) closeDownloadDialog(); });
+on('dl-pick', 'click', async () => {
   const b = bridge();
   if (!b?.pickFolder) { showError('Стандартный диалог выбора папки доступен в LiteMind Desktop. В браузере введите путь вручную.'); return; }
   const r = await b.pickFolder('Папка для моделей', $('dl-dir').value.trim() || undefined).catch(() => null);
@@ -1791,7 +2118,7 @@ $('dl-pick').addEventListener('click', async () => {
     updateDlSpace();
   }
 });
-$('dl-go').addEventListener('click', async (e) => {
+on('dl-go', 'click', async (e) => {
   if (!dlPending) return;
   const { model: m, fileName } = dlPending;
   const targetDir = $('dl-dir').value.trim();
@@ -1883,15 +2210,16 @@ async function refreshDownloads() {
     li.querySelector('.act-cancel')?.addEventListener('click', act('cancel'));
     li.querySelector('.act-install')?.addEventListener('click', () =>
       api('/api/install', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ggufPath: `${d.targetDir}/${d.name}` }) })
-        .then((r) => { event(`${r.skipped ? 'модель готова' : 'установлено'}: ${r.model}`); refreshDownloads(); refreshStatus(); })
+        .then((r) => { event(`${r.skipped ? 'модель готова' : 'установлено'}: ${r.model}`); refreshDownloads(); refreshStatus(); refreshScanModels(); })
         .catch((err) => showError('установка: ' + err.message)));
     ul.appendChild(li);
 
     if (d.state === 'done' && d.modelId && !AUTO_INSTALLED.has(d.id)) {
       AUTO_INSTALLED.add(d.id);
-      // При lmlama «установка» не нужна — модель видна сразу. Просто обновим списки.
+      // При lmlama «установка» не нужна — модель видна сразу. Просто обновим списки
+      // (включая скан папки моделей — чтобы селектор в чате увидел новый GGUF).
       api('/api/install', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: d.modelId, fileName: d.name, targetDir: d.targetDir }) })
-        .then((r) => event(`${r.skipped ? 'модель готова к чату' : 'автоустановка завершена'}: ${r.model}`))
+        .then((r) => { event(`${r.skipped ? 'модель готова к чату' : 'автоустановка завершена'}: ${r.model}`); refreshScanModels(); })
         .catch((err) => event(`(${d.name}): ${err.message}`));
     }
     // Автопроверка целостности после скачивания (ТЗ Этап 1 §7): сверка с
@@ -2148,9 +2476,9 @@ async function sendProjectStructureToChat() {
   }
 }
 
-$('btn-proj-scan').addEventListener('click', () => openProjectDir());
-$('btn-proj-rescan').addEventListener('click', () => scanProject(true));
-$('btn-proj-pick').addEventListener('click', async () => {
+on('btn-proj-scan', 'click', () => openProjectDir());
+on('btn-proj-rescan', 'click', () => scanProject(true));
+on('btn-proj-pick', 'click', async () => {
   const b = bridge();
   if (!b?.pickFolder) { showError('Стандартный диалог выбора папки доступен в LiteMind Desktop. В браузере введите путь вручную.'); return; }
   const r = await b.pickFolder('Папка проекта', $('proj-dir').value.trim() || undefined).catch(() => null);
@@ -2161,7 +2489,7 @@ $('btn-proj-pick').addEventListener('click', async () => {
 });
 /* Создание папки проекта: пользователь выбирает/создаёт её в нативном
    диалоге Windows, движок делает mkdir -p и открывает проект. */
-$('btn-proj-create').addEventListener('click', async () => {
+on('btn-proj-create', 'click', async () => {
   let dir = $('proj-dir').value.trim();
   const b = bridge();
   if (b?.pickFolder) {
@@ -2180,22 +2508,22 @@ $('btn-proj-create').addEventListener('click', async () => {
     showError('создание папки: ' + err.message);
   }
 });
-$('btn-proj-close').addEventListener('click', closeProject);
-$('btn-proj-openfolder').addEventListener('click', () => { if (proj.active) openProjectFolder(proj.active.dir); });
-$('btn-proj-copypath').addEventListener('click', async () => {
+on('btn-proj-close', 'click', closeProject);
+on('btn-proj-openfolder', 'click', () => { if (proj.active) openProjectFolder(proj.active.dir); });
+on('btn-proj-copypath', 'click', async () => {
   if (!proj.active) return;
   const ok = await copyToClipboard(proj.active.dir);
   if (ok) event('путь проекта скопирован в буфер');
 });
-$('btn-proj-structure-chat').addEventListener('click', sendProjectStructureToChat);
-$('btn-proj-structure-chat2').addEventListener('click', sendProjectStructureToChat);
-$('proj-excludes').addEventListener('change', (e) => {
+on('btn-proj-structure-chat', 'click', sendProjectStructureToChat);
+on('btn-proj-structure-chat2', 'click', sendProjectStructureToChat);
+on('proj-excludes', 'change', (e) => {
   localStorage.setItem(PROJ_EXCLUDES_KEY, e.target.value.trim());
   event('исключения сканирования сохранены');
   if (state.wsDir) wsReloadTree();
 });
 
-$('btn-proj-search').addEventListener('click', async () => {
+on('btn-proj-search', 'click', async () => {
   const dir = state.projDir || $('proj-dir').value.trim();
   const q = $('proj-query').value.trim();
   if (!dir || !q) { showError('Откройте проект и введите запрос.'); return; }
@@ -2392,7 +2720,7 @@ async function wsRenderLevel(relDir) {
 
 /* Поиск файлов по имени (замещает дерево на время набора). */
 let wsFindTimer = null;
-$('ws-find').addEventListener('input', () => {
+on('ws-find', 'input', () => {
   clearTimeout(wsFindTimer);
   wsFindTimer = setTimeout(wsRunFind, 300);
 });
@@ -2466,7 +2794,7 @@ function renderWsCtx() {
 /* Передача выбранных файлов/папок в чат: контент читает движок, ограничения
    честные — бинарники и огромные файлы уходят с предупреждением, без молчаливой
    порчи (§2). */
-$('btn-ws-ctx-chat').addEventListener('click', async () => {
+on('btn-ws-ctx-chat', 'click', async () => {
   if (!state.wsDir) { showError('Откройте проект.'); return; }
   const items = [...wsCtx.items];
   if (!items.length) { showError('Отметьте файлы или папки кнопкой «＋ чат».'); return; }
@@ -2510,7 +2838,7 @@ $('btn-ws-ctx-chat').addEventListener('click', async () => {
     $('btn-ws-ctx-chat').disabled = false;
   }
 });
-$('btn-ws-ctx-clear').addEventListener('click', () => { wsCtx.clear(); renderWsCtx(); });
+on('btn-ws-ctx-clear', 'click', () => { wsCtx.clear(); renderWsCtx(); });
 
 /* Открытие файла: содержимое + mtime для защиты от внешних изменений. */
 async function openWsFile(rel, btn) {
@@ -2572,17 +2900,17 @@ async function saveWsFile({ force = false } = {}) {
     return false;
   }
 }
-$('btn-ws-save').addEventListener('click', () => saveWsFile());
+on('btn-ws-save', 'click', () => saveWsFile());
 
 /* Индикатор несохранённых изменений. */
-$('ws-editor').addEventListener('input', () => {
+on('ws-editor', 'input', () => {
   if (!ws.dirty) {
     ws.dirty = true;
     $('ws-dirty').hidden = false;
     $('ws-note').textContent = '';
   }
 });
-$('ws-editor').addEventListener('keydown', (e) => {
+on('ws-editor', 'keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
     e.preventDefault();
     saveWsFile();
@@ -2613,24 +2941,24 @@ function wsSendSelectionToChat(selectedOnly) {
   $('ws-note').textContent = 'передано в чат как вложение';
   openTab('chat');
 }
-$('btn-ws-tochat').addEventListener('click', () => wsSendSelectionToChat(false));
-$('btn-ws-sel-tochat').addEventListener('click', () => wsSendSelectionToChat(true));
+on('btn-ws-tochat', 'click', () => wsSendSelectionToChat(false));
+on('btn-ws-sel-tochat', 'click', () => wsSendSelectionToChat(true));
 
-$('btn-ws-refresh').addEventListener('click', () => {
+on('btn-ws-refresh', 'click', () => {
   if (ws.dirty && !confirm('Есть несохранённые изменения. Обновить дерево проекта? (Редактор не тронется, но файл могли изменить на диске.)')) return;
   wsReloadTree();
   event('дерево проекта обновлено');
 });
-$('btn-ws-openfolder').addEventListener('click', () => { if (state.wsDir) openProjectFolder(state.wsDir); });
-$('btn-ws-copypath').addEventListener('click', async () => {
+on('btn-ws-openfolder', 'click', () => { if (state.wsDir) openProjectFolder(state.wsDir); });
+on('btn-ws-copypath', 'click', async () => {
   if (!state.wsDir) return;
   const target = ws.file ? `${state.wsDir}${state.wsDir.endsWith('\\') || state.wsDir.endsWith('/') ? '' : state.wsDir.includes('\\') ? '\\' : '/'}${ws.file}` : state.wsDir;
   if (await copyToClipboard(target)) event('путь скопирован: ' + target);
 });
-$('btn-ws-gotochat').addEventListener('click', () => openTab('chat'));
+on('btn-ws-gotochat', 'click', () => openTab('chat'));
 
 /* Поиск текста внутри файлов — с номерами строк. */
-$('btn-ws-grep').addEventListener('click', async () => {
+on('btn-ws-grep', 'click', async () => {
   const dir = state.wsDir;
   const q = $('ws-grep-q').value.trim();
   if (!dir || !q) { showError('Откройте проект и введите текст для поиска.'); return; }
@@ -2667,7 +2995,7 @@ $('btn-ws-grep').addEventListener('click', async () => {
     showError('поиск текста: ' + err.message);
   }
 });
-$('btn-ws-grep-close').addEventListener('click', () => { $('ws-grep-results').hidden = true; });
+on('btn-ws-grep-close', 'click', () => { $('ws-grep-results').hidden = true; });
 
 /* ============================ AI Terminal (Этап 1В §4) ============================ */
 /* Реальный shell, живой потоковый вывод (SSE), кодировки Windows (UTF-8 →
@@ -2707,7 +3035,7 @@ function syncTermCwdLabel() {
   const v = $('term-cwd').value.trim();
   $('term-cwd-label').textContent = v || '—';
 }
-$('term-cwd').addEventListener('input', syncTermCwdLabel);
+on('term-cwd', 'input', syncTermCwdLabel);
 
 function loadTerminal() {
   if (!state.projDir && !$('term-cwd').value) {
@@ -2718,19 +3046,19 @@ function loadTerminal() {
   termSetState(termRunning ? 'running' : 'ready');
 }
 
-$('btn-term-useproj').addEventListener('click', () => {
+on('btn-term-useproj', 'click', () => {
   if (!state.projDir) { showError('Сначала откройте проект на вкладке «Проекты».'); return; }
   $('term-cwd').value = state.projDir;
   syncTermCwdLabel();
   event('терминал: рабочая папка = активный проект');
 });
-$('btn-term-pick').addEventListener('click', async () => {
+on('btn-term-pick', 'click', async () => {
   const b = bridge();
   if (!b?.pickFolder) { showError('Стандартный диалог выбора папки доступен в LiteMind Desktop. В браузере введите путь вручную.'); return; }
   const r = await b.pickFolder('Рабочая папка терминала', $('term-cwd').value.trim() || undefined).catch(() => null);
   if (r?.ok && r.path) { $('term-cwd').value = r.path; syncTermCwdLabel(); }
 });
-$('btn-term-openfolder').addEventListener('click', () => {
+on('btn-term-openfolder', 'click', () => {
   const dir = $('term-cwd').value.trim();
   if (!dir) { showError('Укажите рабочую папку.'); return; }
   openProjectFolder(dir);
@@ -2881,8 +3209,8 @@ async function termRun(commandRaw) {
   }
 }
 
-$('btn-term-run').addEventListener('click', () => termRun());
-$('btn-term-rerun').addEventListener('click', () => {
+on('btn-term-run', 'click', () => termRun());
+on('btn-term-rerun', 'click', () => {
   const last = termHistory[0];
   if (!last) { showError('История пуста.'); return; }
   $('term-cmd').value = last;
@@ -2891,7 +3219,7 @@ $('btn-term-rerun').addEventListener('click', () => {
 
 /* Остановка: защита от повторного нажатия (disabled до события exit) и от
    гонок (после exit кнопки сбрасываются только один раз). */
-$('btn-term-stop').addEventListener('click', async () => {
+on('btn-term-stop', 'click', async () => {
   if (!termRunning || termStopping || !termJobId) return;
   termStopping = true;
   $('btn-term-stop').disabled = true;
@@ -2906,12 +3234,12 @@ $('btn-term-stop').addEventListener('click', async () => {
 });
 
 /* Очистка экрана: история команд и termLastOutput сохраняются. */
-$('btn-term-clear').addEventListener('click', () => {
+on('btn-term-clear', 'click', () => {
   const out = $('term-out');
   out.textContent = '(экран очищен; история команд сохранена — ↑/↓)\n';
 });
 
-$('btn-term-tochat').addEventListener('click', () => {
+on('btn-term-tochat', 'click', () => {
   if (!termLastOutput) return;
   pendingAttachments.push({
     name: 'terminal-output.txt',
@@ -2926,7 +3254,7 @@ $('btn-term-tochat').addEventListener('click', () => {
 });
 
 /* История команд: ↑ — назад, ↓ — вперёд; недобитый ввод сохраняется. */
-$('term-cmd').addEventListener('keydown', (e) => {
+on('term-cmd', 'keydown', (e) => {
   if (e.key === 'Enter') { termRun(); return; }
   if (!termHistory.length) return;
   if (e.key === 'ArrowUp') {
@@ -3000,7 +3328,7 @@ function renderDiff(rows, wrapEl) {
 
 /* Запрос ИИ на изменение открытого файла: файл прикладывается вложением,
    в поле ввода — готовая инструкция с жёстким форматом ответа. */
-$('btn-ws-aichange').addEventListener('click', () => {
+on('btn-ws-aichange', 'click', () => {
   if (!ws.file) { showError('Сначала откройте файл, который нужно изменить.'); return; }
   const content = $('ws-editor').value;
   if (!content.trim()) { showError('Файл пуст — ИИ не с чем работать.'); return; }
@@ -3113,8 +3441,8 @@ async function applyAiChange({ force = false } = {}) {
     $('btn-ws-apply').disabled = false;
   }
 }
-$('btn-ws-apply').addEventListener('click', () => applyAiChange());
-$('btn-ws-ai-cancel').addEventListener('click', () => {
+on('btn-ws-apply', 'click', () => applyAiChange());
+on('btn-ws-ai-cancel', 'click', () => {
   $('ws-aipanel').hidden = true;
   aiChange = null;
   $('btn-ws-apply').hidden = false;
@@ -3123,7 +3451,7 @@ $('btn-ws-ai-cancel').addEventListener('click', () => {
 
 /* Восстановление из резервной копии — тоже обратимо (текущее содержимое
    перед восстановлением уходит в новую копию на сервере). */
-$('btn-ws-restore').addEventListener('click', async () => {
+on('btn-ws-restore', 'click', async () => {
   if (!aiChange?.backupId) { showError('Нет резервной копии для этого изменения.'); return; }
   if (!confirm(`Восстановить исходное содержимое файла ${aiChange.file} из резервной копии?`)) return;
   try {
@@ -3237,7 +3565,7 @@ async function loadStorage() {
   }
 }
 
-$('btn-store-pick')?.addEventListener('click', async () => {
+on('btn-store-pick', 'click', async () => {
   const b = bridge();
   if (!b?.pickFolder) { showError('Нативный выбор папки доступен в LiteMind Desktop.'); return; }
   const s = await api('/api/storage').catch(() => null);
@@ -3248,7 +3576,7 @@ $('btn-store-pick')?.addEventListener('click', async () => {
   }
 });
 
-$('btn-store-move')?.addEventListener('click', async () => {
+on('btn-store-move', 'click', async () => {
   if (!storePickDir) { showError('Сначала выберите новую папку («Выбрать новую папку…»).'); return; }
   const s = await api('/api/storage').catch(() => null);
   const keep = $('store-keepsrc').checked;
@@ -3274,7 +3602,7 @@ $('btn-store-move')?.addEventListener('click', async () => {
   }
 });
 
-$('btn-store-check')?.addEventListener('click', async () => {
+on('btn-store-check', 'click', async () => {
   const note = $('store-note');
   note.textContent = 'Проверяю пути…';
   try {
@@ -3288,7 +3616,7 @@ $('btn-store-check')?.addEventListener('click', async () => {
   }
 });
 
-$('btn-store-open')?.addEventListener('click', async () => {
+on('btn-store-open', 'click', async () => {
   const b = bridge();
   try {
     const s = await api('/api/storage');
@@ -3340,7 +3668,7 @@ async function loadAboutApp() {
   }
 }
 
-$('btn-open-logs').addEventListener('click', async () => {
+on('btn-open-logs', 'click', async () => {
   const b = bridge();
   if (!b?.appInfo) { showError('Открытие журналов доступно в LiteMind Desktop.'); return; }
   const a = await b.appInfo().catch(() => null);
@@ -3349,7 +3677,7 @@ $('btn-open-logs').addEventListener('click', async () => {
   if (r?.ok === false) showError('Не удалось открыть папку журналов: ' + (r.error ?? ''));
 });
 
-$('btn-open-models').addEventListener('click', async () => {
+on('btn-open-models', 'click', async () => {
   const dir = $('set-rootdir').value.trim();
   if (!dir) { showError('Папка моделей не задана.'); return; }
   const b = bridge();
@@ -3359,14 +3687,14 @@ $('btn-open-models').addEventListener('click', async () => {
 });
 
 /* Нативный выбор папки моделей (ТЗ Этап 1 §12). */
-$('btn-set-pick').addEventListener('click', async () => {
+on('btn-set-pick', 'click', async () => {
   const b = bridge();
   if (!b?.pickFolder) { showError('Стандартный диалог выбора папки доступен в LiteMind Desktop. В браузере введите путь вручную.'); return; }
   const r = await b.pickFolder('Папка для моделей', $('set-rootdir').value.trim() || undefined).catch(() => null);
   if (r?.ok && r.path) $('set-rootdir').value = r.path;
 });
 
-$('btn-save-settings').addEventListener('click', async () => {
+on('btn-save-settings', 'click', async () => {
   const rootDir = $('set-rootdir').value.trim();
   const profile = $('set-profile').value;
   const webPayload = {
@@ -3390,9 +3718,9 @@ $('btn-save-settings').addEventListener('click', async () => {
     showError('настройки: ' + err.message);
   }
 });
-$('set-adaptive').addEventListener('change', (e) =>
+on('set-adaptive', 'change', (e) =>
   api('/api/adaptive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: e.target.checked }) }).catch((err) => showError(err.message)));
-$('set-compaction').addEventListener('change', (e) =>
+on('set-compaction', 'change', (e) =>
   api('/api/adaptive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contextCompaction: e.target.checked }) }).catch((err) => showError(err.message)));
 
 /* ==================== Генератор изображений (ТЗ v0.6.1 §2–5) ==================== */
@@ -3561,18 +3889,18 @@ async function loadImageGen() {
   }
 }
 
-$('ig-generate').addEventListener('click', igGenerate);
-$('ig-stop').addEventListener('click', async () => { try { await api('/api/image/stop', { method: 'POST' }); } catch { /* уже остановлено */ } });
-$('ig-refresh').addEventListener('click', loadImageGen);
-$('ig-seed-rnd').addEventListener('click', () => { $('ig-seed').value = Math.floor(Math.random() * 2147483647); });
-$('ig-steps').addEventListener('input', () => { $('ig-steps-val').textContent = $('ig-steps').value; });
-$('ig-cfg').addEventListener('input', () => { $('ig-cfg-val').textContent = $('ig-cfg').value; });
-$('ig-copy-prompt').addEventListener('click', async () => {
+on('ig-generate', 'click', igGenerate);
+on('ig-stop', 'click', async () => { try { await api('/api/image/stop', { method: 'POST' }); } catch { /* уже остановлено */ } });
+on('ig-refresh', 'click', loadImageGen);
+on('ig-seed-rnd', 'click', () => { $('ig-seed').value = Math.floor(Math.random() * 2147483647); });
+on('ig-steps', 'input', () => { $('ig-steps-val').textContent = $('ig-steps').value; });
+on('ig-cfg', 'input', () => { $('ig-cfg-val').textContent = $('ig-cfg').value; });
+on('ig-copy-prompt', 'click', async () => {
   const t = $('ig-prompt').value.trim();
   if (!t) return;
   try { await navigator.clipboard.writeText(t); $('ig-copy-prompt').textContent = 'Скопировано'; setTimeout(() => { $('ig-copy-prompt').textContent = 'Копировать промпт'; }, 1500); } catch { /* нет доступа к буферу */ }
 });
-$('ig-regen').addEventListener('click', () => {
+on('ig-regen', 'click', () => {
   const p = ig.lastParams;
   if (!p) { $('ig-error').hidden = false; $('ig-error').textContent = 'Ещё не было генераций в этой сессии.'; return; }
   $('ig-prompt').value = p.prompt; $('ig-negative').value = p.negative || '';
@@ -3582,18 +3910,18 @@ $('ig-regen').addEventListener('click', () => {
   $('ig-threads').value = p.threads ?? 0;
   igGenerate();
 });
-$('ig-save').addEventListener('click', () => {
+on('ig-save', 'click', () => {
   const name = $('ig-preview').dataset.name;
   if (!name) return;
   const a = document.createElement('a');
   a.href = igFileUrl(name); a.download = name;
   document.body.appendChild(a); a.click(); a.remove();
 });
-$('ig-open-full').addEventListener('click', () => {
+on('ig-open-full', 'click', () => {
   const name = $('ig-preview').dataset.name;
   if (name) window.open(igFileUrl(name), '_blank');
 });
-$('ig-gallery').addEventListener('click', (e) => {
+on('ig-gallery', 'click', (e) => {
   const fig = e.target.closest('.ig-item');
   if (!fig) return;
   const name = fig.dataset.name;
@@ -3614,10 +3942,22 @@ $('ig-gallery').addEventListener('click', (e) => {
 });
 
 /* ============================ запуск ============================ */
-loadChat();
-switchTab(location.hash.slice(1) || 'chat');
-refreshStatus();
-setInterval(refreshStatus, 2500);
+/* Каждый init-шаг изолирован: сбой одного (например, движок вернул 503 или в
+   localStorage попала повреждённая запись) не отменяет загрузку остальных
+   разделов и не оставляет кнопки мёртвыми. */
+try { loadChat(); } catch (err) { console.error('init: loadChat:', err); }
+try { switchTab(location.hash.slice(1) || 'chat'); } catch (err) { console.error('init: switchTab:', err); }
+try { refreshStatus(); } catch (err) { console.error('init: refreshStatus:', err); }
+try { refreshScanModels(); } catch (err) { console.error('init: scan models:', err); }
+setInterval(() => { try { refreshStatus(); } catch (err) { console.error('refreshStatus:', err); } }, 2500);
 setInterval(() => {
-  if (document.querySelector('.nav-item.active')?.dataset.tab === 'downloads') refreshDownloads();
+  try {
+    if (document.querySelector('.nav-item.active')?.dataset.tab === 'downloads') refreshDownloads();
+  } catch (err) { console.error('downloads tick:', err); }
 }, 1500);
+setInterval(() => {
+  try {
+    // Панель «Ресурсы и профиль»: опрос раз в 3 с, только пока вкладка видима.
+    if (document.querySelector('.nav-item.active')?.dataset.tab === 'monitor') pollResources();
+  } catch (err) { console.error('resources tick:', err); }
+}, 3000);

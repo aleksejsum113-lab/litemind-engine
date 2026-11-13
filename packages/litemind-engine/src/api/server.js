@@ -317,6 +317,48 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
     }
 
     if (req.method === 'GET' && p === '/api/status') return json(res, 200, await engine.status());
+    // ТЗ v0.6.2 «Мониторинг»: единый лёгкий срез для панели «Ресурсы и профиль».
+    // Данные берутся из уже собранного сэмплера (без подпроцессов), runtimeInfo
+    // и последней записи PerfRecorder. Всё, что неизвестно, — null: UI покажет «—».
+    if (req.method === 'GET' && p === '/api/resources') {
+      const m = engine.sampler?.latest ?? null;
+      const rt = engine.backend?.runtimeInfo?.() ?? null;
+      const params = rt?.params ?? null;
+      const perf = engine.perf?.summary?.() ?? null;
+      // tokens/sec: самый свежий удачный сэмпл генерации; пусто — среднее; нет генераций — null.
+      let tokensPerSec = null;
+      const okSamples = (engine.perf?.samples ?? []).filter((s) => !s.error && !s.cancelled && Number.isFinite(s.tokensPerSecond));
+      if (okSamples.length) tokensPerSec = okSamples[okSamples.length - 1].tokensPerSecond;
+      else if (Number.isFinite(perf?.tokensPerSecond?.avg)) tokensPerSec = perf.tokensPerSecond.avg;
+      // profileApplied: работающий runtime собран с параметрами ДРУГОГО профиля —
+      // значит, выбранный профиль вступит в силу только после перезапуска модели.
+      const profileApplied = !(rt?.running && params?.profile && params.profile !== engine.config.profile);
+      const state = rt?.running ? (engine.health?.ok ? 'running' : 'loading') : 'stopped';
+      const warnings = [];
+      if (!profileApplied) warnings.push(`Профиль «${engine.config.profile}» применится после перезапуска модели (сейчас работает профиль «${params.profile}»).`);
+      return json(res, 200, {
+        profile: engine.config.profile,
+        profileLabel: engine.profile?.label ?? null,
+        profileApplied,
+        sampler: m ? {
+          totalRamMb: m.totalRamMb ?? null,
+          usedRamMb: m.usedRamMb ?? null,
+          availableRamMb: m.availableRamMb ?? null,
+          cpuPercent: m.cpuPercent ?? null,
+          at: m.at ?? null
+        } : null,
+        runtime: {
+          model: rt?.modelId ?? (rt?.modelFile ? path.basename(rt.modelFile) : null),
+          state,
+          running: Boolean(rt?.running),
+          threads: params?.threads ?? null,
+          contextTokens: params?.contextTokens ?? null,
+          loadMs: rt?.loadMs ?? null
+        },
+        tokensPerSec,
+        warnings
+      });
+    }
     if (req.method === 'GET' && p === '/api/metrics') return json(res, 200, { perf: engine.perf.summary(), history: engine.sampler?.history ?? [] });
     // Этап 2 §2/§12: подробная производительность — трассы стадий, серверные тайминги,
     // фактические параметры runtime. Честные значения или null («недоступно»).

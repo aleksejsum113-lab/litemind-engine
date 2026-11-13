@@ -44,6 +44,28 @@ import { applyPriorityToPid } from '../resource/priority.js';
 
 const EXE = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
 
+/**
+ * ТЗ v0.6.2 §1: человеческое пояснение частых кодов выхода Windows.
+ * Отрицательные коды в Node — это NTSTATUS как signed int32: пользователь
+ * видит «код выхода=3221225781» и не может понять, что это 0xC0000135
+ * STATUS_DLL_NOT_FOUND. DLL-краши умирают ДО main() — stderr при этом
+ * пуст, поэтому пояснение по коду часто единственная диагностика.
+ */
+function exitCodeHint(code) {
+  // NTSTATUS-неудачи приходят в двух видах: signed int32 (-1073741515) или
+  // unsigned (3221225781) — обрабатываем оба, иначе половина случаев без подсказки.
+  const isNtFailure = (typeof code === 'number') && (code < 0 || (code >= 0x80000000 && code <= 0xFFFFFFFF));
+  if (!isNtFailure) return null;
+  const nt = (code >>> 0).toString(16).toUpperCase().padStart(8, '0');
+  const known = {
+    C0000135: '0x' + nt + ' STATUS_DLL_NOT_FOUND — не найдена DLL рядом с llama-server.exe (VC++ runtime / OpenSSL). Переустановите приложение официальным установщиком.',
+    C0000142: '0x' + nt + ' STATUS_DLL_INIT_FAILED — не инициализировалась DLL (обычно повреждён VC++ runtime). Переустановите приложение.',
+    C000007B: '0x' + nt + ' STATUS_INVALID_IMAGE_FORMAT — exe/DLL повреждён или чужой разрядности. Переустановите приложение.',
+    C0000005: '0x' + nt + ' STATUS_ACCESS_VIOLATION — падение внутри llama-server. Проверьте файл модели кнопкой «Проверить» в разделе «Модели».'
+  };
+  return known[nt] ?? null;
+}
+
 /** Свободный TCP-порт на loopback. */
 function freePort(host = '127.0.0.1') {
   return new Promise((resolve, reject) => {
@@ -558,15 +580,19 @@ export class LlamaCppBackend {
         const tail = (this.exitInfo?.stderrTail || stderrTail.slice(-10).join('\n') || '').slice(-800);
         const loadAttemptedMs = Date.now() - startedAt;
         // Честная диагностика (§11): код выхода/сигнал — в сообщении, а не только в логе.
+        // ТЗ v0.6.2 §1: для NTSTATUS-кодов добавляем человеческое пояснение —
+        // «код выхода=3221225781» без расшифровки пользователь исправить не может.
+        const hint = exitCodeHint(this.exitInfo?.code ?? proc.exitCode);
         const diag = tail
           || (this.exitInfo?.error ? `ошибка запуска: ${this.exitInfo.error}` : '')
           || (this.exitInfo && (this.exitInfo.code != null || this.exitInfo.signal)
-            ? `код выхода=${this.exitInfo.code ?? '-'}${this.exitInfo.signal ? `, сигнал=${this.exitInfo.signal}` : ''} — процесс завершился без вывода в stderr`
+            ? `код выхода=${this.exitInfo.code ?? '-'}${this.exitInfo.signal ? `, сигнал=${this.exitInfo.signal}` : ''} — процесс завершился без вывода в stderr${hint ? `. ${hint}` : ''}`
             : '')
           || 'Процесс завершился без диагностики.';
+        // Даже когда stderr что-то писал, DLL-подсказка важнее — она объясняет, ЧТО делать.
         this._resetProc();
         throw new BackendError(
-          `llama-server не смог загрузить модель: ${path.basename(file)}. Прожил ${Math.round(loadAttemptedMs / 100) / 10} с. ${diag}`,
+          `llama-server не смог загрузить модель: ${path.basename(file)}. Прожил ${Math.round(loadAttemptedMs / 100) / 10} с. ${tail && hint ? `${hint} Вывод процесса: ${diag}` : diag}`,
           { code: 'RUNTIME_START_FAILED', status: 502 }
         );
       }

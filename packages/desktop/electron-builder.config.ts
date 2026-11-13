@@ -124,6 +124,13 @@ const getBase = (appId: string): Configuration => {
         ? [{ from: "resources/llamacpp", to: "llamacpp", filter: ["**/*"] }]
         : []),
       ...(hasSdRuntime ? [{ from: "resources/sd", to: "sd", filter: ["**/*"] }] : []),
+      // ТЗ v0.6.1 §2: иконка окна на Windows читается в рантайме из resources\icons\icon.ico
+      // (рядом с app.asar — см. windowIconFile в windows/defaults.ts). Кладём её на диск только
+      // в Windows-сборках: сборка идёт на windows-раннере, поэтому guard по process.platform,
+      // и только если иконка реально есть. macOS/Linux пакуют иконки по своим правилам — не трогаем.
+      ...(process.platform === "win32" && fs.existsSync(path.join(packageDir, "resources", "icons", "icon.ico"))
+        ? [{ from: "resources/icons", to: "icons", filter: ["icon.ico"] }]
+        : []),
     ],
     afterPack: async (context) => {
       const arch = Arch[context.arch]

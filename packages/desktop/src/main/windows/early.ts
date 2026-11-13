@@ -6,7 +6,7 @@ import { resolveExternalURL } from "../files/external-url"
 import { windowArguments } from "./bootstrap"
 import { WINDOW_IDS_KEY } from "../storage/keys"
 import { getStore } from "../storage/store"
-import { platformFrame, storedBackgroundColor, storedZoomLevel, tone } from "./defaults"
+import { windowIconFile, platformFrame, storedBackgroundColor, storedZoomLevel, tone } from "./defaults"
 import {
   initialEarlyWindowState,
   isEarlyWindowClosed,
@@ -83,6 +83,10 @@ export function createEarlyWindow() {
   const state = resolveWindowState(readWindowState(file), { width: 1280, height: 800 }, displays)
   const zoom = storedZoomLevel()
   const icons = app.isPackaged ? path.join(process.resourcesPath, "icons") : path.join(root, "../../resources/icons")
+  // ТЗ v0.6.1 §2: на Windows — реальная .ico (existsSync-защищённая, см. windowIconFile); на других
+  // платформах — прежняя png-иконка. В dev без скопированных иконок windowIconFile() вернёт undefined,
+  // и опция icon не задаётся вовсе, вместо ссылки на несуществующий файл.
+  const icon = process.platform === "win32" ? windowIconFile() : path.join(icons, "icon.png")
 
   // On Windows, maximize() on a hidden window shows it with SW_SHOWMAXIMIZED, so it never paints at
   // its normal bounds first. macOS does not reliably enter fullscreen while hidden, so it shows first.
@@ -96,7 +100,7 @@ export function createEarlyWindow() {
     show: !deferReveal,
     autoHideMenuBar: true,
     title: "LiteMind",
-    icon: path.join(icons, `icon.${process.platform === "win32" ? "ico" : "png"}`),
+    icon,
     backgroundColor: storedBackgroundColor(),
     ...platformFrame(tone(), zoom),
     webPreferences: {

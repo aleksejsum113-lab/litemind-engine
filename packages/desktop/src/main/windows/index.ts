@@ -26,6 +26,7 @@ import {
   wireZoom,
 } from "./appearance"
 import { registerRendererProtocol, setProtocolReporter } from "./protocol"
+import { windowIconFile } from "./defaults"
 import { LITEMIND_ENTRY, loadWindow } from "./scheme"
 import { createWindowRegistry } from "./registry"
 import { windowRecovery } from "./recovery"
@@ -132,6 +133,11 @@ export const mainWindows = Effect.fn("Window.make")(function* (input: {
     const stateFile = path.join(app.getPath("userData"), windowStateFile(id))
     const state = early?.state ?? resolveWindowState(readWindowState(stateFile), { width: 1280, height: 800 }, displays)
     const appearance = windowAppearance(path, paths)
+    // ТЗ v0.6.1 §2: на Windows иконку окна задаём только когда файл реально существует
+    // (windowIconFile проверяет existsSync), чтобы dev-сборка без скопированных иконок
+    // не ссылалась на отсутствующий путь. На macOS/Linux windowIconFile() вернёт undefined
+    // и останется иконка из windowAppearance() — их логика не меняется.
+    const icon = windowIconFile()
 
     const win =
       early?.win ??
@@ -143,6 +149,7 @@ export const mainWindows = Effect.fn("Window.make")(function* (input: {
         show: false,
         autoHideMenuBar: true,
         ...appearance,
+        ...(icon ? { icon } : {}),
         webPreferences: {
           ...appearance.webPreferences,
           additionalArguments: windowArguments(id),

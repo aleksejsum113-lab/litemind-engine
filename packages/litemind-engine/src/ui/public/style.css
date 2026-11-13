@@ -57,7 +57,24 @@ body {
   overflow-y: auto;
   transition: margin-left 0.2s ease;
 }
-#app.sidebar-collapsed #sidebar { margin-left: calc(-1 * var(--sidebar-w)); }
+/* Свёрнутая панель — узкий рельс с иконками (~56px). Состояние хранится в
+   localStorage (litemind-sidebar-collapsed); у иконок есть подсказки (title),
+   они проставляются из текста пунктов в app.js. На мобильной раскладке панель
+   и так выезжает — там «Свернуть» просто закрывает шторку. */
+@media (min-width: 901px) {
+  #app.sidebar-collapsed #sidebar { width: 56px; min-width: 56px; padding: 14px 8px; }
+  #app.sidebar-collapsed .brand { justify-content: center; }
+  #app.sidebar-collapsed .brand-text, #app.sidebar-collapsed .brand .logo { display: none; }
+  #app.sidebar-collapsed .new-chat-btn { display: flex; justify-content: center; padding: 11px 0; }
+  #app.sidebar-collapsed .new-chat-btn .nc-text { display: none; }
+  #app.sidebar-collapsed .new-chat-btn .nc-icon { font-size: 16px; line-height: 1; }
+  #app.sidebar-collapsed .chats-label, #app.sidebar-collapsed .chat-search, #app.sidebar-collapsed .chat-list { display: none; }
+  #app.sidebar-collapsed .nav-label { visibility: hidden; height: 6px; padding: 0; }
+  #app.sidebar-collapsed .nav-item { justify-content: center; padding: 8px 0; }
+  #app.sidebar-collapsed .nav-item span { display: none; }
+  #app.sidebar-collapsed .nav-item i { width: auto; font-size: 15px; }
+  #app.sidebar-collapsed .sidebar-footer { display: none; }
+}
 
 /* Брендовая строка — вторая drag-зона окна (левый верх), кнопка сворачивания панели интерактивна */
 .brand { display: flex; align-items: center; gap: 10px; padding: 2px 4px; -webkit-app-region: drag; app-region: drag; user-select: none; }
@@ -79,6 +96,7 @@ body {
 .icon-btn:hover { background: var(--bg-elev2); color: var(--text); }
 
 .new-chat-btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
   background: var(--accent); color: #fff; border: none; border-radius: 12px;
   padding: 11px 14px; font-size: 14px; font-weight: 600; cursor: pointer;
   transition: filter 0.15s;
@@ -191,7 +209,8 @@ body {
 #main { flex: 1; overflow-y: auto; position: relative; min-width: 0; }
 
 [data-page] { padding: 28px 32px; max-width: 1100px; margin: 0 auto; }
-h1 { font-size: 22px; margin: 0 0 18px; }
+h1 { font-size: 22px; margin: 0 0 8px; }
+.page-note { margin: 0 0 18px; color: var(--text-dim); font-size: 13px; }
 h2 { font-size: 15px; margin: 0 0 12px; color: var(--text); }
 
 .card {
@@ -364,6 +383,10 @@ textarea { background: var(--bg); border: 1px solid var(--border); color: var(--
 .ctx-warn.ok { background: rgba(63, 185, 111, 0.1); color: var(--ok); }
 .ctx-warn.warn { background: rgba(224, 166, 63, 0.12); color: var(--warn); }
 .ctx-warn.bad { background: rgba(224, 92, 92, 0.14); color: var(--bad); }
+/* Предупреждение в панели «Ресурсы и профиль» (мало RAM) */
+.res-warn { color: var(--warn); }
+/* Пояснение «интернет по умолчанию выключен» в разделе «Новые модели» */
+.card.disco-notice { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 .attach-path { font-style: normal; color: var(--text-dim); font-size: 11px; }
 
 /* ============================ AI CHAT ============================ */
@@ -547,6 +570,8 @@ body.in-electron #titlebar { padding-right: 148px; }
   margin-top: 8px; padding: 0 6px;
 }
 .composer-select { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+/* Подсказка под селектором моделей: «Файлы найдены; движок недоступен…» */
+.model-hint { flex-basis: 100%; color: var(--warn); font-size: 12px; }
 .composer-select select { font-size: 12px; padding: 4px 8px; max-width: 260px; }
 .spacer { flex: 1; }
 
@@ -559,6 +584,7 @@ body.in-electron #titlebar { padding-right: 148px; }
     box-shadow: var(--shadow);
   }
   #app.sidebar-open #sidebar { transform: translateX(0); }
+  #app.sidebar-collapsed #sidebar { transform: translateX(-100%); }
   #app.sidebar-open #sidebar-overlay { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 40; }
   .mobile-only { display: block; }
   [data-page] { padding: 18px 16px; }

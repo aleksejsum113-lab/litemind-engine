@@ -19,29 +19,32 @@
         <button id="sidebar-toggle" class="icon-btn" title="Свернуть панель">⟨</button>
       </div>
 
-      <button id="btn-newchat" class="new-chat-btn">＋ Новый чат</button>
+      <button id="btn-newchat" class="new-chat-btn"><span class="nc-icon">＋</span><span class="nc-text">Новый чат</span></button>
 
-      <div class="chats-label">Чаты <button id="btn-clear-chats" class="link-btn" title="Удалить все чаты">очистить</button></div>
+      <div class="chats-label">Мои чаты <button id="btn-clear-chats" class="link-btn" title="Удалить все чаты">очистить</button></div>
       <input id="chat-search" class="chat-search" type="search" placeholder="Поиск по названиям и тексту…" autocomplete="off" />
       <div id="chat-list" class="chat-list"></div>
 
       <nav id="nav">
-        <div class="nav-label">Инструменты</div>
-        <button class="nav-item" data-tab="agent"><i>✦</i><span>AI Agent</span> <span id="agent-badge" class="nav-badge agent-badge" hidden></span></button>
-        <button class="nav-item" data-tab="imagegen"><i>❋</i><span>Генератор изображений</span></button>
-        <button class="nav-item" data-tab="projects"><i>△</i><span>Проекты</span></button>
-        <button class="nav-item" data-tab="workspace"><i>▤</i><span>Workspace</span></button>
-        <button class="nav-item" data-tab="models"><i>▣</i><span>Мои модели</span></button>
+        <div class="nav-label">Разделы</div>
+        <button class="nav-item" data-tab="chat"><i>✦</i><span>ИИ-чат</span></button>
+        <button class="nav-item" data-tab="agent"><i>✩</i><span>ИИ-агент</span> <span id="agent-badge" class="nav-badge agent-badge" hidden></span></button>
+        <button class="nav-item" data-tab="models"><i>▣</i><span>Модели</span></button>
         <button class="nav-item" data-tab="discovery"><i>✧</i><span>Новые модели</span> <span id="disco-badge" class="nav-badge" hidden></span></button>
-        <button class="nav-item" data-tab="catalog"><i>◫</i><span>Каталог моделей</span></button>
+        <button class="nav-item" data-tab="imagegen"><i>❋</i><span>Изображения</span></button>
+        <button class="nav-item" data-tab="projects"><i>△</i><span>Проекты</span></button>
         <button class="nav-item" data-tab="downloads"><i>⇩</i><span>Загрузки</span> <span id="dl-count" class="nav-badge" hidden></span></button>
-        <button class="nav-item" data-tab="terminal"><i>▸_</i><span>AI Terminal</span></button>
-        <div class="nav-label">Система</div>
-        <button class="nav-item" data-tab="home"><i>⌂</i><span>Состояние</span></button>
-        <button class="nav-item" data-tab="hardware"><i>⚙</i><span>Железо</span></button>
         <button class="nav-item" data-tab="monitor"><i>◉</i><span>Мониторинг</span></button>
-        <button class="nav-item" data-tab="control"><i>⏻</i><span>Управление</span></button>
         <button class="nav-item" data-tab="settings"><i>◧</i><span>Настройки</span></button>
+        <!-- Служебные разделы: скрыты в меню (дубли или технические), но остаются
+             в DOM — на них ведут программные переходы (например, Workspace
+             открывается из цикла применения изменений файлов, предложенных ИИ).
+             Критические кнопки «Управления» продублированы в «Мониторинге». -->
+        <button class="nav-item" data-tab="workspace" hidden><i>▤</i><span>Workspace</span></button>
+        <button class="nav-item" data-tab="terminal" hidden><i>▸_</i><span>AI Terminal</span></button>
+        <button class="nav-item" data-tab="home" hidden><i>⌂</i><span>Состояние</span></button>
+        <button class="nav-item" data-tab="hardware" hidden><i>⚙</i><span>Железо</span></button>
+        <button class="nav-item" data-tab="control" hidden><i>⏻</i><span>Управление</span></button>
       </nav>
 
       <div class="sidebar-footer">
@@ -98,6 +101,8 @@
           <div class="composer-wrap">
             <div id="attach-bar" class="attach-bar" hidden></div>
             <div id="ctx-warn" class="ctx-warn" hidden></div>
+            <!-- Красная строка над вводом: реальные ошибки API (запуск модели и т.п.). -->
+            <div id="chat-error" class="ctx-warn bad" role="alert" hidden></div>
             <div class="composer">
               <button id="btn-attach" class="icon-btn composer-icon" title="Прикрепить файл (TXT, MD, CSV, JSON, код, PDF, DOCX)">📎</button>
               <input id="file-input" type="file" multiple hidden
@@ -111,6 +116,7 @@
                 <span>Модель</span>
                 <select id="model"></select>
               </label>
+              <span id="model-hint" class="model-hint" hidden></span>
               <label class="composer-select" title="Размер контекста">
                 <span>Контекст</span>
                 <select id="ctx">
@@ -192,6 +198,7 @@
       <!-- ГЛАВНАЯ / СОСТОЯНИЕ -->
       <section id="tab-home" data-page hidden>
         <h1>Состояние</h1>
+        <p class="page-note">Краткая сводка: движок, модели, очередь генераций и нагрузка на компьютер.</p>
         <div class="home-grid">
           <div class="card span-2">
             <h2>Состояние</h2>
@@ -247,6 +254,7 @@
       <!-- УПРАВЛЕНИЕ (ТЗ §16) -->
       <section id="tab-control" data-page hidden>
         <h1>Управление</h1>
+        <p class="page-note">Запуск и остановка движка и моделей. Переключатели профиля и генерации продублированы в «Мониторинге».</p>
         <div class="card">
           <h2>Состояние</h2>
           <div class="home-state">
@@ -287,7 +295,8 @@
 
       <!-- МОИ МОДЕЛИ (менеджер моделей, Этап 1Б §4) -->
       <section id="tab-models" data-page hidden>
-        <h1>Установленные модели</h1>
+        <h1>Мои модели</h1>
+        <p class="page-note">Установленные GGUF-модели: статус, запуск одной кнопкой и управление файлами.</p>
         <div class="card">
           <div class="filters">
             <input id="mym-search" type="search" class="dir-input" placeholder="Поиск по названию…" autocomplete="off" />
@@ -312,6 +321,7 @@
       <!-- ГЕНЕРАТОР ИЗОБРАЖЕНИЙ (ТЗ v0.6.1 §2–5): локальная генерация через stable-diffusion.cpp -->
       <section id="tab-imagegen" data-page hidden>
         <h1>Генератор изображений</h1>
+        <p class="page-note">Локальная генерация картинок через stable-diffusion.cpp — без интернета.</p>
         <div class="card">
           <div class="ig-top">
             <label class="ig-model-label">Модель изображений
@@ -357,35 +367,6 @@
             <p class="muted" id="ig-phase">—</p>
           </div>
           <p class="muted" id="ig-error" hidden></p>
-      <!-- НОВЫЕ МОДЕЛИ (Model Discovery, ТЗ v0.6.2) -->
-      <section id="tab-discovery" data-page hidden>
-        <h1>Новые модели</h1>
-        <div class="card">
-          <p class="muted">Приложение само следит за открытыми источниками (Hugging Face Hub — бесплатные GGUF-кванты: Qwen, DeepSeek, Llama, Gemma, Mistral, Dolphin, Huihui и новые семейства). Скачиваются только метаданные — сами файлы моделей вы загружаете по кнопке. Совместимость рассчитана по железу вашего ПК.</p>
-          <div class="filters">
-            <button id="btn-disco-refresh" class="primary">Проверить новые модели</button>
-            <span class="muted" id="disco-status">—</span>
-          </div>
-          <p class="muted" id="disco-error" hidden></p>
-        </div>
-        <div class="card">
-          <div id="disco-filters" class="task-picks">
-            <button data-filter="all">Все новые модели</button>
-            <button data-filter="new">Новинки</button>
-            <button data-filter="updated">Обновлённые</button>
-            <button data-filter="compatible">Совместимые с моим ПК</button>
-            <button data-filter="chat">Для общения</button>
-            <button data-filter="coding">Для программирования</button>
-            <button data-filter="text">Для работы с текстом</button>
-            <button data-filter="fast">Быстрые и компактные</button>
-            <button data-filter="dolphin">Dolphin / Huihui</button>
-            <button data-filter="installed">Уже скачанные</button>
-          </div>
-          <p class="muted" id="disco-count">—</p>
-          <div id="disco-list"><p class="muted">—</p></div>
-        </div>
-      </section>
-
         </div>
         <div class="card" id="ig-result-card" hidden>
           <h2>Результат</h2>
@@ -415,9 +396,49 @@
         </div>
       </section>
 
+      <!-- НОВЫЕ МОДЕЛИ (Model Discovery, ТЗ v0.6.2). Отдельный раздел верхнего
+           уровня: раньше он случайно вложился внутрь «Изображений», и вкладка
+           «Новые модели» открывала пустой экран (родитель оставался hidden). -->
+      <section id="tab-discovery" data-page hidden>
+        <h1>Новые модели</h1>
+        <p class="page-note">Что появилось в открытых источниках — и что совместимо с вашим ПК.</p>
+        <div class="card disco-notice">
+          <p class="muted">Новые модели ищутся в открытых источниках (Hugging Face). Интернет по умолчанию выключен — включите его в Настройках.</p>
+          <div class="btns">
+            <button id="btn-disco-settings">Открыть настройки</button>
+            <span class="muted">После включения доступа нажмите «Проверить новые модели» — список появится примерно через минуту.</span>
+          </div>
+        </div>
+        <div class="card">
+          <p class="muted">Приложение само следит за открытыми источниками (Hugging Face Hub — бесплатные GGUF-кванты: Qwen, DeepSeek, Llama, Gemma, Mistral, Dolphin, Huihui и новые семейства). Скачиваются только метаданные — сами файлы моделей вы загружаете по кнопке. Совместимость рассчитана по железу вашего ПК.</p>
+          <div class="filters">
+            <button id="btn-disco-refresh" class="primary">Проверить новые модели</button>
+            <span class="muted" id="disco-status">—</span>
+          </div>
+          <p class="muted" id="disco-error" hidden></p>
+        </div>
+        <div class="card">
+          <div id="disco-filters" class="task-picks">
+            <button data-filter="all">Все новые модели</button>
+            <button data-filter="new">Новинки</button>
+            <button data-filter="updated">Обновлённые</button>
+            <button data-filter="compatible">Совместимые с моим ПК</button>
+            <button data-filter="chat">Для общения</button>
+            <button data-filter="coding">Для программирования</button>
+            <button data-filter="text">Для работы с текстом</button>
+            <button data-filter="fast">Быстрые и компактные</button>
+            <button data-filter="dolphin">Dolphin / Huihui</button>
+            <button data-filter="installed">Уже скачанные</button>
+          </div>
+          <p class="muted" id="disco-count">—</p>
+          <div id="disco-list"><p class="muted">—</p></div>
+        </div>
+      </section>
+
       <!-- КАТАЛОГ (Этап 1Б §2/§3/§7) -->
       <section id="tab-catalog" data-page hidden>
         <h1>Каталог моделей</h1>
+        <p class="page-note">Готовые GGUF-модели с фильтрами по задаче, памяти и совместимости с вашим ПК.</p>
         <div class="card">
           <h2>Выбрать модель по задаче</h2>
           <div id="task-picks" class="task-picks">
@@ -467,6 +488,7 @@
       <!-- ЗАГРУЗКИ -->
       <section id="tab-downloads" data-page hidden>
         <h1>Загрузки</h1>
+        <p class="page-note">Скачивание моделей с паузой и докачкой; готовые файлы проверяются по SHA-256.</p>
         <div class="card">
           <p class="muted">Поддерживается докачка: пауза и обрыв сети сохраняют файл .part, «Продолжить» докачает с места остановки.</p>
           <ul id="download-list" class="model-list"><li class="muted">нет активных загрузок</li></ul>
@@ -476,6 +498,7 @@
       <!-- ПРОЕКТЫ (Этап 1В §2) -->
       <section id="tab-projects" data-page hidden>
         <h1>Проекты</h1>
+        <p class="page-note">Открытая папка проекта: карта файлов, умный поиск и передача файлов в чат.</p>
         <div class="card" id="proj-active-card" hidden>
           <div class="proj-active-head">
             <div class="proj-active-name-wrap">
@@ -535,6 +558,7 @@
       <!-- WORKSPACE (Этап 1В §3) -->
       <section id="tab-workspace" data-page hidden>
         <h1>Workspace</h1>
+        <p class="page-note">Файлы открытого проекта: просмотр, редактирование и передача в чат.</p>
         <div class="card">
           <div class="ws-toolbar">
             <label>Проект: <b id="ws-proj-name">—</b> <span class="mono muted" id="ws-dir">—</span></label>
@@ -602,6 +626,7 @@
       <!-- AI TERMINAL (Этап 1В §4) -->
       <section id="tab-terminal" data-page hidden>
         <h1>AI Terminal</h1>
+        <p class="page-note">Реальный shell в выбранной папке — команды выполняются локально.</p>
         <div class="card">
           <div class="term-status-row">
             <span class="muted">Команды выполняются в: <span class="mono" id="term-cwd-label">—</span></span>
@@ -631,6 +656,7 @@
       <!-- ЖЕЛЕЗО -->
       <section id="tab-hardware" data-page hidden>
         <h1>Железо</h1>
+        <p class="page-note">Что известно о вашем ПК: CPU, RAM, диски и рекомендации движка.</p>
         <div class="card">
           <h2>Анализ компьютера</h2>
           <dl class="kv" id="hw-report"><dt>Загрузка</dt><dd>…</dd></dl>
@@ -640,7 +666,22 @@
       <!-- МОНИТОРИНГ -->
       <section id="tab-monitor" data-page hidden>
         <h1>Мониторинг</h1>
+        <p class="page-note">Живые показатели движка: железо, генерация, стадии запросов, ресурсы и профиль.</p>
         <div class="home-grid">
+          <div class="card">
+            <h2>Ресурсы и профиль</h2>
+            <dl class="kv" id="res-kv"><dt>Данных пока нет</dt><dd>—</dd></dl>
+            <p class="muted small res-warn" id="res-warn" hidden></p>
+            <div class="btns">
+              <button data-profile="low">Экономный</button>
+              <button data-profile="balanced">Сбалансированный</button>
+              <button data-profile="high">Максимальная производительность</button>
+            </div>
+            <p class="muted small" id="res-profile-note" hidden></p>
+            <dl class="kv" id="mon-profile-params"><dt>Загрузка…</dt><dd>—</dd></dl>
+            <p class="muted" id="mon-profile-note">—</p>
+            <p class="muted" style="margin:6px 0 0">Профиль управляет потоками CPU, контекстом и резервом RAM. Смена применяется сразу или после текущей генерации — статус появится здесь. Данные ресурсов обновляются раз в 3 секунды.</p>
+          </div>
           <div class="card">
             <h2>Система</h2>
             <div class="meter"><label>CPU <b id="mon-cpu">—</b></label><div class="bar"><i id="mon-cpu-bar"></i></div></div>
@@ -664,14 +705,6 @@
           <div class="card">
             <h2>Стадии последнего запроса</h2>
             <dl class="kv" id="mon-stages"><dt>Данных пока нет</dt><dd>—</dd></dl>
-          <h2>Обновление каталога моделей (Discovery)</h2>
-          <label class="switch"><input type="checkbox" id="set-disco-enabled" /> Автоматически проверять новые модели (раз в сутки)</label>
-          <label class="field">Период автопроверки (часов, 6–168)
-            <input id="set-disco-hours" type="number" min="6" max="168" step="1" value="24" />
-          </label>
-          <p class="muted">Обнаружение качает только метаданные (названия, размеры, контрольные суммы) — сами модели скачиваются только по вашей кнопке в разделе «Новые модели». Кнопка «Проверить новые модели» работает независимо от этой настройки.</p>
-        </div>
-        <div class="card">
             <p class="muted" style="margin:6px 0 0">Замер по стадиям: очередь → память → запуск runtime → промпт → первый токен → генерация. «недоступно» означает, что стадию нельзя измерить с этой стороны.</p>
           </div>
           <div class="card">
@@ -691,22 +724,14 @@
               <button id="btn-unload-all">Выгрузить все модели</button>
             </div>
           </div>
-          <div class="card">
-            <h2>Профиль производительности</h2>
-            <div class="btns">
-              <button data-profile="low">Бережный</button>
-              <button data-profile="balanced">Сбалансированный</button>
-              <button data-profile="high">Производительный</button>
-            </div>
-            <dl class="kv" id="mon-profile-params"><dt>Загрузка…</dt><dd>—</dd></dl>
-            <p class="muted" id="mon-profile-note">—</p>
-          </div>
+
         </div>
       </section>
 
       <!-- НАСТРОЙКИ -->
       <section id="tab-settings" data-page hidden>
         <h1>Настройки</h1>
+        <p class="page-note">Папка моделей, профиль, управляемый доступ к интернету и служебные сведения.</p>
         <div class="card">
           <h2>Хранение моделей</h2>
           <dl class="kv" id="storage-kv"><dt>Загрузка</dt><dd>…</dd></dl>
@@ -729,10 +754,9 @@
           </label>
           <label class="field">Профиль
             <select id="set-profile">
-              <option value="low">Умеренный (Low Resource)</option>
+              <option value="low">Экономный (Low Resource)</option>
               <option value="balanced">Сбалансированный</option>
-  <script src="discovery-ui.js"></script>
-              <option value="high">Производительный</option>
+              <option value="high">Максимальная производительность</option>
             </select>
           </label>
           <div class="btns">
@@ -740,6 +764,14 @@
             <span class="muted" id="settings-note"></span>
           </div>
           <p class="muted">Профиль управляет: числом одновременных запросов, контекстом, лимитом ответа, потоками CPU, резервом RAM и автовыгрузкой модели. Настройки хранятся локально (config.json), ничего не отправляется в сеть.</p>
+        </div>
+        <div class="card">
+          <h2>Обновление каталога моделей (Discovery)</h2>
+          <label class="switch"><input type="checkbox" id="set-disco-enabled" /> Автоматически проверять новые модели (раз в сутки)</label>
+          <label class="field">Период автопроверки (часов, 6–168)
+            <input id="set-disco-hours" type="number" min="6" max="168" step="1" value="24" />
+          </label>
+          <p class="muted">Обнаружение качает только метаданные (названия, размеры, контрольные суммы) — сами модели скачиваются только по вашей кнопке в разделе «Новые модели». Кнопка «Проверить новые модели» работает независимо от этой настройки.</p>
         </div>
         <div class="card">
           <h2>Интернет (управляемый доступ)</h2>
@@ -809,6 +841,7 @@
   </div>
 
   <script src="app.js"></script>
+  <script src="discovery-ui.js"></script>
   <script src="agent-ui.js"></script>
 </body>
 </html>

@@ -2,7 +2,7 @@
 // Самодостаточный модуль: переиспользует api()/esc()/fmtSize() из app.js,
 // живёт поверх HTTP API движка (/api/discovery/*). Не трогает Chat и Agent.
 
-/* global api, esc, fmtSize, showError, event, ENGINE_BASE */
+/* global api, esc, fmtSize, showError, event, openTab, ENGINE_BASE */
 (() => {
   const $ = (id) => document.getElementById(id);
   const BASE = (typeof ENGINE_BASE !== 'undefined') ? ENGINE_BASE : 'http://127.0.0.1:8399';
@@ -229,7 +229,9 @@
     if (!loaded) {
       loaded = true;
       bindFilters();
-      $('btn-disco-refresh').addEventListener('click', manualRefresh);
+      $('btn-disco-refresh')?.addEventListener('click', manualRefresh);
+      // Разъяснение «интернет по умолчанию выключен» — кнопка ведёт в Настройки.
+      $('btn-disco-settings')?.addEventListener('click', () => openTab('settings'));
     }
     await renderStatus();
     loadList();
@@ -238,4 +240,9 @@
   }
 
   window.__litemindLoadDiscovery = loadDiscovery;
+
+  // Если приложение открыто сразу с #discovery в адресе — грузим раздел после init.
+  if (document.querySelector('.nav-item.active')?.dataset.tab === 'discovery') {
+    setTimeout(() => { try { loadDiscovery(); } catch { /* повторится при переходе на вкладку */ } }, 0);
+  }
 })();
