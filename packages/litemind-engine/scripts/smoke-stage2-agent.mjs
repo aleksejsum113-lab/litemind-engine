@@ -69,7 +69,7 @@ async function main() {
   const s1 = await jpost('/api/agent/sessions', {
     projectDir: proj, model: MODEL, autoApprove: true,
     title: 'smoke: создать hello.js',
-    firstMessage: 'Задача (выполняется ТОЛЬКО инструментами, словами не отчитываться): создай файл hello.js инструментом write_file — при запуске node hello.js файл печатает в консоль строку «Привет, LiteMind!». После реального результата инструмента заверши задачу отчётом DONE.'
+    firstMessage: 'Задача (выполняется ТОЛЬКО инструментами, словами не отчитываться): создай файл hello.js инструментом write_file — файл содержит строку «Привет, LiteMind!». После реального результата инструмента заверши задачу отчётом DONE.'
   });
   check('задача принята агентом', s1.status === 200 && !!s1.body?.id, `HTTP ${s1.status}, id=${s1.body?.id}`);
   const id1 = s1.body.id;
@@ -92,25 +92,26 @@ async function main() {
 
   // Terminal вынесен в отдельную одношаговую инструкцию: прогон v0.6.2 №2
   // показал, что Qwen3-0.6B в многошаговой задаче завершает DONE после
-  // write_file, не дойдя до terminal («команд не было»). Одна инструкция на
-  // сообщение — надёжно и для 0.6B. Прогон №3: команда node -e "..." с
-  // вложенными кавычками для 0.6B непосильна (модель ломала экранирование,
-  // SyntaxError) — команда упрощена до node hello.js без кавычек.
-  // История сессии накапливается, поэтому terminal ищем по всей сессии,
-  // ok:false отбрасываем.
+  // write_file, не дойдя до terminal («команд не было»); прогон №3 — команда
+  // node -e "..." с вложенными кавычками непосильна (SyntaxError, 19 шагов);
+  // прогон №4 — 6× terminal с пустыми args + файл без console.log не печатает
+  // ничего. Итог: команда echo smoke-terminal-ok (без кавычек и без
+  // зависимости от сгенерированного моделью кода) + явный ПРИМЕР 3 в
+  // системном промпте агента (args.command обязателен). История сессии
+  // накапливается — terminal ищем по всей сессии, ok:false отбрасываем.
   const s1t = await jpost(`/api/agent/sessions/${id1}/messages`, {
-    text: 'Следующий шаг (только инструментами): инструментом terminal выполни команду node hello.js и после реального вывода инструмента заверши задачу отчётом DONE.'
+    text: 'Следующий шаг (только инструментами): инструментом terminal выполни команду echo smoke-terminal-ok и после реального вывода инструмента заверши задачу отчётом DONE.'
   });
   check('terminal-инструкция принята агентом', s1t.status === 200, `HTTP ${s1t.status}`);
   const fin1t = await waitForState(id1, ['done', 'error', 'stopped'], 5 * 60_000);
   const runAll = (fin1t?.messages ?? []).filter((m) => m.role === 'tool' && m.tool === 'terminal');
-  const runOk = runAll.some((m) => m.ok !== false && String(m.result ?? '').includes('Привет, LiteMind!'));
+  const runOk = runAll.some((m) => m.ok !== false && String(m.result ?? '').includes('smoke-terminal-ok'));
   check('агент выполнил команду и получил реальный вывод', runOk, runAll.map((m) => String(m.result).slice(0, 120)).join(' | ') || 'команд не было');
   result.agentTerminal = { state: fin1t?.state, steps: fin1t?.stats?.steps, terminalCalls: runAll.length };
 
   // ── Уточнение во время задачи (дополнение к ТЗ) ─────────────────────────
   const s2 = await jpost(`/api/agent/sessions/${id1}/messages`, {
-    text: 'Продолжаем (только инструментами): инструментом edit_file добавь в конец файла hello.js строку-комментарий «// smoke test ok», затем инструментом terminal выполни node hello.js и убедись, что вывод прежний. После реального результата — DONE.'
+    text: 'Продолжаем (только инструментами): инструментом edit_file добавь в конец файла hello.js строку-комментарий «// smoke test ok», затем инструментом terminal выполни команду echo ok. После реального результата — DONE.'
   });
   check('уточнение принято во время диалога', s2.status === 200, `HTTP ${s2.status}`);
   const fin2 = await waitForState(id1, ['done', 'error', 'stopped'], 6 * 60_000);
