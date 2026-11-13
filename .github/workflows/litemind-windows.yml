@@ -509,16 +509,32 @@ jobs:
           $modelFile = "$env:RUNNER_TEMP\models\Qwen3-0.6B-Q8_0.gguf"
           if (-not (Test-Path $modelFile)) { throw 'файл модели отсутствует перед удалением' }
 
-          # 1) Тихое удаление: Uninstall LiteMind.exe /S
+          # 0) Страховка: ничего из состава приложения не удерживает файлы.
+          Get-Process LiteMind, llama-server, sd -ErrorAction Ignore |
+            Stop-Process -Force -ErrorAction Ignore
+          Start-Sleep -Seconds 2
+
+          # 1) Тихое удаление: Uninstall LiteMind.exe /S _?=$base.
+          # Без _?= NSIS-деинсталлятор копирует себя во %TEMP% и перезапускает
+          # оттуда — Start-Process -Wait повисал навсегда (прогоны №9 и №10 сняты
+          # по таймауту на этом шаге). _?=$base — документированный способ
+          # синхронного тихого удаления: процесс исполняется на месте и
+          # действительно завершается (NSIS docs: ExecWait «un.exe /S _?=$INSTDIR»).
           $unins = Get-ChildItem $base -Filter 'Uninstall*.exe' | Select-Object -First 1
           if (-not $unins) { throw 'деинсталлятор не найден' }
           Write-Host "деинсталлятор: $($unins.FullName)"
-          $p = Start-Process -FilePath $unins.FullName -ArgumentList '/S' -Wait -PassThru
+          $p = Start-Process -FilePath $unins.FullName -ArgumentList '/S', "_?=$base" -PassThru
+          if (-not $p.WaitForExit(180000)) {
+            $p.Kill()
+            throw 'деинсталлятор не завершился за 3 мин (снят по таймауту)'
+          }
           Write-Host "код удаления: $($p.ExitCode)"
           Start-Sleep -Seconds 4
-          $left = Get-ChildItem (Split-Path $base -Parent) -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -eq $base }
-          if ($left -and (Test-Path "$base\LiteMind.exe")) { throw 'приложение всё ещё на месте после удаления' }
+          # Деинсталлятор обязан был удалить файлы приложения:
+          if (Test-Path "$base\LiteMind.exe") { throw 'приложение всё ещё на месте после удаления' }
+          # С _?= NSIS не удаляет сам деинсталлятор — убираем остаток каталога.
+          Remove-Item -Recurse -Force $base -ErrorAction SilentlyContinue
+          if (Test-Path $base) { throw 'каталог приложения не удалён' }
           Write-Host 'папка приложения удалена'
 
           # 2) Пользовательские данные НЕ удаляются (ТЗ §1): конфиг, маркер, модели
@@ -527,8 +543,12 @@ jobs:
           if (-not (Test-Path $modelFile)) { throw 'ДАННЫЕ ПОТЕРЯНЫ: скачанная модель удалена' }
           Write-Host 'пользовательские данные пережили удаление (config.json, маркер, модель)'
 
-          # 3) Повторная установка поверх (обновление)
-          $p2 = Start-Process -FilePath $env:LM_INSTALLER -ArgumentList '/S' -Wait -PassThru
+          # 3) Повторная установка поверх (обновление) — тоже с жёстким таймаутом
+          $p2 = Start-Process -FilePath $env:LM_INSTALLER -ArgumentList '/S' -PassThru
+          if (-not $p2.WaitForExit(300000)) {
+            $p2.Kill()
+            throw 'переустановка не завершилась за 5 мин (снята по таймауту)'
+          }
           Write-Host "код переустановки: $($p2.ExitCode)"
           Start-Sleep -Seconds 2
           $exe2 = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Depth 2 -Filter 'LiteMind.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
