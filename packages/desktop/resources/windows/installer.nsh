@@ -66,7 +66,10 @@
     StrCpy $R0 "E:\LiteMind\models"
   ${EndIf}
   ${If} ${FileExists} "$R0\*.*"
-    MessageBox MB_YESNO|MB_ICONQUESTION "Удалить также загруженные модели?$\n$\n$R0$\n$\n«Да» — удалить файлы моделей с диска.$\n«Нет» — оставить модели (их увидит будущая установка LiteMind)." IDYES deleteModels IDNO modelsKept
+    ; /SD IDNO: в тихом режиме (/S) без /SD этот диалог показывается даже без
+    ; интерфейса — деинсталлятор висел, ожидая клика (прогоны смоук №9–№13).
+    ; ТЗ §1.6: тихое удаление сохраняет данные пользователя по умолчанию.
+    MessageBox MB_YESNO|MB_ICONQUESTION "Удалить также загруженные модели?$\n$\n$R0$\n$\n«Да» — удалить файлы моделей с диска.$\n«Нет» — оставить модели (их увидит будущая установка LiteMind)." /SD IDNO IDYES deleteModels IDNO modelsKept
     deleteModels:
       RMDir /r "$R0"
       DeleteRegValue HKCU "Software\LiteMind" "ModelsRootDir"
@@ -75,7 +78,8 @@
   ${EndIf}
   ; Настройки и журналы — тоже только с согласия.
   ${If} ${FileExists} "$APPDATA\LiteMind\*.*"
-    MessageBox MB_YESNO|MB_ICONQUESTION "Удалить настройки и журналы LiteMind?$\n$\n$APPDATA\LiteMind" IDYES deleteAppData IDNO appDataKept
+    ; /SD IDNO — см. комментарий выше: тихое удаление не трогает настройки (ТЗ §1.6).
+    MessageBox MB_YESNO|MB_ICONQUESTION "Удалить настройки и журналы LiteMind?$\n$\n$APPDATA\LiteMind" /SD IDNO IDYES deleteAppData IDNO appDataKept
     deleteAppData:
       RMDir /r "$APPDATA\LiteMind"
       DetailPrint "Настройки удалены: $APPDATA\LiteMind"
