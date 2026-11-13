@@ -131,6 +131,10 @@ jobs:
           $vc = 'msvcp140.dll','msvcp140_codecvt_ids.dll','vcruntime140.dll','vcruntime140_1.dll','vcomp140.dll'
           $llamaDir = 'packages/desktop/resources/llamacpp'
           $sdDir = 'packages/desktop/resources/sd'
+          # sdDir создаём заранее: этот шаг идёт ДО сборки stable-diffusion.cpp,
+          # которая создаёт каталог сама (прогон v0.6.2 №1: Copy-Item падал с
+          # «The directory name is invalid» и валил весь шаг).
+          New-Item -ItemType Directory -Force $llamaDir, $sdDir | Out-Null
           foreach ($f in $vc) {
             $src = Join-Path $sys $f
             if (Test-Path $src) {
