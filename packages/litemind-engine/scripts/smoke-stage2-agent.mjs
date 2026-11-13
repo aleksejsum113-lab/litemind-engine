@@ -110,11 +110,15 @@ async function main() {
   result.agentTerminal = { state: fin1t?.state, steps: fin1t?.stats?.steps, terminalCalls: runAll.length };
 
   // ── Уточнение во время задачи (дополнение к ТЗ) ─────────────────────────
+  // Только edit_file: terminal уже проверен отдельным шагом, а двухинструментная
+  // инструкция на 0.6B — лишний шанс зависнуть в TEXT-петле (прогон №5:
+  // state=idle по таймауту 6 мин при edit_file+terminal). Таймаут 8 мин:
+  // 0.6B-Q8 на 4-ядерном раннере медленная (~2-4 ток/с).
   const s2 = await jpost(`/api/agent/sessions/${id1}/messages`, {
-    text: 'Продолжаем (только инструментами): инструментом edit_file добавь в конец файла hello.js строку-комментарий «// smoke test ok», затем инструментом terminal выполни команду echo ok. После реального результата — DONE.'
+    text: 'Продолжаем (только инструментами): инструментом edit_file добавь в конец файла hello.js строку-комментарий «// smoke test ok». После реального результата инструмента — DONE.'
   });
   check('уточнение принято во время диалога', s2.status === 200, `HTTP ${s2.status}`);
-  const fin2 = await waitForState(id1, ['done', 'error', 'stopped'], 6 * 60_000);
+  const fin2 = await waitForState(id1, ['done', 'error', 'stopped'], 8 * 60_000);
   let clarOk = false;
   try { clarOk = fs.readFileSync(helloPath, 'utf8').includes('// smoke test ok'); } catch { /* */ }
   check('уточнение выполнено: комментарий добавлен в файл', clarOk, `state=${fin2?.state}`);

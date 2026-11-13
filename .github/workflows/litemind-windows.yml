@@ -444,7 +444,13 @@ jobs:
           Write-Host "image backend found: $($ig.backend.found), версия: $($ig.backend.version)"
           if (-not $ig.backend.found) { throw 'sd.exe не обнаружен установленным приложением' }
           # Небольшая модель для smoke: SD 1.5 Q4_0 (~1.5 ГБ) с официального источника каталога.
-          $sdModel = "$env:RUNNER_TEMP\models\sd15-q4_0.gguf"
+          # Каталог image-моделей берём из статуса бэкенда (modelsDir): imageGen
+          # сканирует только его (<root>\image), а не общий каталог текстовых
+          # моделей (прогон №5: модель в корне rootDir → MODEL_NOT_FOUND).
+          $sdDir = $ig.modelsDir
+          Write-Host "каталог image-моделей: $sdDir"
+          New-Item -ItemType Directory -Force $sdDir | Out-Null
+          $sdModel = Join-Path $sdDir 'sd15-q4_0.gguf'
           if (-not (Test-Path $sdModel)) {
             curl.exe -sSL --retry 3 -o "$sdModel.part" 'https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf'
             Move-Item "$sdModel.part" $sdModel
