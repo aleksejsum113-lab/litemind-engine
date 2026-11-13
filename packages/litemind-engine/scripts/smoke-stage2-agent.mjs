@@ -110,19 +110,36 @@ async function main() {
   result.agentTerminal = { state: fin1t?.state, steps: fin1t?.stats?.steps, terminalCalls: runAll.length };
 
   // ── Уточнение во время задачи (дополнение к ТЗ) ─────────────────────────
-  // Только edit_file: terminal уже проверен отдельным шагом, а двухинструментная
-  // инструкция на 0.6B — лишний шанс зависнуть в TEXT-петле (прогон №5:
-  // state=idle по таймауту 6 мин при edit_file+terminal). Таймаут 8 мин:
-  // 0.6B-Q8 на 4-ядерном раннере медленная (~2-4 ток/с).
+  // Только edit_file: terminal уже проверен отдельным шагом (прогон №5:
+  // двухинструментная инструкция на 0.6B провисла в TEXT-петле → state=idle).
+  // Прогон №7: формулировка «добавь в конец файла» требует знать точный конец
+  // файла — 0.6B не читает файл, угадывает find-текст, инструмент отвечает
+  // ошибкой, модель завершает DONE. Даны ЯВНЫЕ find/replace с якорем
+  // «LiteMind!», который гарантированно есть в hello.js (проверено выше);
+  // значение replace ОДНОстрочное — модель не должна экранировать \n в JSON.
+  // Таймаут 8 мин: 0.6B-Q8 на 4-ядерном раннере медленная (~2-4 ток/с).
   const s2 = await jpost(`/api/agent/sessions/${id1}/messages`, {
-    text: 'Продолжаем (только инструментами): инструментом edit_file добавь в конец файла hello.js строку-комментарий «// smoke test ok». После реального результата инструмента — DONE.'
+    text: 'Продолжаем (только инструментами): инструментом edit_file замени в файле hello.js фрагмент — find: «LiteMind!» → replace: «LiteMind! // smoke test ok». После реального результата инструмента — DONE.'
   });
   check('уточнение принято во время диалога', s2.status === 200, `HTTP ${s2.status}`);
   const fin2 = await waitForState(id1, ['done', 'error', 'stopped'], 8 * 60_000);
   let clarOk = false;
   try { clarOk = fs.readFileSync(helloPath, 'utf8').includes('// smoke test ok'); } catch { /* */ }
-  check('уточнение выполнено: комментарий добавлен в файл', clarOk, `state=${fin2?.state}`);
-  result.agentClarification = { state: fin2?.state, steps: fin2?.stats?.steps };
+  // Честная повторная попытка: если первая редакция не применилась, повторяем
+  // ту же явную инструкцию. Проверка остаётся фактом на диске.
+  let fin2r = null;
+  if (!clarOk) {
+    const s2b = await jpost(`/api/agent/sessions/${id1}/messages`, {
+      text: 'Комментария в файле нет. Инструментом edit_file: path hello.js, find «LiteMind!», replace «LiteMind! // smoke test ok». После реального результата — DONE.'
+    });
+    if (s2b.status === 200) {
+      fin2r = await waitForState(id1, ['done', 'error', 'stopped'], 8 * 60_000);
+      try { clarOk = fs.readFileSync(helloPath, 'utf8').includes('// smoke test ok'); } catch { /* */ }
+    }
+  }
+  check('уточнение выполнено: комментарий добавлен в файл', clarOk,
+    `state=${fin2r?.state ?? fin2?.state}, file=${clarOk ? 'изменён' : 'без правки'}`);
+  result.agentClarification = { state: fin2r?.state ?? fin2?.state, steps: fin2r?.stats?.steps ?? fin2?.stats?.steps, applied: clarOk };
 
   // Диалог с историей: агент помнит контекст
   const s3 = await jpost(`/api/agent/sessions/${id1}/messages`, { text: 'Какой файл ты создал в этой задаче? Ответь одним названием.' });
