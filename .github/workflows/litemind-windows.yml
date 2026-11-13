@@ -423,26 +423,40 @@ jobs:
           } catch { Write-Host "::warning::скриншот не удался: $($_.Exception.Message)" }
 
           node packages/litemind-engine/scripts/smoke-stage2-gui.mjs --out "$env:RUNNER_TEMP\smoke-gui.json"
-          $exit = $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) {
+            Get-ChildItem "$env:APPDATA\LiteMind\logs" -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host "=== $($_.Name)"; Get-Content $_.FullName -Tail 30 | ForEach-Object { Write-Host "  $_" } }
+            throw "GUI smoke завершился с кодом $LASTEXITCODE"
+          }
+          Write-Host 'GUI: окно создано, чат через приложение работает (детерминированная фаза)'
 
-          # ── ТЗ v0.6.1: AI Agent — реальная многошаговая задача на живой модели,
-          # пока приложение запущено (движок на 8399). Уточнение + остановка + история.
-          Write-Host '=== AI Agent smoke: реальная задача с инструментами ==='
+      # ── Модельные фазы: Qwen3-0.6B стохастична (прогоны №4/7/8/11), сеть HF
+      # моргает. Внутри скриптов — честные повторные попытки; шаги идут с
+      # continue-on-error: провал фазы не лишает нас остальных проверок и
+      # проверки деинсталляции; честный вердикт — в гейте в конце.
+      - name: AI Agent smoke — реальная задача на живой модели (с повторами)
+        id: agent
+        continue-on-error: true
+        shell: pwsh
+        run: |
           node packages/litemind-engine/scripts/smoke-stage2-agent.mjs --model "Qwen3-0.6B-Q8_0" --port 8399 --out "$env:RUNNER_TEMP\smoke-agent.json"
-          $agentExit = $LASTEXITCODE
-          Write-Host "agent smoke код: $agentExit"
+          Write-Host "agent smoke код: $LASTEXITCODE"
+          exit $LASTEXITCODE
 
-          # ── ТЗ v0.6.2: Model Discovery — реальная проверка источников (HF),
-          # карточки с оценкой по железу, скачивание найденной модели кнопкой
-          # из приложения (общий загрузчик + SHA-256) + Projects/Workspace/Terminal.
-          Write-Host '=== Model Discovery smoke: источники + скачивание ==='
+      - name: Model Discovery smoke — источники + скачивание
+        id: disco
+        continue-on-error: true
+        shell: pwsh
+        run: |
           node packages/litemind-engine/scripts/smoke-stage3-discovery.mjs --port 8399 --out "$env:RUNNER_TEMP\smoke-discovery.json"
-          $discoExit = $LASTEXITCODE
-          Write-Host "discovery smoke код: $discoExit"
+          Write-Host "discovery smoke код: $LASTEXITCODE"
+          exit $LASTEXITCODE
 
-          # ── ТЗ v0.6.1 §3: Генератор изображений — реальная генерация через
-          # API установленного приложения (sd.exe из установщика, модель по кнопке).
-          Write-Host '=== Image Generator smoke: реальная генерация 256x256 ==='
+      - name: Image Generator smoke — реальная генерация 256x256
+        id: image
+        continue-on-error: true
+        shell: pwsh
+        run: |
           $ig = Invoke-RestMethod 'http://127.0.0.1:8399/api/image/status' -TimeoutSec 10
           Write-Host "image backend found: $($ig.backend.found), версия: $($ig.backend.version)"
           if (-not $ig.backend.found) { throw 'sd.exe не обнаружен установленным приложением' }
@@ -484,18 +498,8 @@ jobs:
             throw "файл в галерее не PNG (сигнатура не 89 50 4E 47)"
           }
           Write-Host "PNG получен ($($png.Content.Length) байт), генератор изображений работает"
-          Write-Host 'PNG получен, генератор изображений работает'
-
-          taskkill /IM LiteMind.exe /T /F 2>$null
-          Start-Sleep -Seconds 3
-          $app = Get-Process LiteMind -ErrorAction SilentlyContinue
-          if ($app) { throw 'LiteMind.exe не завершился' }
-          if ($exit -ne 0 -or $agentExit -ne 0 -or $discoExit -ne 0) {
-            Get-ChildItem "$env:APPDATA\LiteMind\logs" -ErrorAction SilentlyContinue |
-              ForEach-Object { Write-Host "=== $($_.Name)"; Get-Content $_.FullName -Tail 30 | ForEach-Object { Write-Host "  $_" } }
-            throw "smoke завершился с кодом: gui=$exit, agent=$agentExit, discovery=$discoExit"
-          }
-          Write-Host 'приложение запустилось, отработало и корректно завершено'
+          # Процесс приложения останавливает следующий шаг (деинсталляция):
+          # там страховка Stop-Process перед удалением.
 
       - name: Uninstall preserves user data, reinstall works (ТЗ §1.6–1.7)
         shell: pwsh
@@ -557,6 +561,23 @@ jobs:
           Write-Host "переустановлено: $($exe2.DirectoryName), версия $ver2"
           if (-not (Test-Path "$dataDir\user-marker.txt")) { throw 'после переустановки пропал пользовательский маркер' }
           Write-Host 'переустановка поверх старой: пользовательские данные на месте'
+
+      # ── Гейт: вердикт по модельным фазам. continue-on-error выше пропускал
+      # провалы ради полноты прогона, здесь честно валим джобу, если хоть одна
+      # фаза не зелёная.
+      - name: Гейт smoke — все фазы обязаны быть зелёными
+        shell: pwsh
+        run: |
+          $failed = @()
+          if ('${{ steps.agent.outcome }}' -eq 'failure') { $failed += 'AI Agent' }
+          if ('${{ steps.disco.outcome }}' -eq 'failure') { $failed += 'Model Discovery' }
+          if ('${{ steps.image.outcome }}' -eq 'failure') { $failed += 'Генератор изображений' }
+          if ($failed.Count -gt 0) {
+            Get-ChildItem "$env:APPDATA\LiteMind\logs" -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host "=== $($_.Name)"; Get-Content $_.FullName -Tail 30 | ForEach-Object { Write-Host "  $_" } }
+            throw "фазы smoke провалены: $($failed -join ', ') — гейт не пропускает (см. логи шагов)"
+          }
+          Write-Host 'все модельные фазы зелёные — гейт пройден'
 
       - name: Upload smoke results
         if: always()

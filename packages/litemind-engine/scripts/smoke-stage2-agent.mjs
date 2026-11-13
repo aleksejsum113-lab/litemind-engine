@@ -72,7 +72,7 @@ async function main() {
     firstMessage: 'Задача (выполняется ТОЛЬКО инструментами, словами не отчитываться): создай файл hello.js инструментом write_file — файл содержит строку «Привет, LiteMind!». После реального результата инструмента заверши задачу отчётом DONE.'
   });
   check('задача принята агентом', s1.status === 200 && !!s1.body?.id, `HTTP ${s1.status}, id=${s1.body?.id}`);
-  const id1 = s1.body.id;
+  let id1 = s1.body.id;
 
   // Chat движка работает ПАРАЛЛЕЛЬНО с задачей агента (переключение Chat/Agent)
   const chatDuring = jpost('/v1/chat/completions', {
@@ -82,12 +82,12 @@ async function main() {
 
   const fin1 = await waitForState(id1, ['done', 'error', 'stopped'], 8 * 60_000);
   result.agentTask1 = { state: fin1?.state, steps: fin1?.stats?.steps, error: fin1?.error ?? null };
-  // Прогон №8: Qwen3-0.6B стохастична от прогона к прогону — здесь write_file
-  // не создал файл вовсе (в №7 падало уточнение, в №4 — terminal с пустыми
-  // args). Движок работает, флейк — поведение малой модели, поэтому каждой
-  // модельной фазе даётся одна честная повторная попытка; проверка остаётся
-  // фактом на диске.
-  let fin1r = null;
+  // Qwen3-0.6B стохастична от прогона к прогону (№8: write_file не создал файл;
+  // №11: 6 шагов TEXT-петли без единого инструментального вызова, повторная
+  // подсказка В ТОЙ ЖЕ сессии тоже утонула в мусорном контексте). Поэтому
+  // каждой модельной фазе даётся одна честная повторная попытка, и повтор
+  // задачи — в НОВОЙ сессии: чистый контекст без TEXT-петли. Проверка —
+  // факт на диске, не слова модели.
   const helloPath = path.join(proj, 'hello.js');
   let helloOk = false;
   let helloContent = '';
@@ -97,11 +97,25 @@ async function main() {
       text: 'Файл hello.js ещё не создан. Инструментом write_file создай его: путь hello.js, содержимое console.log(\'Привет, LiteMind!\'). После реального результата — DONE.'
     });
     if (s1b.status === 200) {
-      fin1r = await waitForState(id1, ['done', 'error', 'stopped'], 8 * 60_000);
+      fin1 = await waitForState(id1, ['done', 'error', 'stopped'], 8 * 60_000);
       try { helloContent = fs.readFileSync(helloPath, 'utf8'); helloOk = helloContent.includes('Привет, LiteMind!'); } catch { /* */ }
     }
   }
-  check('агент завершил задачу (state=done)', (fin1r?.state ?? fin1?.state) === 'done', `state=${fin1r?.state ?? fin1?.state}, шагов=${fin1r?.stats?.steps ?? fin1?.stats?.steps}, ошибка=${fin1r?.error ?? fin1?.error ?? 'нет'}`);
+  if (!helloOk) {
+    // Вторая попытка — свежая сессия (чистый контекст).
+    const s1c = await jpost('/api/agent/sessions', {
+      projectDir: proj, model: MODEL, autoApprove: true,
+      title: 'smoke: создать hello.js (попытка 2)',
+      firstMessage: 'Инструмент write_file обязателен, словами не отчитываться: создай файл hello.js с содержимым console.log(\'Привет, LiteMind!\'). Сначала реальный вызов инструмента, затем DONE.'
+    });
+    if (s1c.status === 200 && s1c.body?.id) {
+      id1 = s1c.body.id;
+      fin1 = await waitForState(id1, ['done', 'error', 'stopped'], 8 * 60_000);
+      try { helloContent = fs.readFileSync(helloPath, 'utf8'); helloOk = helloContent.includes('Привет, LiteMind!'); } catch { /* */ }
+    }
+    result.agentTask1Retry = { state: fin1?.state, steps: fin1?.stats?.steps, fileOk: helloOk };
+  }
+  check('агент завершил задачу (state=done)', fin1?.state === 'done', `state=${fin1?.state}, шагов=${fin1?.stats?.steps}, ошибка=${fin1?.error ?? 'нет'}`);
   check('файл hello.js создан агентом с нужной строкой', helloOk, helloContent ? helloContent.slice(0, 200) : 'файл не найден');
 
   // Terminal вынесен в отдельную одношаговую инструкцию: прогон v0.6.2 №2
@@ -117,11 +131,24 @@ async function main() {
     text: 'Следующий шаг (только инструментами): инструментом terminal выполни команду echo smoke-terminal-ok и после реального вывода инструмента заверши задачу отчётом DONE.'
   });
   check('terminal-инструкция принята агентом', s1t.status === 200, `HTTP ${s1t.status}`);
-  const fin1t = await waitForState(id1, ['done', 'error', 'stopped'], 5 * 60_000);
+  let fin1t = await waitForState(id1, ['done', 'error', 'stopped'], 5 * 60_000);
   const runAll = (fin1t?.messages ?? []).filter((m) => m.role === 'tool' && m.tool === 'terminal');
-  const runOk = runAll.some((m) => m.ok !== false && String(m.result ?? '').includes('smoke-terminal-ok'));
-  check('агент выполнил команду и получил реальный вывод', runOk, runAll.map((m) => String(m.result).slice(0, 120)).join(' | ') || 'команд не было');
-  result.agentTerminal = { state: fin1t?.state, steps: fin1t?.stats?.steps, terminalCalls: runAll.length };
+  let runOk = runAll.some((m) => m.ok !== false && String(m.result ?? '').includes('smoke-terminal-ok'));
+  if (!runOk) {
+    // Честная повторная попытка той же явной команды (прогон №11: первая
+    // инструкция утонула — терминала не было вовсе).
+    const s1t2 = await jpost(`/api/agent/sessions/${id1}/messages`, {
+      text: 'Команда ещё не выполнена. Вызови инструмент terminal с args: { "command": "echo smoke-terminal-ok" }. После реального вывода — DONE.'
+    });
+    if (s1t2.status === 200) {
+      fin1t = await waitForState(id1, ['done', 'error', 'stopped'], 5 * 60_000);
+      const runAll2 = (fin1t?.messages ?? []).filter((m) => m.role === 'tool' && m.tool === 'terminal');
+      runOk = runAll2.some((m) => m.ok !== false && String(m.result ?? '').includes('smoke-terminal-ok'));
+    }
+  }
+  const runLog = (fin1t?.messages ?? []).filter((m) => m.role === 'tool' && m.tool === 'terminal');
+  check('агент выполнил команду и получил реальный вывод', runOk, runLog.map((m) => String(m.result).slice(0, 120)).join(' | ') || 'команд не было');
+  result.agentTerminal = { state: fin1t?.state, steps: fin1t?.stats?.steps, terminalCalls: runLog.length };
 
   // ── Уточнение во время задачи (дополнение к ТЗ) ─────────────────────────
   // Только edit_file: terminal уже проверен отдельным шагом (прогон №5:
