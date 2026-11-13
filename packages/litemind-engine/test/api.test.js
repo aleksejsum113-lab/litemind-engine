@@ -4,8 +4,8 @@ import { startMockOllama } from './helpers/mock-ollama.js';
 import { makeEngine, fakeMetrics } from './helpers/fixtures.js';
 import { createServer, isLoopback, checkAccess } from '../src/api/server.js';
 
-async function startApi({ baseUrl, configMutator = null, sampler = null } = {}) {
-  const { engine, config } = makeEngine({ baseUrl, configMutator, sampler: sampler ?? { latest: fakeMetrics(), history: [], async sample() { return this.latest; }, stop() {} } });
+async function startApi({ baseUrl, configMutator = null, sampler = null, backend = null } = {}) {
+  const { engine, config } = makeEngine({ baseUrl, configMutator, backend, sampler: sampler ?? { latest: fakeMetrics(), history: [], async sample() { return this.latest; }, stop() {} } });
   await engine.start();
   const server = createServer({ config, engine, logger: null });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -302,4 +302,53 @@ test('POST /api/shutdown closes this server gracefully', async () => {
     await new Promise((r) => setTimeout(r, 300));
     await assert.rejects(() => fetch(`${api.url}/health`), 'server is no longer accepting connections');
   } finally { await api.close(); await mock.close(); }
+});
+
+// ТЗ v0.6.2: панель «Ресурсы и профиль» — лёгкий срез без подпроцессов.
+test('GET /api/resources отдаёт RAM/CPU сэмплера, остановленный runtime и пустые предупреждения', async () => {
+  const mock = await startMockOllama();
+  const api = await startApi({ baseUrl: mock.url });
+  try {
+    const res = await fetch(`${api.url}/api/resources`);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.profile, 'balanced');
+    assert.equal(data.profileApplied, true);
+    assert.equal(data.sampler.totalRamMb, 16000);
+    assert.equal(data.sampler.usedRamMb, 7000);
+    assert.equal(data.sampler.availableRamMb, 9000);
+    assert.equal(data.sampler.cpuPercent, 12);
+    assert.equal(data.runtime.state, 'stopped');
+    assert.equal(data.runtime.running, false);
+    assert.equal(Array.isArray(data.warnings), true);
+    assert.equal(data.warnings.length, 0);
+  } finally { await api.close(); await mock.close(); }
+});
+
+test('GET /api/resources: профиль применён не полностью, если runtime собран с другим профилем', async () => {
+  // lmlama-бэкенд (без baseUrl), runtime «работает» с params профиля low,
+  // а config.profile = balanced → профильApplied = false + предупреждение.
+  const fakeBackend = {
+    type: 'lmlama',
+    capabilities: () => ({ stream: true }),
+    detect: async () => ({ ok: true, version: 'test' }),
+    runtimeInfo: () => ({
+      running: true, modelFile: 'C:\\m\\deepseek-coder-1.3b-instruct.Q4_K_M.gguf',
+      modelId: 'deepseek-coder-1.3b-instruct.Q4_K_M',
+      params: { profile: 'low', threads: 4, contextTokens: 4096 }
+    }),
+    health: async () => ({ ok: true })
+  };
+  const api = await startApi({ backend: fakeBackend });
+  try {
+    const res = await fetch(`${api.url}/api/resources`);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.profileApplied, false);
+    assert.match(data.warnings[0], /перезапуска/i);
+    assert.equal(data.runtime.model, 'deepseek-coder-1.3b-instruct.Q4_K_M');
+    assert.equal(data.runtime.threads, 4);
+    assert.equal(data.runtime.contextTokens, 4096);
+    assert.equal(data.runtime.state, 'running');
+  } finally { await api.close(); }
 });

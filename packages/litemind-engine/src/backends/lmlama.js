@@ -51,7 +51,7 @@ const EXE = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
  * STATUS_DLL_NOT_FOUND. DLL-краши умирают ДО main() — stderr при этом
  * пуст, поэтому пояснение по коду часто единственная диагностика.
  */
-function exitCodeHint(code) {
+export function exitCodeHint(code) {
   // NTSTATUS-неудачи приходят в двух видах: signed int32 (-1073741515) или
   // unsigned (3221225781) — обрабатываем оба, иначе половина случаев без подсказки.
   const isNtFailure = (typeof code === 'number') && (code < 0 || (code >= 0x80000000 && code <= 0xFFFFFFFF));

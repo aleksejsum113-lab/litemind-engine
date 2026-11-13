@@ -14,7 +14,7 @@ import {
   resolvePriority, resolveRuntimeParams, runtimeStartKey, runtimeArgs, logicalCores
 } from '../src/resource/threads.js';
 import { dynamicReserveMb } from '../src/resource/gate.js';
-import { parseServerTimingLine } from '../src/backends/lmlama.js';
+import { parseServerTimingLine, exitCodeHint } from '../src/backends/lmlama.js';
 import { loadConfig } from '../src/config.js';
 import { Engine } from '../src/core/engine.js';
 import { Logger, PerfRecorder } from '../src/diagnostics/log.js';
@@ -455,4 +455,27 @@ test('PerfRecorder: сводка включает честные ttftAfterServer
   const perf = engine.perf.summary();
   assert.ok('ttftAfterServerMs' in perf && 'modelLoadMs' in perf);
   assert.equal(perf.modelLoadMs.n >= 1, true, 'загрузка модели учтена отдельной метрикой');
+});
+
+
+/* -------------------- ТЗ v0.6.2: расшифровка NTSTATUS ------------------- */
+
+test('exitCodeHint: 0xC0000135 узнаётся и в signed, и в unsigned виде (краш из ТЗ)', () => {
+  for (const code of [-1073741515, 3221225781]) {
+    const hint = exitCodeHint(code);
+    assert.ok(hint, 'подсказка должна быть для обоих видов кода');
+    assert.ok(hint.includes('0xC0000135'), 'код должен быть расшифрован: ' + hint);
+    assert.ok(hint.includes('STATUS_DLL_NOT_FOUND'), 'имя статуса в подсказке');
+    assert.match(hint, /Переустановите/u, 'подсказка говорит, что делать');
+  }
+});
+
+test('exitCodeHint: другие частые NTSTATUS и нейтральные коды', () => {
+  assert.match(exitCodeHint(-1073741502) ?? '', /STATUS_DLL_INIT_FAILED/);   // 0xC0000142
+  assert.match(exitCodeHint(-1073741701) ?? '', /STATUS_INVALID_IMAGE_FORMAT/); // 0xC000007B
+  assert.match(exitCodeHint(-1073741819) ?? '', /STATUS_ACCESS_VIOLATION/);  // 0xC0000005
+  assert.equal(exitCodeHint(0), null);          // нормальное завершение
+  assert.equal(exitCodeHint(1), null);          // обычная ошибка, не NTSTATUS
+  assert.equal(exitCodeHint(null), null);       // сигнал, не код
+  assert.equal(exitCodeHint(undefined), null);
 });
