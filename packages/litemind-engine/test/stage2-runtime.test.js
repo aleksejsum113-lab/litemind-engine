@@ -14,7 +14,7 @@ import {
   resolvePriority, resolveRuntimeParams, runtimeStartKey, runtimeArgs, logicalCores
 } from '../src/resource/threads.js';
 import { dynamicReserveMb } from '../src/resource/gate.js';
-import { parseServerTimingLine, exitCodeHint } from '../src/backends/lmlama.js';
+import { parseServerTimingLine, exitCodeHint, LlamaCppBackend } from '../src/backends/lmlama.js';
 import { loadConfig } from '../src/config.js';
 import { Engine } from '../src/core/engine.js';
 import { Logger, PerfRecorder } from '../src/diagnostics/log.js';
@@ -478,4 +478,26 @@ test('exitCodeHint: другие частые NTSTATUS и нейтральные
   assert.equal(exitCodeHint(1), null);          // обычная ошибка, не NTSTATUS
   assert.equal(exitCodeHint(null), null);       // сигнал, не код
   assert.equal(exitCodeHint(undefined), null);
+});
+
+/* ---- ТЗ v0.6.2: RUNTIME_BUSY не должен самозаблокировать инициатора ---- */
+
+test('_runtimeBusy: инициатор смены профиля не считает сам себя занятостью', () => {
+  function mkBackend({ proc, streams }) {
+    const b = Object.create(LlamaCppBackend.prototype);
+    b.proc = proc;            // живой runtime или null
+    b._activeStreams = streams;
+    return b;
+  }
+  const running = { exitCode: null };
+  // Смена параметров на работающем runtime, никаких чужих стримов → можно рестартить.
+  assert.equal(mkBackend({ proc: running, streams: 1 })._runtimeBusy(false, Math.max(0, 1 - 1)), false, 'инициатор один — рестарт разрешён');
+  // Чужая генерация идёт → честный отказ.
+  assert.equal(mkBackend({ proc: running, streams: 2 })._runtimeBusy(false, 2 - 1), true, 'чужой стрим — BUSY');
+  // Внешний вызов (self=false, напр. /api/models/run) при идущей генерации → BUSY.
+  assert.equal(mkBackend({ proc: running, streams: 1 })._runtimeBusy(false, 1), true, 'внешний вызов при стриме — BUSY');
+  // Те же параметры → BUSY не нужен (ждём health).
+  assert.equal(mkBackend({ proc: running, streams: 2 })._runtimeBusy(true, 1), false, 'sameRuntime — переиспользование');
+  // Runtime не запущен → BUSY невозможен.
+  assert.equal(mkBackend({ proc: null, streams: 0 })._runtimeBusy(false, 0), false, 'нет процесса — нет BUSY');
 });

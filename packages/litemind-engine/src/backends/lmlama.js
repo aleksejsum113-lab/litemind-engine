@@ -487,7 +487,16 @@ export class LlamaCppBackend {
     return run;
   }
 
-  async _ensureServerLocked({ file, contextTokens, threads, threadsBatch, numBatch, useMmap, cacheReuse, profile }) {
+  /**
+   * Решение «runtime занят?» — выделено для юнит-теста (ТЗ v0.6.2).
+   * BUSY только когда есть живой процесс, параметры ДРУГИЕ и идут ЧУЖИЕ
+   * генерации (otherStreams не включает слот запроса-инициатора).
+   */
+  _runtimeBusy(sameRuntime, otherStreams) {
+    return Boolean(this.proc) && !sameRuntime && otherStreams > 0;
+  }
+
+  async _ensureServerLocked({ file, contextTokens, threads, threadsBatch, numBatch, useMmap, cacheReuse, profile, self = false }) {
     const bin = this.findServerBinary();
     if (!bin) {
       throw new BackendError(
@@ -507,8 +516,16 @@ export class LlamaCppBackend {
     // запроса (воспроизведено локально: агент получал «Стрим прервался:
     // terminated» после параллельного /api/models/run). Честный отказ вместо
     // тихой порчи: вызывающий повторит запрос после завершения генерации.
+    //
+    // ТЗ v0.6.2: запрос-инициатор сам занимает один слот в _activeStreams
+    // (инкремент ДО ensureServer закрывает окно между health-ok и первым
+    // токеном). Считать этот слот «занятостью» было нельзя: любая смена
+    // профиля/контекста на работающем runtime получала RUNTIME_BUSY НАВСЕГДА
+    // (свой слот всегда > 0) — подтверждено smoke v0.6.2: профили low/high
+    // не применялись вовсе. BUSY только если идут ЧУЖИЕ генерации.
     const sameRuntime = this.proc && this.modelFile === params.file && this._startKeyStr === key;
-    if (this.proc && !sameRuntime && this._activeStreams > 0) {
+    const otherStreams = Math.max(0, this._activeStreams - (self ? 1 : 0));
+    if (this._runtimeBusy(sameRuntime, otherStreams)) {
       throw new BackendError(
         'Runtime занят: идёт генерация. Смена модели/параметров будет применена после её завершения — повторите запрос.',
         { code: 'RUNTIME_BUSY', status: 409 }
@@ -671,7 +688,7 @@ export class LlamaCppBackend {
     // в котором чужой ensureServer с другими параметрами успевает убить runtime.
     this._activeStreams++;
     try {
-      const baseUrl = await this.ensureServer({ file: meta.file, contextTokens, threads, threadsBatch, numBatch, useMmap, cacheReuse, profile });
+      const baseUrl = await this.ensureServer({ file: meta.file, contextTokens, threads, threadsBatch, numBatch, useMmap, cacheReuse, profile, self: true });
       return await this._generateStreaming({ model, messages, baseUrl, meta, contextTokens, maxOutputTokens,
         threads, threadsBatch, numBatch, useMmap, cacheReuse, profile, signal, onToken, onServerReady, onHeaders,
         tServer0, wasRunning });
