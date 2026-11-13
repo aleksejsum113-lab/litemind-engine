@@ -69,7 +69,7 @@ async function main() {
   const s1 = await jpost('/api/agent/sessions', {
     projectDir: proj, model: MODEL, autoApprove: true,
     title: 'smoke: создать hello.js',
-    firstMessage: 'Задача (выполняется ТОЛЬКО инструментами, словами не отчитываться): создай файл hello.js инструментом write_file — функция hello() возвращает строку «Привет, LiteMind!» и экспортируется через module.exports. После реального результата инструмента заверши задачу отчётом DONE.'
+    firstMessage: 'Задача (выполняется ТОЛЬКО инструментами, словами не отчитываться): создай файл hello.js инструментом write_file — при запуске node hello.js файл печатает в консоль строку «Привет, LiteMind!». После реального результата инструмента заверши задачу отчётом DONE.'
   });
   check('задача принята агентом', s1.status === 200 && !!s1.body?.id, `HTTP ${s1.status}, id=${s1.body?.id}`);
   const id1 = s1.body.id;
@@ -93,10 +93,13 @@ async function main() {
   // Terminal вынесен в отдельную одношаговую инструкцию: прогон v0.6.2 №2
   // показал, что Qwen3-0.6B в многошаговой задаче завершает DONE после
   // write_file, не дойдя до terminal («команд не было»). Одна инструкция на
-  // сообщение — надёжно и для 0.6B. История сессии накапливается, поэтому
-  // terminal ищем по всей сессии, ok:false отбрасываем.
+  // сообщение — надёжно и для 0.6B. Прогон №3: команда node -e "..." с
+  // вложенными кавычками для 0.6B непосильна (модель ломала экранирование,
+  // SyntaxError) — команда упрощена до node hello.js без кавычек.
+  // История сессии накапливается, поэтому terminal ищем по всей сессии,
+  // ok:false отбрасываем.
   const s1t = await jpost(`/api/agent/sessions/${id1}/messages`, {
-    text: 'Следующий шаг (только инструментами): инструментом terminal выполни команду node -e "console.log(require(\'./hello.js\').hello())" и после реального вывода инструмента заверши задачу отчётом DONE.'
+    text: 'Следующий шаг (только инструментами): инструментом terminal выполни команду node hello.js и после реального вывода инструмента заверши задачу отчётом DONE.'
   });
   check('terminal-инструкция принята агентом', s1t.status === 200, `HTTP ${s1t.status}`);
   const fin1t = await waitForState(id1, ['done', 'error', 'stopped'], 5 * 60_000);

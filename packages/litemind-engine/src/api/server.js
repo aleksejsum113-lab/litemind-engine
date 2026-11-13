@@ -1090,7 +1090,11 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
     }
 
     if (req.method === 'POST' && p === '/api/image/generate') {
-      const body = await readBody(req);
+      // JSON.parse обязателен: readBody возвращает строку, а sanitizeParams
+      // читает поля объекта (p.prompt и т.д.). Без парсинга любой запрос
+      // возвращал 400 «Введите текстовое описание» — прогон smoke v0.6.2 №3
+      // поймал это на установленном приложении (UI страдал тем же).
+      const body = JSON.parse((await readBody(req, MAX_BODY)) || '{}');
       const params = sanitizeParams(body);
       if (!params.prompt.trim()) {
         return openaiError(res, 400, 'Введите текстовое описание изображения (промпт).', 'invalid_request_error');

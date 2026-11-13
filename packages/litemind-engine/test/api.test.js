@@ -352,3 +352,37 @@ test('GET /api/resources: профиль применён не полность�
     assert.equal(data.runtime.state, 'running');
   } finally { await api.close(); }
 });
+
+test('POST /api/image/generate: тело JSON разбирается (регрессия строки-тела)', async () => {
+  // Прогон smoke v0.6.2 №3: readBody возвращает строку, sanitizeParams ждёт
+  // объект → ЛЮБОЙ запрос падал 400 «Введите текстовое описание», даже с
+  // корректным prompt. Регрессия: корректный JSON проходит валидацию промпта
+  // и доходит до поиска бэкенда (в тестовой среде sd отсутствует → 500
+  // SD_NOT_FOUND, а не 400 про промпт).
+  const api = await startApi({});
+  try {
+    const res = await fetch(`${api.url}/api/image/generate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: 'a small red apple', width: 256, height: 256, steps: 6, cfg: 7, seed: 42 })
+    });
+    const data = await res.json();
+    assert.equal(res.status, 500, `status=${res.status}, body=${JSON.stringify(data)}`);
+    // openaiError кладёт err.code в поле type (code остаётся null).
+    assert.equal(data.error.type, 'SD_NOT_FOUND', `type=${data.error?.type}`);
+  } finally { await api.close(); }
+});
+
+test('POST /api/image/generate: пустой промпт — честная 400-валидация', async () => {
+  const api = await startApi({});
+  try {
+    const res = await fetch(`${api.url}/api/image/generate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: '   ' })
+    });
+    const data = await res.json();
+    assert.equal(res.status, 400);
+    assert.match(data.error.message, /промпт/i);
+  } finally { await api.close(); }
+});
