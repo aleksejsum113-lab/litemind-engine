@@ -69,7 +69,7 @@ async function main() {
   const s1 = await jpost('/api/agent/sessions', {
     projectDir: proj, model: MODEL, autoApprove: true,
     title: 'smoke: создать hello.js',
-    firstMessage: 'Задача (выполняется ТОЛЬКО инструментами, словами не отчитываться): создай файл hello.js инструментом write_file — функция hello() возвращает строку «Привет, LiteMind!» и экспортируется через module.exports. Затем инструментом terminal выполни команду node -e "console.log(require(\'./hello.js\').hello())". После реального результата инструмента заверши задачу отчётом DONE.'
+    firstMessage: 'Задача (выполняется ТОЛЬКО инструментами, словами не отчитываться): создай файл hello.js инструментом write_file — функция hello() возвращает строку «Привет, LiteMind!» и экспортируется через module.exports. После реального результата инструмента заверши задачу отчётом DONE.'
   });
   check('задача принята агентом', s1.status === 200 && !!s1.body?.id, `HTTP ${s1.status}, id=${s1.body?.id}`);
   const id1 = s1.body.id;
@@ -90,9 +90,20 @@ async function main() {
   try { helloContent = fs.readFileSync(helloPath, 'utf8'); helloOk = helloContent.includes('Привет, LiteMind!'); } catch { /* нет файла */ }
   check('файл hello.js создан агентом с нужной строкой', helloOk, helloContent ? helloContent.slice(0, 200) : 'файл не найден');
 
-  const runOut = (fin1?.messages ?? []).filter((m) => m.role === 'tool' && m.tool === 'terminal');
-  const runOk = runOut.some((m) => String(m.result ?? '').includes('Привет, LiteMind!'));
-  check('агент выполнил команду и получил реальный вывод', runOk, runOut.map((m) => String(m.result).slice(0, 120)).join(' | ') || 'команд не было');
+  // Terminal вынесен в отдельную одношаговую инструкцию: прогон v0.6.2 №2
+  // показал, что Qwen3-0.6B в многошаговой задаче завершает DONE после
+  // write_file, не дойдя до terminal («команд не было»). Одна инструкция на
+  // сообщение — надёжно и для 0.6B. История сессии накапливается, поэтому
+  // terminal ищем по всей сессии, ok:false отбрасываем.
+  const s1t = await jpost(`/api/agent/sessions/${id1}/messages`, {
+    text: 'Следующий шаг (только инструментами): инструментом terminal выполни команду node -e "console.log(require(\'./hello.js\').hello())" и после реального вывода инструмента заверши задачу отчётом DONE.'
+  });
+  check('terminal-инструкция принята агентом', s1t.status === 200, `HTTP ${s1t.status}`);
+  const fin1t = await waitForState(id1, ['done', 'error', 'stopped'], 5 * 60_000);
+  const runAll = (fin1t?.messages ?? []).filter((m) => m.role === 'tool' && m.tool === 'terminal');
+  const runOk = runAll.some((m) => m.ok !== false && String(m.result ?? '').includes('Привет, LiteMind!'));
+  check('агент выполнил команду и получил реальный вывод', runOk, runAll.map((m) => String(m.result).slice(0, 120)).join(' | ') || 'команд не было');
+  result.agentTerminal = { state: fin1t?.state, steps: fin1t?.stats?.steps, terminalCalls: runAll.length };
 
   // ── Уточнение во время задачи (дополнение к ТЗ) ─────────────────────────
   const s2 = await jpost(`/api/agent/sessions/${id1}/messages`, {

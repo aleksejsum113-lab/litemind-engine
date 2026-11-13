@@ -3,8 +3,10 @@
 // Порядок поиска (как у llama-server в backends/lmlama.js):
 //   1. env LITEMIND_SD_BIN (полный путь к бинарнику);
 //   2. config.image.sdPath (Настройки);
-//   3. <установка>/resources/sd/sd(.exe) — комплект установщика;
-//   4. PATH.
+//   3. <установка>\resources\sd\sd(.exe) — extraResources установщика
+//      (внутри Electron process.resourcesPath = <установка>\resources);
+//   4. каталог пакета: …/src/image/../../resources/sd — монорепо/дистрибутивы;
+//   5. PATH.
 //
 // Никаких сторонних сервисов и портов: sd запускается как CLI-процесс
 // на одну генерацию, порт не занимает (ТЗ v0.6.1 §3).
@@ -25,6 +27,10 @@ export function sdCandidates(configImage = null) {
   const list = [];
   if (process.env.LITEMIND_SD_BIN) list.push(process.env.LITEMIND_SD_BIN);
   if (configImage?.sdPath) list.push(configImage.sdPath);
+  // Внутри Electron process.resourcesPath = <установка>\resources — именно там
+  // NSIS кладёт extraResources\sd (smoke v0.6.2: без этого кандидата
+  // /api/image/status отвечал found=false, хотя sd.exe установлен).
+  if (process.resourcesPath) list.push(path.join(process.resourcesPath, 'sd', EXE));
   list.push(path.join(RESOURCES_SD, EXE));
   list.push(EXE); // PATH
   return list;

@@ -186,12 +186,26 @@ try {
   const dirOk = r.status === 200 || r.status === 201;
   check('Projects: проект создан', dirOk, `http=${r.status}, path=${r.body?.path ?? projDir}`);
   if (dirOk) {
-    const filePath = path.join(projDir, 'smoke-disco.txt');
-    const save = await jpost('/api/project/file', { path: filePath, content: 'привет из smoke-теста Discovery\n' });
-    check('Workspace: файл сохранён', save.status === 200 || save.status === 201, `http=${save.status}`);
-    const read = await jget(`/api/project/file?path=${encodeURIComponent(filePath)}`);
+    // Контракт Workspace (как у UI): { path: каталог проекта, file: относительный
+    // путь }. POST /api/project/file правит СУЩЕСТВУЮЩИЙ файл — создание новых
+    // идёт через инструменты проекта, поэтому сначала создаём файл терминалом
+    // (детерминированный способ без модели). Прогон v0.6.2 №2: скрипт слал
+    // { path: полный путь файла } и получал 400 «path and file are required».
+    const pre = await jpost('/api/terminal/exec', {
+      cwd: projDir,
+      command: 'node -e "require(\'fs\').writeFileSync(\'smoke-disco.txt\',\'x\')"',
+      timeoutMs: 30000
+    }, 60000);
+    const preOk = pre.status === 200 || pre.status === 201;
+    const save = await jpost('/api/project/file', {
+      path: projDir, file: 'smoke-disco.txt', content: 'привет из smoke-теста Discovery\n'
+    });
+    check('Workspace: файл сохранён',
+      preOk && (save.status === 200 || save.status === 201),
+      `http=${save.status}, pre=${pre.status}, err=${save.body?.error?.message ?? ''}`);
+    const read = await jget(`/api/project/file?path=${encodeURIComponent(projDir)}&file=${encodeURIComponent('smoke-disco.txt')}`);
     check('Workspace: файл прочитан обратно', read.status === 200 && JSON.stringify(read.body).includes('smoke-теста'),
-      `http=${read.status}`);
+      `http=${read.status}, err=${read.body?.error?.message ?? ''}`);
     const tree = await jget(`/api/project/tree?path=${encodeURIComponent(projDir)}`);
     check('Workspace: дерево файлов отдаёт файл', tree.status === 200 && JSON.stringify(tree.body).includes('smoke-disco.txt'),
       `http=${tree.status}`);
