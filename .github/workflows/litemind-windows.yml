@@ -244,7 +244,10 @@ jobs:
   smoke:
     if: github.event_name == 'workflow_dispatch' && inputs.smoke == true
     runs-on: windows-latest
-    timeout-minutes: 45
+    # 60 мин: конвейер №9 упёрся в 45 — повторные попытки модельных фаз
+    # (0.6B стохастична) + генерация PNG ~5-10 мин на CPU без AVX +
+    # удаление/переустановка. Прогон №9 был снят на последнем шаге.
+    timeout-minutes: 60
     permissions:
       contents: read
       actions: read
