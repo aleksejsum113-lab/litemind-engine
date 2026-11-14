@@ -10,7 +10,7 @@ import http from 'node:http';
 import { evaluateExpression, findMathExpression } from '../src/intelligence/calculator.js';
 import { classifyIntent, extractWeatherPlace } from '../src/intelligence/intents.js';
 import { createIntelligenceLayer, modelFamily, stopSequencesFor, samplerFor, cleanReplyText, checkReply } from '../src/intelligence/layer.js';
-import { parseDdgHtml, parseDdgLite, unwrapDdgUrl, webSearch } from '../src/web/search.js';
+import { parseDdgHtml, parseDdgLite, unwrapDdgUrl, unwrapBingUrl, parseBingHtml, parseMojeekHtml, webSearch } from '../src/web/search.js';
 import { currentWeather, describeWeatherCode, geocodePlace } from '../src/web/weather.js';
 import { parseReminder, formatWhen } from '../src/tasks/datetime.js';
 import { MemoryStore, extractAutoFact } from '../src/memory/store.js';
@@ -249,6 +249,70 @@ test('поиск: webSearch на мок-fetch, честная ошибка пр�
   assert.equal(r.engine, 'duckduckgo');
   const emptyFetch = async () => ({ ok: true, status: 200, text: async () => '<html>ничего нет</html>' });
   await assert.rejects(() => webSearch('редкий запрос', { fetchImpl: emptyFetch }), /не вернул результатов|не удалась|не удался/);
+});
+
+/* ─────────────────── Резервные поисковики: Bing, Mojeek ─────────────────── */
+
+// Целевой адрес строим в тесте — base64url Bing-трекера 'a1' + payload.
+const BING_TARGET = 'https://example.com/weather-irkutsk';
+const BING_B64 = Buffer.from(BING_TARGET).toString('base64url');
+const BING_FIXTURE = `<html><body><ol id="b_results">
+<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?&amp;u=a1${BING_B64}&amp;ntb=1">Погода в Иркутске — синоптики</a></h2>
+<div class="b_caption"><p>Текущая температура и прогноз на неделю.</p></div></li>
+<li class="b_algo"><h2><a href="https://direct-weather.example.ru/irkutsk">Прямая ссылка без трекера</a></h2>
+<div class="b_caption"><p>Прогноз погоды в Иркутске.</p></div></li>
+</ol></body></html>`;
+
+test('поиск: unwrapBingUrl раскодирует трекер и HTML-сущности', () => {
+  assert.equal(unwrapBingUrl(`https://www.bing.com/ck/a?&amp;u=a1${BING_B64}&amp;ntb=1`), BING_TARGET);
+  assert.equal(unwrapBingUrl('https://direct.example.ru/page'), 'https://direct.example.ru/page');
+  // bing.com/ck/ без декодируемого u — не ссылка на результат, отбрасывается.
+  assert.equal(unwrapBingUrl('https://www.bing.com/ck/a?u=zzz'), null);
+  assert.equal(unwrapBingUrl('javascript:void(0)'), null);
+});
+
+test('поиск: parseBingHtml разбирает b_algo-блоки', () => {
+  const results = parseBingHtml(BING_FIXTURE);
+  assert.equal(results.length, 2);
+  assert.equal(results[0].url, BING_TARGET);
+  assert.equal(results[0].title, 'Погода в Иркутске — синоптики');
+  assert.equal(results[0].snippet, 'Текущая температура и прогноз на неделю.');
+  assert.equal(results[1].url, 'https://direct-weather.example.ru/irkutsk');
+});
+
+const MOJEK_FIXTURE = `<html><body>
+<ul class="results"><li>
+<h2><a class="title" href="https://mojeek-result.example.org/a">Иркутск сегодня</a></h2>
+<p class="s">Погода и климат Иркутска сейчас.</p>
+</li><li>
+<h2><a class="title" href="https://mojeek-result.example.org/b">Вторая ссылка</a></h2>
+<p class="s">Описание второй ссылки.</p>
+</li></ul></body></html>`;
+
+test('поиск: parseMojeekHtml разбирает выдачу с классами title/s', () => {
+  const results = parseMojeekHtml(MOJEK_FIXTURE);
+  assert.equal(results.length, 2);
+  assert.equal(results[0].url, 'https://mojeek-result.example.org/a');
+  assert.equal(results[0].title, 'Иркутск сегодня');
+  assert.equal(results[0].snippet, 'Погода и климат Иркутска сейчас.');
+  assert.equal(results[1].snippet, 'Описание второй ссылки.');
+});
+
+test('поиск: резервная цепочка — DDG недоступен → Bing отвечает; все недоступны → честная ошибка', async () => {
+  // Первые три источника «падают» (HTTP 403), четвёртый (mojeek) отдаёт выдачу.
+  let calls = [];
+  const fallbackFetch = async (url) => {
+    calls.push(String(url));
+    if (String(url).includes('mojeek.com')) return { ok: true, status: 200, text: async () => MOJEK_FIXTURE };
+    return { ok: false, status: 403, text: async () => '' };
+  };
+  const r = await webSearch('тест резерва', { fetchImpl: fallbackFetch });
+  assert.equal(r.engine, 'mojeek', 'резервный источник сработал');
+  assert.equal(r.results.length, 2);
+  assert.ok(calls.length >= 4, `пройдены все попытки до успешной (${calls.length})`);
+
+  const allFail = async () => ({ ok: false, status: 403, text: async () => '' });
+  await assert.rejects(() => webSearch('всё закрыто', { fetchImpl: allFail }), /Веб-поиск не удался/);
 });
 
 /* ───────────────────────── Погода (мок Open-Meteo) ───────────────────────── */

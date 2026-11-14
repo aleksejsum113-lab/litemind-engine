@@ -36,7 +36,7 @@ function stripTags(s) {
  * //duckduckgo.com/l/?uddg=https%3A%2F%2F...&rut=... — достаём настоящий адрес.
  */
 export function unwrapDdgUrl(href) {
-  let u = String(href ?? '').trim();
+  let u = String(href ?? '').replace(/&amp;/g, '&').trim();
   if (!u) return null;
   if (u.startsWith('//')) u = 'https:' + u;
   try {
@@ -103,6 +103,60 @@ function isAllowedResultHost(u) {
 }
 
 /**
+ * Bing заворачивает результаты в свой трекер /ck/a?...&u=a1<base64url>:
+ * достаём настоящий адрес (после префикса 'a1' — base64url целевого URL).
+ */
+export function unwrapBingUrl(href) {
+  // HTML-сущности (&amp;) в атрибуте ломают разбор параметров — раскодируем.
+  const u = String(href ?? '').replace(/&amp;/g, '&').trim();
+  try {
+    const parsed = new URL(u);
+    if (/(^|\.)bing\.com$/i.test(parsed.hostname) && parsed.pathname.startsWith('/ck/a')) {
+      const target = parsed.searchParams.get('u') ?? '';
+      if (target.startsWith('a1')) {
+        const b64 = target.slice(2).replace(/-/g, '+').replace(/_/g, '/');
+        const decoded = Buffer.from(b64, 'base64').toString('utf8');
+        if (/^https?:\/\//i.test(decoded)) return decoded;
+      }
+    }
+  } catch { /* не трекер */ }
+  if (/^https?:\/\//i.test(u) && !/bing\.com\/ck\//i.test(u)) return u;
+  return null;
+}
+
+/** Извлечь результаты из HTML выдачи Bing (резервный источник без ключей). */
+export function parseBingHtml(html) {
+  const s = String(html ?? '');
+  const out = [];
+  const re = /<li[^>]+class="b_algo"[^>]*>[\s\S]*?<h2[^>]*><a[^>]+href="(https?:[^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>([\s\S]*?)(?=<li[^>]+class="b_algo"|<\/ol|$)/gi;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    const url = unwrapBingUrl(m[1]);
+    const title = stripTags(m[2]);
+    const snippet = stripTags(m[3].replace(/<h2[\s\S]*?<\/h2>/, '').slice(0, 500));
+    if (url && title) out.push({ title, url, snippet });
+  }
+  return out;
+}
+
+/** Извлечь результаты из HTML выдачи Mojeek (независимый индекс, без ключей). */
+export function parseMojeekHtml(html) {
+  const s = String(html ?? '');
+  const out = [];
+  const re = /<a[^>]+class="title"[^>]+href="(https?:[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  const snippets = [...s.matchAll(/<p[^>]+class="s"[^>]*>([\s\S]*?)<\/p>/gi)].map((x) => stripTags(x[1]));
+  let m;
+  let i = 0;
+  while ((m = re.exec(s)) !== null) {
+    const url = m[1];
+    const title = stripTags(m[2]);
+    if (url && title) out.push({ title, url, snippet: snippets[i] ?? '' });
+    i++;
+  }
+  return out;
+}
+
+/**
  * Выполнить веб-поиск. Возвращает { results: [{title,url,snippet}], engine, fetchedAt }.
  * Бросает ошибку с понятным текстом, если поиск не удался (честность §5.3).
  */
@@ -111,9 +165,14 @@ export async function webSearch(query, { fetchImpl = fetch, limit = MAX_RESULTS,
   if (!q) throw new Error('пустой поисковый запрос');
   if (q.length > 300) throw new Error('поисковый запрос слишком длинный (макс. 300 символов)');
 
+  // Цепочка бесплатных источников без ключей: DDG (html/lite) → Bing → Mojeek.
+  // Разные сети блокируют разные сайты — резерв обязателен (ТЗ §5.2:
+  // «надёжный механизм поиска… с обработкой недоступных источников»).
   const attempts = [
-    { name: 'duckduckgo', url: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, parser: parseDdgHtml },
-    { name: 'duckduckgo-lite', url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, parser: parseDdgLite }
+    { name: 'duckduckgo', host: 'html.duckduckgo.com', url: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`, parser: parseDdgHtml },
+    { name: 'duckduckgo-lite', host: 'lite.duckduckgo.com', url: `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, parser: parseDdgLite },
+    { name: 'bing', host: 'www.bing.com', url: `https://www.bing.com/search?q=${encodeURIComponent(q)}&setlang=ru`, parser: parseBingHtml },
+    { name: 'mojeek', host: 'www.mojeek.com', url: `https://www.mojeek.com/search?q=${encodeURIComponent(q)}`, parser: parseMojeekHtml }
   ];
 
   let lastError = null;
@@ -121,7 +180,7 @@ export async function webSearch(query, { fetchImpl = fetch, limit = MAX_RESULTS,
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(new Error('таймаут поиска')), timeoutMs);
     try {
-      await assertPublicHost('html.duckduckgo.com');
+      await assertPublicHost(attempt.host);
       const res = await fetchImpl(attempt.url, {
         redirect: 'follow',
         signal: ctrl.signal,
