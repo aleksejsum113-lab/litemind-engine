@@ -52,12 +52,6 @@ const SECTIONS: { id: Section; title: string }[] = [
   { id: "settings", title: "Настройки" },
 ]
 
-const COMPAT_COLOR: Record<string, string> = {
-  green: "text-green-500",
-  yellow: "text-amber-500",
-  red: "text-red-500",
-}
-
 function Card(props: { title?: string; children: any; class?: string }) {
   return (
     <div class={`rounded-lg border border-v2-stroke-stroke-soft bg-v2-bg-bg-raised p-4 ${props.class ?? ""}`}>
@@ -717,10 +711,14 @@ function CatalogSection() {
                     <Show when={m.compatibility?.speedNote}>
                       <div class="mt-2 text-[11px] text-amber-500">{m.compatibility.speedNote}</div>
                     </Show>
-                    <Show when={notice()?.id === m.id}>
-                      <div class={`mt-2 rounded-md border px-3 py-2 text-[12px] ${notice().ok ? "border-green-500/40 bg-green-500/10 text-green-500" : "border-amber-500/40 bg-amber-500/10 text-amber-500"}`}>
-                        {notice().text}
-                      </div>
+                    <Show when={notice()}>
+                      {(n) => (
+                        <Show when={n().id === m.id}>
+                          <div class={`mt-2 rounded-md border px-3 py-2 text-[12px] ${n().ok ? "border-green-500/40 bg-green-500/10 text-green-500" : "border-amber-500/40 bg-amber-500/10 text-amber-500"}`}>
+                            {n().text}
+                          </div>
+                        </Show>
+                      )}
                     </Show>
                     <Show when={m.compatibility?.recommended}>
                       <div class="mt-2 text-[11px] text-v2-text-text-faint">

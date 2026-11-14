@@ -13,6 +13,20 @@ import { isRendererUrl } from "../windows/scheme"
 // ТЗ v0.6.3 §1.2: тема интерфейса управляет WCO overlay и фоном окна.
 import { setBackgroundColor } from "../windows/appearance"
 import { setTitlebar } from "../windows"
+// ТЗ v0.6.4: компаньон — оверлей персонажа, хоткеи, мост возможностей ОС.
+import { createHostBridge } from "../companion/host-bridge"
+import {
+  destroyCompanionOverlay,
+  startCompanionSync,
+  toggleCompanionOverlay,
+  ensureCompanionOverlay,
+} from "../companion/overlay"
+import {
+  registerCompanionHotkeys,
+  stopCompanionActivity,
+  unregisterCompanionHotkeys,
+  onQuitUnregister,
+} from "../companion/hotkeys"
 
 const ENGINE_PORT = 8399
 const ENGINE_URL = `http://127.0.0.1:${ENGINE_PORT}`
@@ -79,6 +93,29 @@ export async function startLiteMindEngineHost(): Promise<void> {
     host.owned = true
     host.state = "running"
     host.lastError = null
+    // ТЗ v0.6.4: мост возможностей ОС (экран/Windows/уведомления) для движка.
+    try { (handle as unknown as { setHostBridge?: (b: unknown) => void }).setHostBridge?.(createHostBridge()) } catch (err) {
+      log.warn("[litemind] host bridge connect failed:", err)
+    }
+    // Компаньон: оверлей персонажа по настройкам + автозапуск + хоткеи.
+    startCompanionSync((enabled) => {
+      try {
+        app.setLoginItemSettings({ openAtLogin: enabled, args: ["--hidden"] })
+        log.info("[companion] autostart", { enabled })
+      } catch (err) {
+        log.warn("[companion] autostart sync failed:", err)
+      }
+    })
+    registerCompanionHotkeys({
+      toggleOverlay: () => toggleCompanionOverlay(),
+      stopEverything: () => stopCompanionActivity(),
+    })
+    onQuitUnregister()
+    // Если интерфейс выключен — персонаж скрыт вместе с окном.
+    app.on("before-quit", () => {
+      unregisterCompanionHotkeys()
+      destroyCompanionOverlay()
+    })
     // Если движок остановили через HTTP API (раздел «Управление») — фиксируем
     // состояние и не трогаем его: автоперезапуска нет.
     handle.server.on("close", () => {
@@ -154,6 +191,18 @@ export async function startEngine(): Promise<{ ok: boolean; state: HostState; er
     host.owned = true
     host.state = "running"
     host.lastError = null
+    // ТЗ v0.6.4: мост ОС + компаньон также при ручном запуске движка.
+    try { (handle as unknown as { setHostBridge?: (b: unknown) => void }).setHostBridge?.(createHostBridge()) } catch (err) {
+      log.warn("[litemind] host bridge connect failed (manual start):", err)
+    }
+    startCompanionSync((enabled) => {
+      try { app.setLoginItemSettings({ openAtLogin: enabled, args: ["--hidden"] }) } catch (err) { log.warn("[companion] autostart sync failed:", err) }
+    })
+    registerCompanionHotkeys({
+      toggleOverlay: () => toggleCompanionOverlay(),
+      stopEverything: () => stopCompanionActivity(),
+    })
+    void ensureCompanionOverlay()
     handle.server.on("close", () => {
       if (host.state !== "stopping") host.state = "stopped"
       host.handle = null
@@ -283,7 +332,30 @@ function registerShellIpc(): void {
   })
 }
 
-function registerEngineIpc(): void {
+  // ТЗ v0.6.4: панель компаньона управляет оверлеем через мост Desktop.
+  ipcMain.handle("litemind:companion-toggle", (event) => {
+    if (!isRendererUrl(event.senderFrame?.url)) return { ok: false, error: "forbidden" }
+    toggleCompanionOverlay()
+    return { ok: true }
+  })
+  ipcMain.handle("litemind:companion-show", (event, visible: unknown) => {
+    if (!isRendererUrl(event.senderFrame?.url)) return { ok: false, error: "forbidden" }
+    if (visible === false) destroyCompanionOverlay()
+    else void ensureCompanionOverlay()
+    return { ok: true }
+  })
+  ipcMain.handle("litemind:companion-apply", (event, patch: unknown) => {
+    if (!isRendererUrl(event.senderFrame?.url)) return { ok: false, error: "forbidden" }
+    // Настройки уже сохранены движком (POST /api/companion/settings); оверлей
+    // подхватит их при следующей синхронизации (10 с) — принудительно
+    // перезагружаем только если персонаж полностью выключили.
+    if (patch && typeof patch === "object" && (patch as { enabled?: boolean }).enabled === false) {
+      destroyCompanionOverlay()
+    }
+    return { ok: true }
+  })
+
+  function registerEngineIpc(): void {
   if (ipcRegistered) return
   ipcRegistered = true
   registerShellIpc()

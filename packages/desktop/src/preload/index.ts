@@ -48,5 +48,9 @@ contextBridge.exposeInMainWorld("electron", {
     // overlay) окрашиваются по теме ПРИЛОЖЕНИЯ, а не по теме Windows.
     setWindowTheme: (mode: "dark" | "light", background?: string) =>
       ipcRenderer.invoke("litemind:set-window-theme", { mode, background }),
+    // ТЗ v0.6.4: панель компаньона управляет оверлеем персонажа.
+    companionToggle: () => ipcRenderer.invoke("litemind:companion-toggle"),
+    companionShow: (visible: boolean) => ipcRenderer.invoke("litemind:companion-show", visible === true),
+    companionApply: (patch: Record<string, unknown>) => ipcRenderer.invoke("litemind:companion-apply", patch),
   },
 })

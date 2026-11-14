@@ -12,10 +12,12 @@ import { CLI_BINARIES, nodePtyPackage } from "./script/utils"
 // Use electron-builder's matcher so the tests also cover its glob and directory traversal semantics.
 const { FileMatcher } = createRequire(import.meta.resolve("electron-builder"))("app-builder-lib/out/fileMatcher")
 
+// ТЗ v0.6.4 §2: собственные app id LiteMind (совпадают с APP_IDS в
+// electron-builder.config.ts и с AppUserModelID рантайма — constants.ts).
 const channels = [
-  { channel: "dev", appId: "ai.opencode.desktop.dev", feed: "dev" },
-  { channel: "beta", appId: "ai.opencode.desktop.beta", feed: "beta" },
-  { channel: "prod", appId: "ai.opencode.desktop", feed: "latest" },
+  { channel: "dev", appId: "ai.litemind.desktop.dev", feed: "dev" },
+  { channel: "beta", appId: "ai.litemind.desktop.beta", feed: "beta" },
+  { channel: "prod", appId: "ai.litemind.desktop", feed: "latest" },
 ] as const
 
 function load(channel: string, target?: string): Configuration {
@@ -50,10 +52,12 @@ function trimFilter(dir: string, config: Configuration) {
 test.each(channels)("channel identity for $channel", ({ channel, appId, feed }) => {
   const config = load(channel)
   expect(config.appId).toBe(appId)
-  // Every published channel updates from its own feed on the update service.
+  // Каналы LiteMind публикуются в собственный репозиторий GitHub Releases
+  // (v0.4: LiteMind больше не использует сервер обновлений OpenCode).
   expect(config.publish).toEqual({
-    provider: "generic",
-    url: `https://opencode.ai/update/api/${feed}/desktop/opencode/`,
+    provider: "github",
+    owner: "aleksejsum113-lab",
+    repo: "litemind-engine",
     channel: "latest",
   })
   expect(config.extraMetadata?.desktopName).toBe(`${appId}.desktop`)
@@ -69,9 +73,11 @@ test.each(channels)("channel identity for $channel", ({ channel, appId, feed }) 
 
   for (const fpm of [config.deb?.fpm, config.rpm?.fpm]) {
     expect(fpm).toContainEqual(expect.stringContaining(`/usr/share/metainfo/${appId}.metainfo.xml`))
+    // LiteMind (v0.4+) не наследует legacy-запись OpenCode Desktop: у приложения
+    // собственный appId, .desktop-файл и метаданные; opencode-записи быть не должно.
     expect(
       fpm?.some((entry) => entry.endsWith("opencode-desktop.desktop=/usr/share/applications/opencode-desktop.desktop")),
-    ).toBe(channel === "prod")
+    ).toBe(false)
   }
 
   // Shared Electron binaries must not ship /usr/lib/.build-id links that collide with other Electron RPMs.

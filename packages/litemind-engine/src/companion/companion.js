@@ -35,7 +35,7 @@ export class CompanionHub {
 
   updateSettings(patch = {}) {
     const c = this.config.companion ?? (this.config.companion = {});
-    const allowed = ['enabled', 'character', 'size', 'opacity', 'alwaysOnTop', 'autoShowOnStart'];
+    const allowed = ['enabled', 'character', 'size', 'opacity', 'alwaysOnTop', 'autoShowOnStart', 'autostart'];
     for (const k of allowed) {
       if (k in patch) c[k] = patch[k];
     }

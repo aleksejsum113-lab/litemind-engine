@@ -43,5 +43,10 @@ export type ElectronNative = {
     appInfo(): Promise<LiteMindAppInfo>
     /** ТЗ v0.6.3 §1.2: тема интерфейса — для окраски WCO overlay системных кнопок. */
     setWindowTheme(mode: "dark" | "light", background?: string): Promise<unknown>
+    /** ТЗ v0.6.4: показать/скрыть персонажа-оверлея (панель «Внешность»). */
+    companionToggle(): Promise<{ ok: boolean; error?: string }>
+    companionShow(visible: boolean): Promise<{ ok: boolean; error?: string }>
+    /** Настройки внешности уже сохранены движком; Desktop перечитывает оверлей. */
+    companionApply(patch: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>
   }
 }
