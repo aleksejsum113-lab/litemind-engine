@@ -24,7 +24,12 @@ const config = {
   models: { rootDir: path.join(WORK, 'models') },
   web: { enabled: true },
   api: { port: 9321 },
-  diagnostics: { level: 'error', dir: path.join(WORK, 'logs') }
+  diagnostics: { level: 'error', dir: path.join(WORK, 'logs') },
+  // В песочнице CI/локального прогона RAM ограничена (~4 ГБ) — профиль
+  // high (кэш промпта + бюджет 512 МБ резерва) убирает флаковые блоки
+  // memory-gate. На реальном ПК 16 ГБ работает профиль пользователя.
+  profile: 'high',
+  profiles: { high: { memoryReserveMb: 512 } }
 };
 fs.writeFileSync(path.join(WORK, 'config.json'), JSON.stringify(config));
 process.env.LITEMIND_CONFIG = path.join(WORK, 'config.json');
@@ -138,4 +143,6 @@ try {
   process.exitCode = 1;
 } finally {
   await handle.stop().catch(() => {});
+  // Рабочий каталог содержит копию модели (~400 МБ) — не оставляем мусор на диске.
+  try { fs.rmSync(WORK, { recursive: true, force: true }); } catch { /* занятое — не критично */ }
 }

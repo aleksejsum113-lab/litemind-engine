@@ -1925,7 +1925,12 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       const body = JSON.parse((await readBody(req)) || '{}');
       if (!config.web?.enabled) return openaiError(res, 403, 'доступ к интернету выключен — актуальную погоду проверить нельзя (честность ТЗ §5.3)', 'web_error');
       try {
-        const w = await currentWeather(String(body.place ?? ''), { fetchImpl: fetch });
+        // Место: строка (геокодирование Open-Meteo → Nominatim) или готовые
+        // координаты {latitude, longitude, name?} — геокодер пропускается.
+        const placeArg = (Number.isFinite(Number(body.latitude)) && Number.isFinite(Number(body.longitude)))
+          ? { name: body.place, latitude: Number(body.latitude), longitude: Number(body.longitude) }
+          : String(body.place ?? '');
+        const w = await currentWeather(placeArg, { fetchImpl: fetch });
         return json(res, 200, { ok: true, ...w });
       } catch (err) {
         return openaiError(res, 502, err.message, 'web_error');

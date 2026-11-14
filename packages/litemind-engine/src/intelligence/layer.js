@@ -43,12 +43,22 @@ export function composeToolAnswer(fact) {
   const at = new Date().toISOString();
   if (fact?.kind === 'погода') {
     if (!fact.ok) {
+      // Две разные причины отказа — и два разных честных ответа (E2E v0.6.4:
+      // нельзя говорить «интернет выключен», когда источник недоступен).
+      if (fact.webOff === true) {
+        return [
+          'Интернет выключен, поэтому актуальную погоду проверить не могу —',
+          'называть температуру догадкой не буду.',
+          'Включите кнопку «земной шар» (и доступ к интернету в Настройках),',
+          'и я покажу реальную погоду с источником и временем наблюдения.'
+        ].join(' ');
+      }
       return [
-        'Интернет выключен, поэтому актуальную погоду проверить не могу —',
-        'называть температуру догадкой не буду.',
-        'Включите кнопку «земной шар» (и доступ к интернету в Настройках),',
-        'и я покажу реальную погоду с источником и временем наблюдения.'
-      ].join(' ');
+        'Погодный сервис сейчас недоступен',
+        fact.error ? `(${fact.error})` : '',
+        '— актуальную температуру назвать не могу, догадкой это не будет.',
+        'Попробуйте ещё раз позже; если интернет выключен — включите кнопку «земной шар» и повторите запрос.'
+      ].filter(Boolean).join(' ');
     }
     const d = fact.data ?? {};
     const bits = [`Сейчас ${d.place ?? 'в выбранном месте'}: ${d.temperatureC > 0 ? '+' : ''}${d.temperatureC} °C, ${d.description ?? ''}`];
@@ -234,6 +244,7 @@ export function createIntelligenceLayer({ config, engine, logger = null, memory 
       return {
         kind: 'погода',
         ok: false,
+        webOff: true,
         retrievedAt: new Date().toISOString(),
         text: 'Интернет выключен. Я НЕ могу проверить актуальную погоду и НЕ буду выдумывать температуру. Скажите пользователю прямо: для текущей погоды включите доступ к интернету (кнопка «земной шар») и повторите запрос.'
       };
@@ -243,7 +254,8 @@ export function createIntelligenceLayer({ config, engine, logger = null, memory 
       return { kind: 'погода', ok: true, retrievedAt: w.retrievedAt, text: `${w.summary} Время наблюдения (местное): ${w.observedAt}. Источник: Open-Meteo (${w.source}). Используй ТОЛЬКО эти числа; не придумывай другие значения.`, data: w };
     } catch (err) {
       return {
-        kind: 'погода', ok: false, retrievedAt: new Date().toISOString(),
+        kind: 'погода', ok: false, webOff: false, error: String(err?.message ?? err).slice(0, 200),
+        retrievedAt: new Date().toISOString(),
         text: `Погодный источник недоступен или место не найдено: ${err.message}. Скажи пользователю об этом честно и не выдумывай погоду.`
       };
     }
@@ -252,7 +264,7 @@ export function createIntelligenceLayer({ config, engine, logger = null, memory 
   async function doSearch(query, { signal } = {}) {
     if (!web?.enabled?.()) {
       return {
-        kind: 'поиск', ok: false, retrievedAt: new Date().toISOString(),
+        kind: 'поиск', ok: false, webOff: true, retrievedAt: new Date().toISOString(),
         text: 'Интернет выключен (кнопка «земной шар»). Актуальные сведения проверить не могу — ответь без выдуманных фактов и предупреди пользователя.'
       };
     }

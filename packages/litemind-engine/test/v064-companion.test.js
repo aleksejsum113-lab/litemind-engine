@@ -11,7 +11,8 @@ import { evaluateExpression, findMathExpression } from '../src/intelligence/calc
 import { classifyIntent, extractWeatherPlace } from '../src/intelligence/intents.js';
 import { createIntelligenceLayer, modelFamily, stopSequencesFor, samplerFor, cleanReplyText, checkReply } from '../src/intelligence/layer.js';
 import { parseDdgHtml, parseDdgLite, unwrapDdgUrl, unwrapBingUrl, parseBingHtml, parseMojeekHtml, webSearch } from '../src/web/search.js';
-import { currentWeather, describeWeatherCode, geocodePlace } from '../src/web/weather.js';
+import { currentWeather, describeWeatherCode, geocodePlace, placeCandidates } from '../src/web/weather.js';
+import { composeToolAnswer } from '../src/intelligence/layer.js';
 import { parseReminder, formatWhen } from '../src/tasks/datetime.js';
 import { MemoryStore, extractAutoFact } from '../src/memory/store.js';
 import { TaskStore } from '../src/tasks/store.js';
@@ -345,13 +346,116 @@ test('погода: геокодирование + текущая погода �
 });
 
 test('погода: неизвестное место — честная ошибка (никаких выдуманных значений)', async () => {
-  const failing = async (url) => {
+  // Оба геокодера ответили «пусто» — честная ошибка, координаты не выдумываются.
+  const emptyGeocoders = async (url) => {
     if (String(url).includes('geocoding-api')) return { ok: true, status: 200, json: async () => ({}) };
+    if (String(url).includes('nominatim')) return { ok: true, status: 200, json: async () => [] };
     throw new Error('should not be called');
   };
-  await assert.rejects(() => currentWeather('Нигдеград', { fetchImpl: failing }), /не найдено в геокодере/);
+  await assert.rejects(() => currentWeather('Нигдеград', { fetchImpl: emptyGeocoders, retryAttempts: 1 }), /не найдено в геокодерах/);
   const geo = await geocodePlace('Иркутск', { fetchImpl: mockOpenMeteoFetch() });
   assert.equal(geo.latitude, 52.28);
+  assert.equal(geo.geocoder, 'open-meteo');
+});
+
+test('погода: резервный геокодер Nominatim, если Open-Meteo недоступен', async () => {
+  const omDown = async (url) => {
+    if (String(url).includes('geocoding-api')) { const e = new Error('fetch failed'); e.cause = { code: 'ETIMEDOUT' }; throw e; }
+    if (String(url).includes('nominatim')) {
+      return { ok: true, status: 200, json: async () => [{ lat: '52.2891225', lon: '104.2798290', name: 'Иркутск', display_name: 'Иркутск, городской округ Иркутск, Иркутская область' }] };
+    }
+    if (String(url).includes('api.open-meteo.com')) {
+      return { ok: true, status: 200, json: async () => ({ current: { time: '2026-11-14T15:00', temperature_2m: -3.4, weather_code: 71 } }) };
+    }
+    throw new Error('unexpected url ' + url);
+  };
+  const geo = await geocodePlace('Иркутск', { fetchImpl: omDown, retryAttempts: 2, retryDelayMs: 1 });
+  assert.equal(geo.geocoder, 'nominatim');
+  assert.equal(geo.latitude, 52.2891225);
+  const w = await currentWeather('Иркутск', { fetchImpl: omDown, retryAttempts: 2, retryDelayMs: 1 });
+  assert.equal(w.temperatureC, -3.4);
+  assert.equal(w.description, 'слабый снег');
+});
+
+test('погода: ретраи переживают сетевой сбой, 4xx не повторяется', async () => {
+  let calls = 0;
+  const flaky = async (url) => {
+    if (String(url).includes('geocoding-api')) {
+      calls++;
+      if (calls < 3) { const e = new Error('fetch failed'); e.cause = { code: 'ECONNRESET' }; throw e; }
+      return { ok: true, status: 200, json: async () => ({ results: [{ latitude: 52.28, longitude: 104.3, name: 'Иркутск' }] }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ current: { time: '2026-11-14T15:00', temperature_2m: -1, weather_code: 0 } }) };
+  };
+  const geo = await geocodePlace('Иркутск', { fetchImpl: flaky, retryAttempts: 3, retryDelayMs: 1 });
+  assert.equal(calls, 3, 'третья попытка удалась');
+  assert.equal(geo.latitude, 52.28);
+  let httpCalls = 0;
+  const http404 = async () => { httpCalls++; return { ok: false, status: 404, json: async () => ({}) }; };
+  await assert.rejects(() => currentWeather({ latitude: 1, longitude: 2, name: 'X' }, { fetchImpl: http404, retryAttempts: 3, retryDelayMs: 1 }), /HTTP 404/);
+  assert.equal(httpCalls, 1, 'HTTP 4xx не ретраится');
+});
+
+test('погода: прямые координаты минуют геокодирование', async () => {
+  let geocodeCalled = false;
+  const api = async (url) => {
+    if (String(url).includes('geocoding-api') || String(url).includes('nominatim')) { geocodeCalled = true; throw new Error('не должен вызываться'); }
+    return { ok: true, status: 200, json: async () => ({ current: { time: '2026-11-14T15:00', temperature_2m: 5.5, weather_code: 0 } }) };
+  };
+  const w = await currentWeather({ name: 'Моё место', latitude: 52.28, longitude: 104.3 }, { fetchImpl: api, retryAttempts: 1 });
+  assert.equal(geocodeCalled, false, 'геокодер не вызывался');
+  assert.equal(w.place, 'Моё место');
+  assert.equal(w.geocoder, 'coordinates');
+  assert.equal(w.temperatureC, 5.5);
+});
+
+test('честные отказы погоды: «интернет выключен» и «сервис недоступен» — разные тексты', () => {
+  const off = composeToolAnswer({ kind: 'погода', ok: false, webOff: true });
+  assert.match(off, /Интернет выключен/);
+  const down = composeToolAnswer({ kind: 'погода', ok: false, webOff: false, error: 'fetch failed' });
+  assert.match(down, /сервис сейчас недоступен/);
+  assert.match(down, /fetch failed/);
+  assert.doesNotMatch(down, /Интернет выключен/);
+});
+
+test('погода: падежные кандидаты («в Иркутске» → «Иркутск») без POI-мусора', async () => {
+  assert.deepEqual(placeCandidates('Иркутске'), ['Иркутске', 'Иркутск', 'Иркутска']);
+  assert.ok(placeCandidates('Москве').includes('Москва'));
+  assert.deepEqual(placeCandidates('Иркутск'), ['Иркутск']);
+
+  // Open-Meteo не знает предложного падежа, но находит именительный.
+  const omCase = async (url) => {
+    const q = decodeURIComponent((String(url).match(/name=([^&]+)/) ?? [])[1] ?? '');
+    if (String(url).includes('geocoding-api')) {
+      if (q === 'Иркутск') return { ok: true, status: 200, json: async () => ({ results: [{ latitude: 52.29, longitude: 104.29, name: 'Иркутск', country: 'Россия' }] }) };
+      return { ok: true, status: 200, json: async () => ({}) };
+    }
+    return { ok: true, status: 200, json: async () => ({ current: { time: '2026-11-14T15:00', temperature_2m: -4.4, weather_code: 0 } }) };
+  };
+  const geo = await geocodePlace('Иркутске', { fetchImpl: omCase, retryAttempts: 1 });
+  assert.equal(geo.name, 'Иркутск', 'падежный кандидат нашёл город');
+  assert.equal(geo.geocoder, 'open-meteo');
+
+  // Nominatim: сперва города (featuretype=city), POI «Кирпич в Иркутске» не выбирается.
+  const osmCalls = [];
+  const osmOnly = async (url) => {
+    const u = String(url);
+    const q = decodeURIComponent((u.match(/q=([^&]+)/) ?? [])[1] ?? '');
+    osmCalls.push(`${u.includes('featuretype=city') ? 'city' : 'free'}:${q}`);
+    if (u.includes('geocoding-api')) return { ok: true, status: 200, json: async () => ({}) };
+    if (u.includes('nominatim')) {
+      if (u.includes('featuretype=city')) return { ok: true, status: 200, json: async () => [] };
+      return { ok: true, status: 200, json: async () => [
+        { class: 'shop', type: 'bricks', name: 'Кирпич в Иркутске', lat: '52.327', lon: '104.244' },
+        { class: 'place', type: 'city', name: 'Иркутск', lat: '52.289', lon: '104.279' }
+      ] };
+    }
+    return { ok: true, status: 200, json: async () => ({ current: { time: '2026-11-14T15:00', temperature_2m: -4.4, weather_code: 0 } }) };
+  };
+  const geo2 = await geocodePlace('Иркутске', { fetchImpl: osmOnly, retryAttempts: 1 });
+  assert.equal(geo2.geocoder, 'nominatim');
+  assert.equal(geo2.name, 'Иркутск', 'выбран объект класса place, а не магазин');
+  assert.ok(osmCalls.some((c) => c.startsWith('city:')), 'сначала пробуется фильтр городов');
 });
 
 /* ───────────────────────── Intelligence Layer ───────────────────────── */
