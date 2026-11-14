@@ -590,8 +590,10 @@ export class AgentManager {
     }
     s.stats.toolCalls = (s.stats.toolCalls ?? 0) + 1;
     // Структурированный факт — для заземления финального ответа модели
-    // (числа сервиса не доверяются пересказу).
-    s._weatherFact = exec.data ?? null;
+    // (числа сервиса не доверяются пересказу). Форма СТРОГО как в
+    // intelligence/layer.js verifyToolAnswers: {kind:'погода', ok, data} —
+    // сырой объект w без обёртки факт не находится и заземление мёртвое.
+    s._weatherFact = exec.data ? { kind: 'погода', ok: true, data: exec.data } : null;
     this._append(s, { role: 'tool', tool, args, ok: exec.ok !== false, result: exec.result ?? '' });
     this._stage(s, intent.intent === 'weather' ? 'погода: данные получены' : 'поиск: источники получены');
   }
@@ -739,6 +741,17 @@ export class AgentManager {
 
         if (parsed.kind === 'ask') {
           const q = String(parsed.data.question ?? parsed.data.text ?? '').trim();
+          // Погодный факт уже получен инструментом: уточняющий вопрос малой
+          // модели («Какая погода в Иркутске?» вместо ответа) — нечестен и
+          // бесполезен. Отдаём детерминированный ответ из данных сервиса.
+          if (s._weatherFact?.ok) {
+            const g = this._grounded(s, q);
+            this._append(s, { role: 'assistant', text: g.text });
+            s.state = 'idle';
+            this._stage(s, 'готово');
+            await this._persist(s);
+            return;
+          }
           if (q) this._append(s, { role: 'assistant', text: q });
           s.state = 'waiting_user';
           this._stage(s, 'ждёт ответа пользователя');
