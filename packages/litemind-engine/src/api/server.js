@@ -1887,7 +1887,14 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       return openaiError(res, e.status || 400, `Invalid JSON body: ${e.message}`, 'invalid_request_error');
     }
 
-    let model = body.model;
+    // ТЗ v0.6.3 §1.4: единый формат модели — СТРОКА-идентификатор. Раньше UI
+    // присылал DOM-элемент (в runCompletion() голое `model` разрешалось в
+    // глобальный <select id="model">), JSON.stringify давал {}, и бэкенд падал
+    // с «Model "[object Object]" is not available locally». Граница API приводит
+    // любое осмысленное представление ({id: ...} | 'name' | ' name ') к строке.
+    let model = typeof body.model === 'string'
+      ? body.model.trim()
+      : (body.model && typeof body.model === 'object' && typeof body.model.id === 'string' ? body.model.id.trim() : '');
     let messages = body.messages;
     if (legacyCompletions) {
       messages = [{ role: 'user', content: String(body.prompt ?? '') }];

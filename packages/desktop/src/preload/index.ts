@@ -44,5 +44,9 @@ contextBridge.exposeInMainWorld("electron", {
     pickGgufFile: (title: string) =>
       ipcRenderer.invoke("litemind:pick-gguf", { title: String(title ?? "Выберите GGUF-модель") }),
     appInfo: () => ipcRenderer.invoke("litemind:app-info"),
+    // ТЗ v0.6.3 §1.2: интерфейс сообщает тему — системные кнопки окна (WCO
+    // overlay) окрашиваются по теме ПРИЛОЖЕНИЯ, а не по теме Windows.
+    setWindowTheme: (mode: "dark" | "light", background?: string) =>
+      ipcRenderer.invoke("litemind:set-window-theme", { mode, background }),
   },
 })

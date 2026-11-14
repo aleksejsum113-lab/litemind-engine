@@ -6,7 +6,7 @@ import { resolveExternalURL } from "../files/external-url"
 import { windowArguments } from "./bootstrap"
 import { WINDOW_IDS_KEY } from "../storage/keys"
 import { getStore } from "../storage/store"
-import { windowIconFile, platformFrame, storedBackgroundColor, storedZoomLevel, tone } from "./defaults"
+import { windowIconFile, platformFrame, storedBackgroundColor, storedZoomLevel, appOverlayMode } from "./defaults"
 import {
   initialEarlyWindowState,
   isEarlyWindowClosed,
@@ -102,7 +102,8 @@ export function createEarlyWindow() {
     title: "LiteMind",
     icon,
     backgroundColor: storedBackgroundColor(),
-    ...platformFrame(tone(), zoom),
+    // ТЗ v0.6.3 §1.2: раннее окно тоже красит системные кнопки по теме приложения.
+    ...platformFrame(appOverlayMode(), zoom),
     webPreferences: {
       preload: path.join(root, "../preload/index.cjs"),
       contextIsolation: true,

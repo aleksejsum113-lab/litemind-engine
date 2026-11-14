@@ -98,7 +98,8 @@ export function parseServerTimingLine(line) {
 
 export class LlamaCppBackend {
   constructor({ rootDir, serverPath = null, host = '127.0.0.1', logger = null, fetchImpl = fetch,
-                contextTokens = 4096, threads = 0, chatTemplate = null, loadTimeoutMs = 180000 } = {}) {
+                contextTokens = 4096, threads = 0, chatTemplate = null, loadTimeoutMs = 180000,
+                headersTimeoutMs = 600000 } = {}) {
     this.type = 'lmlama';
     this.rootDir = rootDir;
     this.host = host;
@@ -109,6 +110,13 @@ export class LlamaCppBackend {
     this.defaultThreads = threads;
     this.chatTemplate = chatTemplate;
     this.loadTimeoutMs = loadTimeoutMs;
+    // ТЗ v0.6.3 §1.5: таймаут на ЗАГОЛОВКИ ответа. Раньше был захардкожен 60 с —
+    // меньше, чем любая другая граница движка (загрузка модели 180 с, профильные
+    // requestTimeoutMs 600–1800 с). На CPU без AVX (N5095A) prefill системного
+    // промпта агента идёт дольше минуты: соединение живо, процесс жив,
+    // llama-server ещё считает промпт — а запрос уже падал с «connect timeout».
+    // Дефолт 10 мин согласован с самым коротким профильным requestTimeoutMs.
+    this.headersTimeoutMs = headersTimeoutMs;
 
     // Состояние процесса llama-server: не более одного загруженного файла.
     this.proc = null;
@@ -675,7 +683,10 @@ export class LlamaCppBackend {
     const meta = scanned.find((m) => m.id === model && m.ok);
     if (!meta) {
       const available = scanned.filter((m) => m.ok).map((m) => m.id);
-      throw new ModelNotFoundError(model, available);
+      // ТЗ v0.6.3 §1.4: пользователь уже скачал GGUF — советуем свои разделы UI,
+      // а не «ollama pull» (пользователь не обязан ставить Ollama).
+      throw new ModelNotFoundError(model, available,
+        'Выберите модель в шапке чата или добавьте GGUF в разделе «Модели» → «Каталог» / «Свой GGUF». Автоматическое скачивание выключено — файл модели должен лежать на диске.');
     }
     if (meta.error && !meta.ok) {
       throw new BackendError(`Файл модели повреждён: ${meta.error}`, { code: 'MODEL_CORRUPT', status: 422 });
@@ -724,10 +735,14 @@ export class LlamaCppBackend {
     const ctrl = new AbortController();
     const onAbort = () => ctrl.abort(signal?.reason);
     signal?.addEventListener('abort', onAbort, { once: true });
-    // Таймаут ТОЛЬКО на установку соединения и получение заголовков ответа:
-    // после заголовков генерация может длиться сколько угодно — её сторожит
-    // stream-idle-watchdog движка (запускается от первого токена).
-    const connectTimer = setTimeout(() => ctrl.abort(new Error('connect timeout')), 60000);
+    // ТЗ v0.6.3 §1.5: таймаут ТОЛЬКО на установку соединения и получение
+    // заголовков ответа (headersTimeoutMs, по умолчанию 10 мин — prefill
+    // длинного промпта на CPU без AVX идёт минуты; старые 60 с убивали
+    // заведомо живой запрос «connect timeout»). После заголовков генерация
+    // может длиться сколько угодно — её сторожит stream-idle-watchdog движка
+    // (запускается от первого токена).
+    const headersTimer = setTimeout(() => ctrl.abort(new Error('llama-server headers timeout')), this.headersTimeoutMs);
+    headersTimer.unref?.();
 
     let res;
     let headersMs = null;
@@ -741,11 +756,11 @@ export class LlamaCppBackend {
       });
       headersMs = Date.now() - t0;
       // Заголовки получены — соединение установлено, таймер больше не нужен.
-      clearTimeout(connectTimer);
+      clearTimeout(headersTimer);
       serverInfo.headersMs = headersMs;
       onHeaders?.(headersMs);
     } catch (err) {
-      clearTimeout(connectTimer);
+      clearTimeout(headersTimer);
       signal?.removeEventListener('abort', onAbort);
       if (signal?.aborted) throw err;
       // v0.6.1: если llama-server умер МЕЖДУ health-ok и этим запросом —
@@ -761,13 +776,24 @@ export class LlamaCppBackend {
         extra = ` Процесс llama-server завершился (код ${info.code ?? '?'}${info.signal ? `, сигнал ${info.signal}` : ''}).${tail ? ` stderr: ${tail}` : ''}`;
         this._resetProc();
       }
+      // ТЗ v0.6.3 §1.5: заголовки не пришли за headersTimeoutMs. Прежний текст
+      // «connect timeout … процесс мог завершиться» был ложью дважды: соединение
+      // как раз установилось, а процесс жив — llama-server всё ещё считает
+      // prefill промпта (слабый CPU без AVX, большой контекст/вложения).
+      if (err?.message === 'llama-server headers timeout') {
+        throw new BackendError(
+          `llama-server (${baseUrl}) не вернул ответ за ${Math.round(this.headersTimeoutMs / 1000)} с — модель всё ещё обрабатывает запрос (prefill). ${died ? 'Процесс завершился во время ожидания.' : 'Процесс жив; на слабом CPU без AVX обработка длинного промпта занимает минуты — подождите, уменьшите контекст или уберите большие вложения.'}`,
+          { code: died ? 'RUNTIME_DIED' : 'HEADERS_TIMEOUT', cause: err }
+        );
+      }
       throw new BackendError(`Запрос к llama-server (${baseUrl}) не удался: ${err.message}.${extra || ' Процесс мог завершиться — попробуйте снова.'}`, { code: died ? 'RUNTIME_DIED' : 'BACKEND_UNREACHABLE', cause: err });
     }
 
     if (res.status === 404) {
       signal?.removeEventListener('abort', onAbort);
       const available = (await this.listModels()).map((m) => m.id);
-      throw new ModelNotFoundError(model, available);
+      throw new ModelNotFoundError(model, available,
+        'Выберите модель в шапке чата или добавьте GGUF в разделе «Модели» → «Каталог» / «Свой GGUF». Автоматическое скачивание выключено — файл модели должен лежать на диске.');
     }
     if (!res.ok) {
       signal?.removeEventListener('abort', onAbort);

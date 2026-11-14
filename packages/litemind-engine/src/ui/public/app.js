@@ -68,6 +68,47 @@ function showError(msg) {
   errTimer = setTimeout(() => el.remove(), 6000);
 }
 
+/* ТЗ v0.6.3 §1.3: собственный модальный ввод. window.prompt() в Electron НЕ
+   поддерживается (бросает «prompt() is and will not be supported») — кнопки
+   «Переименовать» у чата и ввод пути GGUF молча ничего не делали.
+   Возвращает Promise<string|null> (null = отмена). */
+function modalPrompt(message, initial = '') {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML = `
+      <div class="modal-card" role="dialog" aria-modal="true" aria-label="${esc(message)}">
+        <div class="modal-title">${esc(message)}</div>
+        <input class="modal-input" type="text" autocomplete="off" spellcheck="false" />
+        <div class="modal-actions">
+          <button type="button" class="modal-cancel">Отмена</button>
+          <button type="button" class="modal-ok">ОК</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    const input = backdrop.querySelector('.modal-input');
+    input.value = String(initial ?? '');
+    const done = (val) => {
+      backdrop.remove();
+      document.removeEventListener('keydown', onKey, true);
+      resolve(val);
+    };
+    const ok = () => done(input.value);
+    const cancel = () => done(null);
+    const onKey = (e) => {
+      if (!backdrop.isConnected) return;
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); }
+      else if (e.key === 'Enter' && document.activeElement === input) { e.preventDefault(); ok(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) cancel(); });
+    backdrop.querySelector('.modal-ok').addEventListener('click', ok);
+    backdrop.querySelector('.modal-cancel').addEventListener('click', cancel);
+    input.focus();
+    input.select();
+  });
+}
+
 /* Красная строка над полем ввода чата (#chat-error): ошибки, которые нужно
    видеть не покидая чат — прежде всего реальный ответ API при запуске модели
    ({error:{message}} извлекает api()). Пустая строка — скрыть строку. */
@@ -114,6 +155,14 @@ function applyTheme(mode) {
   document.documentElement.dataset.theme = resolved;
   try { localStorage.setItem('litemind-theme', mode); } catch { /* хранилище недоступно — тема только на сеанс */ }
   document.querySelectorAll('[data-theme-btn]').forEach((b) => b.classList.toggle('active', b.dataset.themeBtn === mode));
+  // ТЗ v0.6.3 §1.2: сообщаем тему в Desktop — системные кнопки окна (WCO
+  // overlay) и фон окна до первой отрисовки окрашиваются по теме ПРИЛОЖЕНИЯ,
+  // а не по теме Windows. Раньше оверлей следовал nativeTheme, и на светлой
+  // Windows поверх тёмного интерфейса висела светлая системная панель.
+  try {
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+    bridge()?.setWindowTheme?.(resolved === 'light' ? 'light' : 'dark', bg || undefined);
+  } catch { /* браузер без моста Desktop — некритично */ }
 }
 document.querySelectorAll('[data-theme-btn]').forEach((b) =>
   b.addEventListener('click', () => { try { applyTheme(b.dataset.themeBtn); } catch (err) { console.error('тема:', err); } }));
@@ -803,11 +852,18 @@ function saveChats() {
 
 const activeChat = () => chats.find((c) => c.id === activeChatId) ?? null;
 
+/* ТЗ v0.6.3 §1.3: «Новый чат» и клик по чату в списке должны ПОКАЗЫВАТЬ чат.
+   Раньше из другого раздела (Модели/Агент/…) клик менял только активность в
+   списке — основной экран оставался на прежней вкладке, что выглядело как
+   «кнопка ничего не делает». */
+const onChatTab = () => document.querySelector('.nav-item.active')?.dataset.tab === 'chat';
+
 function newChat(silent) {
   // Пустую заготовку не дублируем: если активный чат пуст и ещё не
   // переименован — повторное нажатие «Новый чат» просто возвращается к нему.
   const cur = activeChat();
   if (cur && !(cur.messages || []).length && cur.title === 'Новый чат') {
+    if (!onChatTab()) switchTab('chat'); // показать чат, даже если нажали из другого раздела
     if (!silent) $('prompt')?.focus();
     return cur;
   }
@@ -815,9 +871,13 @@ function newChat(silent) {
   chats.unshift(c);
   activeChatId = c.id;
   saveChats(); // предыдущий чат уже сохранён выше (saveChats пишет весь список)
-  renderChatList();
-  renderMessages();
-  if (!silent) $('prompt')?.focus();
+  if (onChatTab()) {
+    renderChatList();
+    renderMessages();
+    if (!silent) $('prompt')?.focus();
+  } else {
+    switchTab('chat'); // загрузчик вкладки (loadChat) сам перерисует список и сообщения
+  }
   return c;
 }
 
@@ -904,7 +964,18 @@ function renderChatList() {
     del.addEventListener('click', (e) => { e.stopPropagation(); deleteChat(c.id); });
     actions.append(ren, del);
     item.append(main, actions);
-    item.addEventListener('click', () => { activeChatId = c.id; saveChats(); renderChatList(); renderMessages(); restoreChatModel(c); });
+    item.addEventListener('click', () => {
+      activeChatId = c.id;
+      saveChats();
+      // ТЗ v0.6.3 §1.3: открытие старого разговора всегда показывает вкладку чата
+      if (onChatTab()) {
+        renderChatList();
+        renderMessages();
+        restoreChatModel(c);
+      } else {
+        switchTab('chat');
+      }
+    });
     wrap.appendChild(item);
   }
 }
@@ -922,10 +993,12 @@ function restoreChatModel(c) {
   }
 }
 
-function renameChat(id) {
+async function renameChat(id) {
   const c = chats.find((x) => x.id === id);
   if (!c) return;
-  const name = prompt('Название чата:', c.title || 'Новый чат');
+  // ТЗ v0.6.3 §1.3: modalPrompt вместо window.prompt (в Electron prompt()
+  // не поддерживается — переименование молча не работало).
+  const name = await modalPrompt('Название чата:', c.title || 'Новый чат');
   if (name === null) return; // отмена
   const trimmed = name.trim();
   if (!trimmed) { showError('Название чата не может быть пустым.'); return; }
@@ -1240,7 +1313,7 @@ async function sendChat() {
   const welcome = log.querySelector('.chat-welcome');
   if (welcome) welcome.remove();
   log.appendChild(msgBubble(userMsg));
-  await runCompletion(chat);
+  await runCompletion(chat, model); // ТЗ v0.6.3 §1.4: модель передаётся явно строкой
 }
 
 /* Регенерация последнего ответа: убираем хвостовые ответы ассистента и
@@ -1257,12 +1330,24 @@ function regenerateLast() {
   saveChats();
   renderMessages();
   event('чат: перегенерация ответа');
-  void runCompletion(c);
+  void runCompletion(c, typeof c.model === 'string' && c.model ? c.model : ($('model')?.value || ''));
 }
 
 /* Запрос к модели и стрим ответа: используется и после отправки сообщения,
-   и при регенерации (история уже в chat.messages). */
-async function runCompletion(chat) {
+   и при регенерации (история уже в chat.messages).
+   ТЗ v0.6.3 §1.4: модель передаётся ЯВНЫМ аргументом. Раньше функция читала
+   голое имя `model`, которое разрешалось в глобальный DOM-элемент
+   <select id="model"> (браузер создаёт window.model по id элемента):
+   JSON.stringify(select) давал {}, и движок отвечал
+   «Model "[object Object]" is not available locally» — чат не работал вовсе. */
+async function runCompletion(chat, modelArg) {
+  const model = (typeof modelArg === 'string' && modelArg.trim()) ? modelArg.trim()
+    : (typeof chat?.model === 'string' && chat.model) ? chat.model
+    : ($('model')?.value || '');
+  if (!model) {
+    showError('Модель не выбрана — выберите модель в шапке чата или в разделе «Модели».');
+    return;
+  }
   const log = $('chat-log');
   const reply = { role: 'assistant', content: '' };
   const botBubble = msgBubble(reply, { streaming: true });
@@ -1296,7 +1381,7 @@ async function runCompletion(chat) {
       headers: { 'content-type': 'application/json' },
       signal: currentAbort.signal,
       body: JSON.stringify({
-        model,
+        model: String(model), // ТЗ v0.6.3 §1.4: всегда строка-идентификатор
         stream: true,
         context_tokens: Number($('ctx').value),
         max_tokens: 1024,
@@ -1711,7 +1796,9 @@ on('btn-add-own', 'click', async () => {
     else if (r?.canceled) return;
   }
   if (!file) {
-    file = prompt('Полный путь к GGUF-файлу (например D:\\models\\my-model.gguf):');
+    // ТЗ v0.6.3 §1.3: в браузере (без моста Desktop) — модальный ввод вместо
+    // window.prompt, который в Electron не поддерживается.
+    file = await modalPrompt('Полный путь к GGUF-файлу (например D:\\models\\my-model.gguf):');
     if (!file) return;
   }
   event('регистрирую модель: ' + file);

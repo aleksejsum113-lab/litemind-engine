@@ -63,11 +63,14 @@ export class BackendError extends Error {
 }
 
 export class ModelNotFoundError extends BackendError {
-  constructor(model, available = []) {
+  // ТЗ v0.6.3 §1.4: подсказка зависит от бэкенда — llama.cpp видит локальные
+  // GGUF-файлы (совет «ollama pull» вводил в заблуждение: модель уже скачана
+  // как .gguf). ollama сохраняет прежний текст (на него завязан тест).
+  constructor(model, available = [], hint = null) {
     super(
-      `Model "${model}" is not available locally. ` +
-        (available.length ? `Available: ${available.join(', ')}` : 'No models are installed.') +
-        ' LiteMind never downloads models automatically — install one with `ollama pull <name>` first.',
+      `Модель «${model}» не найдена среди локальных. ` +
+        (available.length ? `Доступны: ${available.join(', ')}. ` : 'Локальных моделей нет. ') +
+        (hint ?? 'LiteMind никогда не скачивает модели автоматически — установите модель командой `ollama pull <name>`.'),
       { code: 'MODEL_NOT_FOUND', status: 404 }
     );
     this.name = 'ModelNotFoundError';

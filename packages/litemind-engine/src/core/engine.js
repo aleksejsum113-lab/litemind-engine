@@ -368,6 +368,12 @@ export class Engine {
    */
   async generate({ model, messages, contextTokens, maxOutputTokens, threads, signal, onToken }) {
     this._assertRunning();
+    // ТЗ v0.6.3 §1.4: модель — только строка-идентификатор. Если выше по стеку
+    // просочился объект ({id: 'name'}) — приводим к строке здесь; голый объект
+    // раньше уходил в бэкенд и падал «Model "[object Object]" is not available».
+    model = typeof model === 'string' ? model.trim()
+      : (model && typeof model === 'object' && typeof model.id === 'string' ? model.id.trim() : '');
+    if (!model) throw new EngineError('model is required as a string id', { code: 'BAD_MODEL', status: 400 });
     const p = this.profile;
     const ctx = Number(contextTokens) > 0 ? Number(contextTokens) : p.contextTokens;
     // Явный лимит клиента — жёсткий потолок (контракт max_tokens); пол адаптивного

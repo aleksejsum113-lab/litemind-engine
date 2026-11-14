@@ -65,6 +65,37 @@ export function titlebarOverlay(mode: "light" | "dark" = tone(), zoom = 1) {
   }
 }
 
+// ТЗ v0.6.3 §1.2: режим системных кнопок окна должен следовать теме ПРИЛОЖЕНИЯ,
+// а не темы Windows. Раньше `tone()` (= nativeTheme) рисовал светлую панель
+// min/max/close поверх тёмного интерфейса LiteMind, если у пользователя система
+// светлая — «отдельная светлая системная панель, не соответствующая оформлению».
+// Приложение тёмное по умолчанию; если рендерер уже сообщал фон — решаем по
+// яркости сохранённого фона.
+export function appOverlayMode(): "light" | "dark" {
+  const background = savedBackgroundColor()
+
+  if (!background) return "dark"
+
+  const hex = background.replace("#", "")
+  const full =
+    hex.length === 3
+      ? hex
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : hex.slice(0, 6)
+
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return "dark"
+
+  const r = parseInt(full.slice(0, 2), 16)
+  const g = parseInt(full.slice(2, 4), 16)
+  const b = parseInt(full.slice(4, 6), 16)
+  // Воспринимаемая яркость (ITU-R BT.601): фон светлее порога — светлая тема.
+  const luma = 0.299 * r + 0.587 * g + 0.114 * b
+
+  return luma > 128 ? "light" : "dark"
+}
+
 // ТЗ v0.6.1 §2: иконка окна LiteMind на Windows. В установленном приложении icon.ico лежит рядом
 // с app.asar (extraResources) с резервной копией внутри архива (files: "resources/**/*"); в dev —
 // в resources/icons репозитория, откуда её копирует script/copy-icons.ts. Файла может не быть

@@ -25,5 +25,7 @@ dist-ssr
 out/
 
 resources/opencode-cli*
-resources/icons
+# ТЗ v0.6.3 §1.1: committed-набор брендинга LiteMind (icon.ico + PNG) живёт в
+# resources/icons — именно его copy-icons.ts сохраняет поверх апстрим-копий,
+# поэтому сам каталог больше не игнорируется.
 resources/*.metainfo.xml

@@ -790,3 +790,32 @@ details.glossary .glossary-body { margin-top: 8px; font-size: 13px; line-height:
 .ig-item figcaption { padding: 6px 8px; font-size: 11px; display: flex; flex-direction: column; gap: 4px; }
 .ig-item-meta { color: var(--text-dim); line-height: 1.3; }
 .ig-item-btns { display: flex; gap: 8px; }
+
+/* ==================== модальный ввод (ТЗ v0.6.3 §1.3) ==================== */
+/* Замена window.prompt, который в Electron не поддерживается: переименование
+   чата и ввод пути GGUF. Работает в обеих темах (var(--…) от [data-theme]). */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(0, 0, 0, 0.5);
+  display: grid; place-items: center;
+}
+.modal-card {
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 14px; padding: 18px 20px; width: min(460px, 92vw);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.45);
+}
+.modal-title { font-size: 14px; font-weight: 600; margin: 0 0 10px; color: var(--text); }
+.modal-input {
+  width: 100%; box-sizing: border-box;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  color: var(--text); padding: 9px 12px; font-size: 14px; outline: none;
+}
+.modal-input:focus { border-color: var(--accent, #6c8cff); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.modal-actions button {
+  border: 1px solid var(--border); background: transparent; color: var(--text);
+  border-radius: 10px; padding: 7px 16px; cursor: pointer; font-size: 13px;
+}
+.modal-actions button:hover { background: var(--bg); }
+.modal-actions .modal-ok { background: var(--accent, #6c8cff); border-color: var(--accent, #6c8cff); color: #fff; }
+.modal-actions .modal-ok:hover { filter: brightness(1.08); background: var(--accent, #6c8cff); }

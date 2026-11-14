@@ -12,7 +12,7 @@ import { emitIpcEvent } from "../ipc-events"
 import type { DesktopPaths } from "../paths"
 import { BACKGROUND_COLOR_KEY, PINCH_ZOOM_ENABLED_KEY, ZOOM_LEVEL_KEY } from "../storage/keys"
 import { getStore } from "../storage/store"
-import { platformFrame, savedBackgroundColor, storedBackgroundColor, storedZoomLevel, titlebarOverlay, tone } from "./defaults"
+import { appOverlayMode, platformFrame, savedBackgroundColor, storedBackgroundColor, storedZoomLevel, titlebarOverlay } from "./defaults"
 
 const titlebarThemes = new WeakMap<BrowserWindow, Partial<TitlebarTheme>>()
 
@@ -29,7 +29,8 @@ export function windowAppearance(path: Path.Path, paths: DesktopPaths.Resolved) 
     title: "LiteMind",
     icon: iconPath(path, paths),
     backgroundColor: backgroundColor ?? storedBackgroundColor(),
-    ...platformFrame(tone(), storedZoomLevel()),
+    // ТЗ v0.6.3 §1.2: рамка/оверлей — по теме приложения, не по теме Windows.
+    ...platformFrame(appOverlayMode(), storedZoomLevel()),
     webPreferences: {
       preload: paths.preloadPath,
       contextIsolation: true,
@@ -156,7 +157,9 @@ function iconPath(path: Path.Path, paths: DesktopPaths.Resolved) {
 }
 
 function overlay(theme: Partial<TitlebarTheme> = {}, zoom = 1) {
-  return titlebarOverlay(theme.mode ?? tone(), zoom)
+  // ТЗ v0.6.3 §1.2: без явного режима от рендерера — тема приложения
+  // (по сохранённому фону), а не системная.
+  return titlebarOverlay(theme.mode ?? appOverlayMode(), zoom)
 }
 
 function clampZoom(value: number) {

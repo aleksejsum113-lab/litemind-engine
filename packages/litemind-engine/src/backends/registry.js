@@ -11,7 +11,9 @@ const FACTORIES = {
     host: cfg.backend.host || '127.0.0.1',
     contextTokens: cfg.profiles?.[cfg.profile]?.contextTokens ?? 4096,
     threads: cfg.profiles?.[cfg.profile]?.cpuThreads ?? 0,
-    chatTemplate: cfg.backend.chatTemplate || null
+    chatTemplate: cfg.backend.chatTemplate || null,
+    // ТЗ v0.6.3 §1.5: таймаут заголовков — конфигурируемый (дефолт 10 мин).
+    headersTimeoutMs: cfg.backend.headersTimeoutMs ?? 600000
   }),
   // Опциональная интеграция: если Ollama установлена, ею можно пользоваться.
   ollama: (cfg) => new OllamaBackend(cfg.backend)

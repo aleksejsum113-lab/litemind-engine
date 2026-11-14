@@ -64,7 +64,11 @@ test('unknown model produces ModelNotFoundError listing installed models', async
         assert.equal(err.code, 'MODEL_NOT_FOUND');
         assert.equal(err.status, 404);
         assert.match(err.message, /tinytest:1b/);
-        assert.match(err.message, /never downloads models automatically/);
+        // ТЗ v0.6.3 §1.4: ошибка локализована (интерфейс русский); для ollama
+        // подсказка по-прежнему предлагает `ollama pull`, для llama.cpp — свои
+        // разделы UI (см. base.js ModelNotFoundError).
+        assert.match(err.message, /никогда не скачивает модели автоматически/);
+        assert.match(err.message, /ollama pull <name>/);
         return true;
       }
     );

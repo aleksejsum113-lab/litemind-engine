@@ -41,5 +41,7 @@ export type ElectronNative = {
     pickGgufFile(title: string): Promise<PickGgufResult>
     /** Версии и пути для «Настройки → О приложении». */
     appInfo(): Promise<LiteMindAppInfo>
+    /** ТЗ v0.6.3 §1.2: тема интерфейса — для окраски WCO overlay системных кнопок. */
+    setWindowTheme(mode: "dark" | "light", background?: string): Promise<unknown>
   }
 }

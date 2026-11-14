@@ -10,6 +10,9 @@
 import log from "electron-log"
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron"
 import { isRendererUrl } from "../windows/scheme"
+// ТЗ v0.6.3 §1.2: тема интерфейса управляет WCO overlay и фоном окна.
+import { setBackgroundColor } from "../windows/appearance"
+import { setTitlebar } from "../windows"
 
 const ENGINE_PORT = 8399
 const ENGINE_URL = `http://127.0.0.1:${ENGINE_PORT}`
@@ -263,6 +266,20 @@ function registerShellIpc(): void {
   ipcMain.handle("litemind:app-info", (event) => {
     if (!isRendererUrl(event.senderFrame?.url)) return null
     return appInfoPayload()
+  })
+
+  // ТЗ v0.6.3 §1.2: интерфейс сообщает свою тему (и фон) — системные кнопки
+  // окна (WCO overlay) и фон окна до первой отрисовки следуют теме
+  // ПРИЛОЖЕНИЯ, а не темы Windows. Без этого на светлой Windows поверх
+  // тёмного интерфейса рисовалась светлая системная панель min/max/close.
+  ipcMain.handle("litemind:set-window-theme", (event, args: { mode?: unknown; background?: unknown } | undefined) => {
+    if (!isRendererUrl(event.senderFrame?.url)) return { ok: false, error: "forbidden" }
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const mode = args?.mode === "light" ? "light" : args?.mode === "dark" ? "dark" : null
+    const background = typeof args?.background === "string" && args.background.trim() ? args.background.trim() : undefined
+    if (win && mode) setTitlebar(win, { mode })
+    if (background && /^#[0-9a-fA-F]{3,8}$/.test(background)) setBackgroundColor(background)
+    return { ok: true }
   })
 }
 
