@@ -133,7 +133,9 @@ try {
   // ── Тест C-2: погода с интернетом — данные Open-Meteo в момент теста ─────
   log('Тест C-2: погода при включённом интернете…');
   check('веб включён', await setWeb(true));
-  const wx = await api('/api/web/weather', { method: 'POST', body: { place: 'Иркутск' }, timeoutMs: 30000 });
+  // Прогон 43605069256: на медленном раннере геокод+Open-Meteo заняли >30 с —
+// таймаут 30 с ронял весь comp064 («непредвиденная ошибка — timeout»). 120 с.
+const wx = await api('/api/web/weather', { method: 'POST', body: { place: 'Иркутск' }, timeoutMs: 120000 });
   const wOk = wx.status === 200 && wx.data?.ok;
   check('Open-Meteo: сервис вернул погоду Иркутска в момент теста (Тест C)', wOk,
     wOk ? `t=${wx.data.temperatureC}°C, ${wx.data.description}, наблюдение ${wx.data.observedAt}, получено ${wx.data.retrievedAt}` : (wx.data?.error?.message ?? `HTTP ${wx.status}`));
