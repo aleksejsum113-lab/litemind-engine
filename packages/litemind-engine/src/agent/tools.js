@@ -354,7 +354,9 @@ export function createToolRegistry({ config, logger } = {}) {
           if (!ctx?.web?.enabled) throw new Error('доступ к интернету выключен (Настройки → Интернет) — актуальную погоду проверить нельзя');
           const { currentWeather } = await import('../web/weather.js');
           const w = await currentWeather(place, { fetchImpl: ctx?.fetchImpl ?? fetch });
-          return { ok: true, result: cap(`${w.summary} Время наблюдения (местное): ${w.observedAt}. Источник: Open-Meteo (${w.source}). Сообщи пользователю эти данные с указанием источника и времени.`, 4000) };
+          // data — для детерминированного заземления финального ответа агента:
+          // числа сервиса нельзя отдавать модели «на пересказ» — она их выдумает.
+          return { ok: true, result: cap(`${w.summary} Время наблюдения (местное): ${w.observedAt}. Источник: Open-Meteo (${w.source}). Сообщи пользователю эти данные с указанием источника и времени.`, 4000), data: w };
         }
 
         case 'web_search': {

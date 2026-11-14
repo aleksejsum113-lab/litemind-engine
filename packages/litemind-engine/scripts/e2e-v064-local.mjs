@@ -26,10 +26,11 @@ const config = {
   api: { port: 9321 },
   diagnostics: { level: 'error', dir: path.join(WORK, 'logs') },
   // В песочнице CI/локального прогона RAM ограничена (~4 ГБ) — профиль
-  // high (кэш промпта + бюджет 512 МБ резерва) убирает флаковые блоки
-  // memory-gate. На реальном ПК 16 ГБ работает профиль пользователя.
+  // high с реалистичным KV для Qwen 0.5B (~6 КБ/токен, берём 24 с запасом)
+  // и резервом 512 МБ убирает флаковые блоки memory-gate. На реальном ПК
+  // 16 ГБ работает профиль пользователя.
   profile: 'high',
-  profiles: { high: { memoryReserveMb: 512 } }
+  profiles: { high: { contextTokens: 4096, memoryReserveMb: 512, kvOverheadKbPerToken: 24 } }
 };
 fs.writeFileSync(path.join(WORK, 'config.json'), JSON.stringify(config));
 process.env.LITEMIND_CONFIG = path.join(WORK, 'config.json');
@@ -56,7 +57,7 @@ try {
   const cold = await chatOnce({ messages: [{ role: 'user', content: 'Ответь одним коротким предложением по-русски: какого цвета небо днём?' }] });
   const coldMs = Date.now() - t0;
   check('чат с реальной моделью: непустой ответ', cold.status === 200 && cold.text && cold.text.length > 0,
-    `${coldMs} мс · «${String(cold.text).slice(0, 80)}»`);
+    `${coldMs} мс · «${String(cold.error ?? cold.text).slice(0, 80)}»`);
   console.log('  timings:', JSON.stringify(cold.timings));
   check('timings честные (ttft/tokensPerSecond присутствуют)', cold.timings?.ttftMs != null && cold.timings?.tokensPerSecond != null,
     `ttft=${cold.timings?.ttftMs} мс, t/s=${cold.timings?.tokensPerSecond}, out=${cold.timings?.usage?.completionTokens}`);
@@ -79,12 +80,14 @@ try {
     messages: [{ role: 'user', content: 'Какая сейчас погода в Иркутске? Назови температуру и источник данных.' }]
   });
   check('чат с глобусом: ответ содержит температуру источника', /-\s*\d+\s*°|\+\s*\d+\s*°|°\s*[cс]/i.test(String(chatWx.text)) && /open-meteo|источник/i.test(String(chatWx.text)),
-    String(chatWx.text).slice(0, 160));
+    String(chatWx.error ?? chatWx.text).slice(0, 160));
   // Честная сверка: температура в ответе модели = температура от сервиса.
-  const wxTemp = Math.round(wx.temperatureC);
-  const re = new RegExp(`[-+]?${Math.abs(wxTemp)}\\s*°`);
-  check('температура в ответе = температура сервиса (не выдумка)', re.test(String(chatWx.text)),
-    `сервис: ${wxTemp}°C; ответ содержит: ${re.test(String(chatWx.text))}`);
+  // Сравнение чисел с точностью ответа (одна десятая, запятая или точка).
+  const wxTemp = Math.round(wx.temperatureC * 10) / 10;
+  const nums = [...String(chatWx.text).matchAll(/([-+]?\d+(?:[.,]\d+)?)\s*°/g)].map((m) => Math.round(Number(m[1].replace(',', '.')) * 10) / 10);
+  const tempMatches = nums.includes(wxTemp);
+  check('температура в ответе = температура сервиса (не выдумка)', tempMatches,
+    `сервис: ${wxTemp}°C; числа в ответе: ${nums.join(', ') || 'нет'}`);
 
   // ── 4. Поиск ──────────────────────────────────────────────────────────────
   const sr = await (await fetch(`${BASE}/api/web/search`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: 'llama.cpp github' }) })).json();
@@ -96,7 +99,7 @@ try {
   const honest = await chatOnce({ globe: true, messages: [{ role: 'user', content: 'Какая погода в Иркутске прямо сейчас?' }] });
   check('без интернета: модель НЕ выдумывает погоду',
     /не могу (проверить|узнать)|выключен|недоступен|не провер/i.test(String(honest.text)) && !/-\s*\d+\s*°|\+\s*\d+\s*°/.test(String(honest.text)),
-    String(honest.text).slice(0, 160));
+    String(honest.error ?? honest.text).slice(0, 160));
   await fetch(`${BASE}/api/settings`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ web: { enabled: true } }) });
 
   // ── 6. Агент: погода → инструмент → итог (без вечного «Обдумывание шага») ─
@@ -125,7 +128,7 @@ try {
   // ── 7. Память: сохранить → использовать в чате ───────────────────────────
   await fetch(`${BASE}/api/memory`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'Тест e2e: любимый цвет пользователя — синий' }) });
   const memChat = await chatOnce({ messages: [{ role: 'user', content: 'Какой мой любимый цвет? Ответь одним словом.' }] });
-  check('память подмешивается в контекст чата', /син/i.test(String(memChat.text)), String(memChat.text).slice(0, 100));
+  check('память подмешивается в контекст чата', /син/i.test(String(memChat.text)), String(memChat.error ?? memChat.text).slice(0, 100));
 
   // ── 8. Компаньон + голос ─────────────────────────────────────────────────
   const comp = await (await fetch(`${BASE}/api/companion/status`)).json();

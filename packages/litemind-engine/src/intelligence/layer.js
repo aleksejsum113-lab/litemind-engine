@@ -86,12 +86,11 @@ export function verifyToolAnswers({ meta, text }) {
   const weather = factList.find((f) => f?.kind === 'погода');
   if (weather) {
     if (!weather.ok) {
-      if (/°\s*[cс]?|-\s*\d+\s*°|\+\s*\d+\s*°/.test(t) || /\d+\s*(градус|градуса|градусов)/i.test(t)) {
-        return { text: composeToolAnswer(weather), replaced: true, issues: ['выдуманная температура заменена честным отказом'] };
-      }
-      // Модель честно отказалась сама — оставляем, но при пустом ответе подставляем.
-      if (!t.trim()) return { text: composeToolAnswer(weather), replaced: true, issues: ['пустой ответ заменён'] };
-      return { text: t, replaced: false, issues: [] };
+      // Малые модели не умеют отказываться аккуратно (E2E v0.6.4: 0.5B вместо
+      // честного «не могу проверить» выдала бессвязный список городов). Любой
+      // ответ при неуспешном инструменте погоды заменяется детерминированным
+      // честным текстом — без выдуманных температур и без путаницы.
+      return { text: composeToolAnswer(weather), replaced: true, issues: ['ответ заменён детерминированным честным отказом'] };
     }
     const d = weather.data ?? {};
     const allowed = new Set([Math.round(d.temperatureC), Math.round(d.apparentC ?? NaN)].filter(Number.isFinite));

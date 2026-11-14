@@ -12,7 +12,8 @@ import { classifyIntent, extractWeatherPlace } from '../src/intelligence/intents
 import { createIntelligenceLayer, modelFamily, stopSequencesFor, samplerFor, cleanReplyText, checkReply } from '../src/intelligence/layer.js';
 import { parseDdgHtml, parseDdgLite, unwrapDdgUrl, unwrapBingUrl, parseBingHtml, parseMojeekHtml, webSearch } from '../src/web/search.js';
 import { currentWeather, describeWeatherCode, geocodePlace, placeCandidates } from '../src/web/weather.js';
-import { composeToolAnswer } from '../src/intelligence/layer.js';
+import { composeToolAnswer, verifyToolAnswers } from '../src/intelligence/layer.js';
+import { AgentManager } from '../src/agent/session.js';
 import { parseReminder, formatWhen } from '../src/tasks/datetime.js';
 import { MemoryStore, extractAutoFact } from '../src/memory/store.js';
 import { TaskStore } from '../src/tasks/store.js';
@@ -407,6 +408,35 @@ test('погода: прямые координаты минуют геокод�
   assert.equal(w.place, 'Моё место');
   assert.equal(w.geocoder, 'coordinates');
   assert.equal(w.temperatureC, 5.5);
+});
+
+test('самопроверка: любой ответ при неуспешной погоде заменяется детерминированным', () => {
+  // E2E v0.6.4: 0.5B вместо честного отказа выдала список городов — болтовня
+  // не должна доходить до пользователя.
+  const r = verifyToolAnswers({ meta: { __factDetails: [{ kind: 'погода', ok: false, webOff: true }] }, text: 'Конечно, я могу проверить! Выберите область: Иркутск, Казань' });
+  assert.equal(r.replaced, true);
+  assert.match(r.text, /Интернет выключен/);
+  const r2 = verifyToolAnswers({ meta: { __factDetails: [{ kind: 'погода', ok: false, webOff: false, error: 'fetch failed' }] }, text: 'Сейчас около -5°C' });
+  assert.equal(r2.replaced, true);
+  assert.match(r2.text, /сервис сейчас недоступен/);
+  assert.match(r2.text, /fetch failed/);
+  assert.ok(!/-5\s*°/.test(r2.text), 'выдуманной температуры нет');
+});
+
+test('агент: заземление итога по факту погоды — выдумка заменяется данными сервиса', () => {
+  const mgr = Object.create(AgentManager.prototype);
+  const fact = { kind: 'погода', ok: true, data: { place: 'Иркутск', temperatureC: -4.6, description: 'ясно', observedAt: '2026-11-14T17:30', retrievedAt: '2026-11-14T09:30:00Z', source: 'https://open-meteo.com' } };
+  const r = mgr._grounded({ _weatherFact: fact }, 'Температура в Иркутске: -15°C (-15°C по Цельсию)./weather).');
+  assert.equal(r.replaced, true, 'выдуманная температура заменена');
+  assert.match(r.text, /-4\.6 °C/);
+  assert.ok(!/-15\s*°/.test(r.text), 'выдуманного числа нет');
+  const rOk = mgr._grounded({ _weatherFact: fact }, 'Сейчас в Иркутске -4.6 °C, ясно. Источник: Open-Meteo.');
+  assert.equal(rOk.replaced, false, 'корректный пересказ остаётся');
+  const rOff = mgr._grounded({ _weatherFact: { kind: 'погода', ok: false, webOff: true } }, 'не могу узнать погоду');
+  assert.equal(rOff.replaced, true);
+  assert.match(rOff.text, /Интернет выключен/);
+  const rNo = mgr._grounded({}, 'обычный ответ без погоды');
+  assert.equal(rNo.replaced, false, 'без факта текст не трогается');
 });
 
 test('честные отказы погоды: «интернет выключен» и «сервис недоступен» — разные тексты', () => {

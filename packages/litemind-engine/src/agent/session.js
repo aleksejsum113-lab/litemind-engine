@@ -19,6 +19,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { createToolRegistry, toolsPromptLine } from './tools.js';
+import { verifyToolAnswers } from '../intelligence/layer.js';
 import { extractText, AttachmentError } from '../attachments/extract.js';
 
 const DEFAULTS = {
@@ -564,6 +565,7 @@ export class AgentManager {
       ? `погода: запрос к сервису${intent.slots.place ? ` (${intent.slots.place})` : ''}`
       : 'поиск: DuckDuckGo');
     if (intent.intent === 'weather' && !intent.slots.place) {
+      s._weatherFact = { kind: 'погода', ok: false, webOff: false, error: 'в запросе не указан город' };
       this._append(s, {
         role: 'tool', tool, args, ok: false,
         result: 'в запросе не указан город. Пользователю нужен честный вопрос «о каком городе?» — погоду без города называть НЕЛЬЗЯ.'
@@ -571,6 +573,7 @@ export class AgentManager {
       return;
     }
     if (intent.intent === 'weather' && !ctx.web?.enabled) {
+      s._weatherFact = { kind: 'погода', ok: false, webOff: true };
       this._append(s, {
         role: 'tool', tool, args, ok: false,
         result: 'доступ к интернету выключен (кнопка «земной шар»). Актуальную погоду проверить НЕЛЬЗЯ — сообщи пользователю прямо: не проверял и не буду выдумывать.'
@@ -581,12 +584,26 @@ export class AgentManager {
     try {
       exec = await this.tools.execute(tool, args, ctx);
     } catch (err) {
+      s._weatherFact = { kind: 'погода', ok: false, webOff: false, error: String(err?.message ?? err).slice(0, 200) };
       this._append(s, { role: 'tool', tool, args, ok: false, result: `ошибка инструмента: ${String(err?.message ?? err).slice(0, 400)}` });
       return;
     }
     s.stats.toolCalls = (s.stats.toolCalls ?? 0) + 1;
+    // Структурированный факт — для заземления финального ответа модели
+    // (числа сервиса не доверяются пересказу).
+    s._weatherFact = exec.data ?? null;
     this._append(s, { role: 'tool', tool, args, ok: exec.ok !== false, result: exec.result ?? '' });
     this._stage(s, intent.intent === 'weather' ? 'погода: данные получены' : 'поиск: источники получены');
+  }
+
+  /**
+   * Заземлить финальный текст агента по факту погоды: выдуманные температуры
+   * или путаный отказ заменяются детерминированным ответом из данных сервиса
+   * (ТЗ: модель не должна выдавать выдумку за результат инструмента).
+   */
+  _grounded(s, text) {
+    if (!s?._weatherFact) return { text: String(text ?? ''), replaced: false };
+    return verifyToolAnswers({ meta: { __factDetails: [s._weatherFact] }, text });
   }
 
   async _runLoop(s) {
@@ -709,8 +726,10 @@ export class AgentManager {
 
         // 2. разбор вида ответа
         if (parsed.kind === 'text') {
-          const t = String(parsed.data.text ?? '').trim();
+          let t = String(parsed.data.text ?? '').trim();
           if (!t) continue;
+          const g = this._grounded(s, t); // погода: выдумка/путаница → детерминированный ответ
+          t = g.text;
           this._append(s, { role: 'assistant', text: t });
           s.state = 'idle'; // ответ дан, ждём пользователя; задача может быть продолжена
           this._stage(s, 'готово');
@@ -738,7 +757,7 @@ export class AgentManager {
             continue;
           }
           const report = {
-            summary: String(parsed.data.summary ?? 'задача завершена'),
+            summary: this._grounded(s, String(parsed.data.summary ?? 'задача завершена')).text,
             created: parsed.data.created ?? [],
             modified: parsed.data.modified ?? [],
             failed: parsed.data.failed ?? []
