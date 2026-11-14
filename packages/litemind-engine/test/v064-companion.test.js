@@ -562,3 +562,31 @@ test('агент: пошаговый таймаут — «Обдумывание
   assert.equal(session.state, 'error', 'зависший шаг завершается ошибкой');
   assert.ok(session.error.includes('таймаут') || session.error.includes('Timeout') || session.error.includes('время'));
 });
+
+/* ───────────────────────── Think-фильтр lmlama (ТЗ §4) ───────────────── */
+
+test('think-фильтр: скрытые размышления не попадают в стрим, разрыв тегов держится', async () => {
+  const { makeThinkFilter } = await import('../src/backends/lmlama.js');
+  const f = makeThinkFilter();
+  let out = '';
+  out += f.push('До <th');
+  out += f.push('ink>скрытый reasoning прод');
+  out += f.push('олжается</thi');
+  out += f.push('nk>После');
+  out += f.flush();
+  assert.equal(out, 'До После');
+  const g = makeThinkFilter();
+  const plain = g.push('привет, мир!') + g.flush();
+  assert.equal(plain, 'привет, мир!', 'модель без think — текст идёт без задержек');
+  const h = makeThinkFilter();
+  const unclosed = h.push('a<think>внутри оборванной генерации') + h.flush();
+  assert.ok(unclosed.startsWith('a'), 'хвост честно возвращается');
+  const q = makeThinkFilter();
+  const two = q.push('<think>1</think>') + q.push('A<think>2</think>B') + q.flush();
+  assert.equal(two, 'AB');
+});
+
+test('cleanReplyText вычищает <think> и служебные токены', async () => {
+  const cleaned = cleanReplyText('<think>размышления</think>Готовый ответ <|im_end|>');
+  assert.equal(cleaned, 'Готовый ответ');
+});

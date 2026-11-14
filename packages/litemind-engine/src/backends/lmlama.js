@@ -96,6 +96,65 @@ export function parseServerTimingLine(line) {
   return null;
 }
 
+/**
+ * ТЗ v0.6.4 §4: служебные «размышления» reasoning-моделей (Qwen3 и т.п.)
+ * не должны попадать в видимый ответ. Стрим-фильтр держит хвост буфера на
+ * случай разрыва тега между чанками и прячет всё между <think> и </think>.
+ */
+export function makeThinkFilter() {
+  const OPEN = '<think>';
+  const CLOSE = '</think>';
+  let buf = '';
+  let inThink = false;
+  return {
+    push(delta) {
+      buf += String(delta ?? '');
+      let out = '';
+      for (;;) {
+        if (!inThink) {
+          const i = buf.indexOf(OPEN);
+          if (i === -1) {
+            const safeLen = Math.max(0, buf.length - (OPEN.length - 1));
+            out += buf.slice(0, safeLen);
+            buf = buf.slice(safeLen);
+            return out;
+          }
+          out += buf.slice(0, i);
+          buf = buf.slice(i + OPEN.length);
+          inThink = true;
+        } else {
+          const j = buf.indexOf(CLOSE);
+          if (j === -1) {
+            const safeLen = Math.max(0, buf.length - (CLOSE.length - 1));
+            buf = buf.slice(safeLen); // содержимое размышлений не отдаём
+            return out;
+          }
+          buf = buf.slice(j + CLOSE.length);
+          inThink = false;
+        }
+      }
+    },
+    // Конец потока: отдаём ВСЁ, что осталось в буфере (держание хвоста нужно
+    // только во время стрима — при финале держать нечего). Закрывающий тег
+    // мог не прийти (обрыв генерации) — честно отдаём остаток как есть.
+    flush() {
+      if (inThink) {
+        const j = buf.indexOf(CLOSE);
+        if (j !== -1) {
+          const rest = buf.slice(j + CLOSE.length);
+          buf = '';
+          inThink = false;
+          return rest;
+        }
+      }
+      const rest = buf;
+      buf = '';
+      inThink = false;
+      return rest;
+    }
+  };
+}
+
 export class LlamaCppBackend {
   constructor({ rootDir, serverPath = null, host = '127.0.0.1', logger = null, fetchImpl = fetch,
                 contextTokens = 4096, threads = 0, chatTemplate = null, loadTimeoutMs = 180000,
@@ -817,6 +876,8 @@ export class LlamaCppBackend {
     let promptTokens = 0;
     let completionTokens = 0;
     let buffer = '';
+    // ТЗ v0.6.4 §4: <think>…</think> reasoning-моделей не попадают в ответ.
+    const thinkFilter = makeThinkFilter();
 
     const detach = () => { signal?.removeEventListener('abort', onAbort); };
     const reader = res.body.getReader();
@@ -838,8 +899,11 @@ export class LlamaCppBackend {
           if (chunk.error) throw new BackendError(`llama-server: ${chunk.error.message ?? JSON.stringify(chunk.error).slice(0, 200)}`, { code: 'BACKEND_ERROR' });
           const delta = chunk.choices?.[0]?.delta?.content ?? '';
           if (delta) {
-            text += delta;
-            onToken?.(delta, chunk);
+            const visible = thinkFilter.push(delta);
+            if (visible) {
+              text += visible;
+              onToken?.(visible, chunk);
+            }
           }
           if (chunk.usage) {
             promptTokens = chunk.usage.prompt_tokens ?? promptTokens;
@@ -867,6 +931,12 @@ export class LlamaCppBackend {
       throw new BackendError(`Стрим прервался: ${err.message}`, { code: 'BACKEND_ERROR', cause: err });
     } finally {
       detach();
+    }
+    // Хвост буфера фильтра (вне размышлений) — в ответ.
+    const tail = thinkFilter.flush();
+    if (tail) {
+      text += tail;
+      onToken?.(tail, null);
     }
 
     if (signal?.aborted || ctrl.signal.aborted) {

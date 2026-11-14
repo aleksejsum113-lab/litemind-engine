@@ -72,6 +72,8 @@ export function checkReply({ text, userText = '' }) {
 /** Очистка служебных фрагментов из текста ответа (ТЗ §4). */
 export function cleanReplyText(text) {
   return String(text ?? '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<\/?(think)>/gi, '')
     .replace(/<\|im_(start|end)\|>/g, '')
     .replace(/<\|[^|]{1,24}\|>/g, '')
     .replace(/<\/?[a-z_]+_of_turn>/g, '')

@@ -443,6 +443,15 @@ jobs:
           Write-Host "agent smoke код: $LASTEXITCODE"
           exit $LASTEXITCODE
 
+      - name: Companion smoke v0.6.4 — интеллект/интернет/агент/память/задачи/голос
+        id: comp064
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          node packages/litemind-engine/scripts/smoke-v064-companion.mjs --port 8399 --model "Qwen3-0.6B-Q8_0" --out "$env:RUNNER_TEMP\smoke-companion.json"
+          Write-Host "companion smoke код: $LASTEXITCODE"
+          exit $LASTEXITCODE
+
       - name: Model Discovery smoke — источники + скачивание
         id: disco
         continue-on-error: true
@@ -572,6 +581,7 @@ jobs:
         shell: pwsh
         run: |
           $failed = @()
+          if ('${{ steps.comp064.outcome }}' -eq 'failure') { $failed += 'Компаньон/интернет v0.6.4' }
           if ('${{ steps.agent.outcome }}' -eq 'failure') { $failed += 'AI Agent' }
           if ('${{ steps.disco.outcome }}' -eq 'failure') { $failed += 'Model Discovery' }
           if ('${{ steps.image.outcome }}' -eq 'failure') { $failed += 'Генератор изображений' }
