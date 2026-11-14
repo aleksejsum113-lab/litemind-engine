@@ -16,11 +16,18 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Каталог голосовых компонентов. URL проверены (HTTP 200, размеры сходятся),
  * SHA-256 вычислен из фактических файлов источника. Изменение источника —
  * только с пересчётом суммы: это защита от подмены файла.
+ *
+ * whisper.cpp: бинарник в КОМПЛЕКТЕ установщика (resources\whisper — сборка CI
+ * без AVX/AVX2/F16C/BMI2, база SSE2). Официальный zip ggml-org
+ * (whisper-bin-x64.zip) НЕ используется: его ggml-cpu.dll собран с AVX-базой
+ * (аудит v0.6.4: 3669 VEX-инструкций, 0 legacy-SSE) — на N5095A/Tremont падал бы
+ * с illegal instruction. Скачивается только модель (ggml-tiny).
  */
 export const VOICE_COMPONENTS = {
   'piper-windows': {
@@ -48,15 +55,6 @@ export const VOICE_COMPONENTS = {
     sha256: 'c2ec28bb38e2b59e93b959b3e40348c1afebbd272f30fed5d41205d08e98a9d7',
     extract: false
   },
-  'whisper-windows': {
-    kind: 'asr-runtime',
-    description: 'whisper.cpp — локальное распознавание речи (Windows x64, CPU без AVX)',
-    url: 'https://github.com/ggml-org/whisper.cpp/releases/download/v1.7.6/whisper-bin-x64.zip',
-    sizeBytes: 3675974,
-    sha256: '0d2eca299c248f965bd0341bcb219db4b433c7f0c0ce2200d4df85765e8156a9',
-    extract: true,
-    exe: 'whisper-cli.exe'
-  },
   'whisper-model-tiny': {
     kind: 'asr-model',
     description: 'Модель whisper tiny (мультиязычная, ~78 МБ) — самый быстрый вариант для слабых ПК',
@@ -69,6 +67,21 @@ export const VOICE_COMPONENTS = {
 
 const DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
 const UA = 'LiteMind-Engine/0.6 (+local; user-initiated voice components)';
+
+/** Найти whisper-cli из комплекта: env → Настройки → resources\whisper. */
+function findShippedWhisperExe() {
+  const exe = process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
+  const candidates = [];
+  if (process.env.LITEMIND_WHISPER_BIN) candidates.push(process.env.LITEMIND_WHISPER_BIN);
+  // Внутри Electron process.resourcesPath = <установка>\resources (extraResources).
+  if (process.resourcesPath) candidates.push(path.join(process.resourcesPath, 'whisper', exe));
+  // src/voice → <pkg>/resources/whisper (монорепо/дистрибутив).
+  candidates.push(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'resources', 'whisper', exe));
+  for (const c of candidates) {
+    try { if (c && fs.existsSync(c)) return c; } catch { /* пропускаем */ }
+  }
+  return null;
+}
 
 function sha256File(file) {
   return new Promise((resolve, reject) => {
@@ -196,7 +209,21 @@ export function createVoiceManager({ config, logger = null, companion = null } =
         await fsp.rename(tmp, final);
         logger?.info?.('voice component installed', { id, file: final });
       }
-      return { ok: true, component: id };
+      // Пост-установочная проба: после установки ASR-модели убеждаемся, что
+      // whisper-cli из комплекта реально запускается на этом CPU (честность:
+      // при несовместимости — понятная ошибка, а не падение при первом ASR).
+      let smoke = null;
+      if (comp.kind === 'asr-model' && process.platform === 'win32') {
+        const exe = findShippedWhisperExe();
+        if (exe) {
+          const good = await smokeWhisperExe(exe);
+          smoke = good ? 'whisper-cli ok' : 'whisper-cli НЕ запустился';
+          if (!good) {
+            throw new Error('whisper-cli из комплекта не запускается на этом компьютере — сообщите о проблеме в разделе Issues репозитория');
+          }
+        }
+      }
+      return { ok: true, component: id, smoke };
     } finally {
       clearTimeout(timer);
       state.busy = null;
@@ -218,6 +245,17 @@ export function createVoiceManager({ config, logger = null, companion = null } =
         if (code === 0) resolve();
         else reject(new Error(`распаковка не удалась (код ${code}): ${err.slice(0, 300)}`));
       });
+    });
+  }
+
+  /** Проба whisper-cli из комплекта (--help, до 10 с): честный признак рабочего бинарника. */
+  function smokeWhisperExe(exePath) {
+    return new Promise((resolve) => {
+      let proc;
+      try { proc = spawn(exePath, ['--help'], { windowsHide: true }); } catch { return resolve(false); }
+      const killer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* */ } }, 10_000);
+      proc.on('error', () => { clearTimeout(killer); resolve(false); });
+      proc.on('close', (code) => { clearTimeout(killer); resolve(code === 0); });
     });
   }
 
@@ -282,12 +320,16 @@ export function createVoiceManager({ config, logger = null, companion = null } =
   // ── ASR: wav → текст ──────────────────────────────────────────────────────
 
   async function asrInfo() {
-    const whisper = installedPaths('whisper-windows');
+    // Бинарник whisper — из комплекта (сборка без AVX); zip-компонента не
+    // существует: официальный whisper-bin собран с AVX-базой и на целевом
+    // CPU (Tremont) падает с illegal instruction.
+    const shipped = findShippedWhisperExe();
     const model = findFile('whisper-model-tiny', '.bin');
     return {
-      installed: Boolean(whisper && model),
-      whisperExe: whisper?.main ?? null,
-      modelFile: model
+      installed: Boolean(shipped && model),
+      whisperExe: shipped,
+      modelFile: model,
+      shipped: Boolean(shipped)
     };
   }
 
@@ -300,7 +342,12 @@ export function createVoiceManager({ config, logger = null, companion = null } =
     if (!fs.existsSync(String(wavPath ?? ''))) return { ok: false, error: 'аудиофайл не найден' };
     const info = await asrInfo();
     if (!info.installed) {
-      return { ok: false, error: 'распознавание не установлено — раздел «Компаньон → Голос» (загрузка ~90 МБ)' };
+      return {
+        ok: false,
+        error: !info.shipped
+          ? 'whisper не найден в комплекте установки — переустановите LiteMind Desktop (binary поставляется с приложением, сборка без AVX)'
+          : 'модель распознавания не установлена — раздел «Компаньон → Голос» (загрузка ~78 МБ)'
+      };
     }
     const started = Date.now();
     const args = [
@@ -345,7 +392,7 @@ export function createVoiceManager({ config, logger = null, companion = null } =
       dataDir,
       busy: state.busy,
       tts: { installed: tts.installed, voice: tts.voiceName, rate: tts.rate },
-      asr: { installed: asr.installed },
+      asr: { installed: asr.installed, shipped: asr.shipped },
       components,
       settings: config.voice ?? {}
     };

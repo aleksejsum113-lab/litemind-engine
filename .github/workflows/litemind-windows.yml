@@ -131,15 +131,16 @@ jobs:
           $vc = 'msvcp140.dll','msvcp140_codecvt_ids.dll','vcruntime140.dll','vcruntime140_1.dll','vcomp140.dll'
           $llamaDir = 'packages/desktop/resources/llamacpp'
           $sdDir = 'packages/desktop/resources/sd'
-          # sdDir создаём заранее: этот шаг идёт ДО сборки stable-diffusion.cpp,
-          # которая создаёт каталог сама (прогон v0.6.2 №1: Copy-Item падал с
-          # «The directory name is invalid» и валил весь шаг).
-          New-Item -ItemType Directory -Force $llamaDir, $sdDir | Out-Null
+          $whisperDir = 'packages/desktop/resources/whisper'
+          # whisperDir создаём заранее: VC++ runtime нужен whisper-cli.exe,
+          # который собирается следующим шагом (см. Build whisper.cpp runtime).
+          New-Item -ItemType Directory -Force $llamaDir, $sdDir, $whisperDir | Out-Null
           foreach ($f in $vc) {
             $src = Join-Path $sys $f
             if (Test-Path $src) {
               Copy-Item $src $llamaDir/ -Force
               Copy-Item $src $sdDir/ -Force
+              Copy-Item $src $whisperDir/ -Force
             } else { $err += "VC++ runtime не найден в System32: $f" }
           }
           # OpenSSL 3: locate libssl-3-x64.dll / libcrypto-3-x64.dll на раннере.
@@ -206,6 +207,33 @@ jobs:
           Copy-Item $exe.FullName packages/desktop/resources/sd/sd.exe
           Get-ChildItem $exe.DirectoryName -Filter *.dll | ForEach-Object { Copy-Item $_.FullName packages/desktop/resources/sd/ }
           Get-ChildItem packages/desktop/resources/sd | Select-Object Name, Length
+
+      # ── Распознавание речи (ТЗ v0.6.4 §2): whisper.cpp в комплекте установщика.
+      # Официальный whisper-bin-x64.zip ggml-org собран с AVX-базой (аудит v0.6.4:
+      # в ggml-cpu.dll 3669 VEX-инструкций, 0 legacy-SSE) — на N5095A/Tremont
+      # падает с illegal instruction. Собираем сами без AVX/AVX2/FMA/F16C/BMI2,
+      # база SSE2 — как llama.cpp и sd.cpp.
+      - name: Build whisper.cpp runtime (no AVX)
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch v1.7.6 https://github.com/ggml-org/whisper.cpp "$env:RUNNER_TEMP\whisper-src"
+          cmake -S "$env:RUNNER_TEMP\whisper-src" -B "$env:RUNNER_TEMP\whisper-build" `
+            -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_SSE42=OFF `
+            -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF `
+            -DGGML_AVX_VNNI=OFF -DGGML_BMI2=OFF `
+            -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=OFF `
+            -DWHISPER_BUILD_SERVER=OFF -DWHISPER_BUILD_BENCHMARKS=OFF `
+            -DWHISPER_SDL2=OFF
+          cmake --build "$env:RUNNER_TEMP\whisper-build" --config Release --target whisper-cli
+          New-Item -ItemType Directory -Force packages/desktop/resources/whisper | Out-Null
+          $exe = Get-ChildItem "$env:RUNNER_TEMP\whisper-build\bin" -Recurse -Filter whisper-cli.exe | Select-Object -First 1
+          if (-not $exe) { throw 'whisper-cli.exe was not built' }
+          Copy-Item $exe.FullName packages/desktop/resources/whisper/whisper-cli.exe
+          Get-ChildItem $exe.DirectoryName -Filter *.dll | ForEach-Object { Copy-Item $_.FullName packages/desktop/resources/whisper/ }
+          # Проба на раннере: бинарник должен запускаться (контроль сборки).
+          & packages/desktop/resources/whisper/whisper-cli.exe --help 2>&1 | Select-Object -First 2
+          if ($LASTEXITCODE -ne 0) { throw "whisper-cli.exe --help вернул код $LASTEXITCODE" }
+          Get-ChildItem packages/desktop/resources/whisper | Select-Object Name, Length
 
       - name: Build desktop
         working-directory: packages/desktop

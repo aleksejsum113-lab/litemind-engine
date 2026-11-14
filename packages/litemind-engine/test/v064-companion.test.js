@@ -663,7 +663,10 @@ test('голос: статус без установки — честные not 
   assert.equal(st.supported, process.platform === 'win32');
   assert.equal(st.tts.installed, false);
   assert.equal(st.asr.installed, false);
-  assert.ok(st.components.length >= 5);
+  // 4 компонента: piper + голос + конфиг + модель whisper. AVX-сломанный zip
+  // ggml-org (whisper-windows) удалён из каталога — бинарник идёт в комплекте.
+  assert.equal(st.components.length, 4);
+  assert.ok(!st.components.some((c) => c.id === 'whisper-windows'), 'AVX-базовый zip не в каталоге');
   const tts = await v.tts('тест');
   if (process.platform !== 'win32') assert.equal(tts.ok, false);
 });

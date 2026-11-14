@@ -277,10 +277,9 @@
           ${comp('piper-windows', 'Piper TTS (синтез речи)')}
           ${comp('voice-ru-irina', 'Русский голос Irina')}
           ${comp('voice-ru-irina-config', 'Конфигурация голоса')}
-          ${comp('whisper-windows', 'whisper.cpp (распознавание)')}
           ${comp('whisper-model-tiny', 'Модель whisper tiny')}
         </ul>
-        <p class="muted" id="voice-note">TTS установлен: ${st.tts?.installed ? 'да' : 'нет'} · ASR установлен: ${st.asr?.installed ? 'да' : 'нет'}. Поддержка платформы: ${st.supported ? 'да' : 'нет (нужен Windows Desktop)'}.</p>
+        <p class="muted" id="voice-note">TTS установлен: ${st.tts?.installed ? 'да' : 'нет'} · ASR установлен: ${st.asr?.installed ? 'да' : 'нет'}${st.asr?.shipped ? ' (whisper в комплекте, сборка без AVX)' : ''}. Поддержка платформы: ${st.supported ? 'да' : 'нет (нужен Windows Desktop)'}.</p>
         <div class="btns">
           <button id="voice-test">Проверить озвучивание</button>
           <span class="muted" id="voice-test-note"></span>

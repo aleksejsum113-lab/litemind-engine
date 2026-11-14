@@ -52,6 +52,11 @@ const hasLlamaRuntime = fs.existsSync(path.join(llamacppResourceDir, "llama-serv
 // sd.exe — бэкенд Генератора изображений (stable-diffusion.cpp, без AVX; собирается в CI).
 const sdResourceDir = path.join(packageDir, "resources", "sd")
 const hasSdRuntime = fs.existsSync(path.join(sdResourceDir, "sd.exe"))
+// whisper-cli.exe — локальное распознавание речи (ТЗ v0.6.4 §2): сборка CI без
+// AVX/AVX2/F16C/BMI2 (база SSE2, целевой CPU N5095A/Tremont). Официальный
+// whisper-bin ggml-org собран с AVX-базой и в комплект не берётся.
+const whisperResourceDir = path.join(packageDir, "resources", "whisper")
+const hasWhisperRuntime = fs.existsSync(path.join(whisperResourceDir, "whisper-cli.exe"))
 
 // libappimage (used by AppImageLauncher) resolves the .desktop entry inside an
 // AppImage by globbing `*.desktop` at the squashfs root. If the main
@@ -120,6 +125,7 @@ const getBase = (appId: string): Configuration => {
         ? [{ from: "resources/llamacpp", to: "llamacpp", filter: ["**/*"] }]
         : []),
       ...(hasSdRuntime ? [{ from: "resources/sd", to: "sd", filter: ["**/*"] }] : []),
+      ...(hasWhisperRuntime ? [{ from: "resources/whisper", to: "whisper", filter: ["**/*"] }] : []),
       // ТЗ v0.6.1 §2: иконка окна на Windows читается в рантайме из resources\icons\icon.ico
       // (рядом с app.asar — см. windowIconFile в windows/defaults.ts). Кладём её на диск только
       // в Windows-сборках: сборка идёт на windows-раннере, поэтому guard по process.platform,
@@ -186,6 +192,19 @@ const getBase = (appId: string): Configuration => {
         const sdStat = await stat(sdExe)
         if (!sdStat.isFile() || sdStat.size < 1_000_000) {
           throw new Error(`Bundled sd.exe looks wrong: ${sdExe} (${sdStat.size} bytes)`)
+        }
+      }
+      // whisper-cli.exe (Распознавание речи, ТЗ v0.6.4 §2) обязателен в
+      // Windows-установке: без него ASR честно сообщит об отсутствии бинарника.
+      if (hasWhisperRuntime) {
+        const whisperExe = path.join(resources, "whisper", "whisper-cli.exe")
+        const whisperStat = await stat(whisperExe)
+        if (!whisperStat.isFile() || whisperStat.size < 100_000) {
+          throw new Error(`Bundled whisper-cli.exe looks wrong: ${whisperExe} (${whisperStat.size} bytes)`)
+        }
+        const ggmlDll = path.join(resources, "whisper", "ggml.dll")
+        if (!fs.existsSync(ggmlDll)) {
+          throw new Error(`Bundled whisper runtime looks incomplete: ggml.dll missing next to ${whisperExe}`)
         }
       }
 
