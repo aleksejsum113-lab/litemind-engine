@@ -130,7 +130,12 @@ try {
 console.log('=== 4. Карточка модели: совместимость по железу ===');
 let picked = null;
 try {
-  const models = (all?.models ?? []).filter((m) => (m.sizeBytes ?? 0) > 0 && (m.sizeBytes ?? Infinity) <= MAX_MODEL_BYTES);
+  // Прогон v0.6.4: discovery нашёл мусорную запись (s6-secrets-pico, 250 КБ —
+  // не GGUF); честный размер-гвард загрузчика её отбил, но тест скачания пал
+  // без вины приложения. Для теста скачивания берём ТОЛЬКО записи размера
+  // настоящей модели (≥20 МБ).
+  const MIN_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+  const models = (all?.models ?? []).filter((m) => (m.sizeBytes ?? 0) >= MIN_DOWNLOAD_BYTES && (m.sizeBytes ?? Infinity) <= MAX_MODEL_BYTES);
   models.sort((a, b) => a.sizeBytes - b.sizeBytes);
   // HF не всегда отдаёт LFS-sha256 в метаданных конкретного файла (прогон №11:
   // у самой маленькой модели sha256 в источнике не было → проверка карточки
@@ -138,7 +143,7 @@ try {
   // карточку с проверяемым хэшем; сам факт честности метаданных это не
   // маскирует — она проверяется ниже по выбранной карточке.
   picked = models.find((m) => m.sha256) ?? models[0] ?? null;
-  check('Найдена модель для теста скачивания (≤900 МБ, c sha256)', !!picked && !!picked.sha256,
+  check('Найдена модель для теста скачивания (20–900 МБ, c sha256)', !!picked && !!picked.sha256,
     picked ? `${picked.repo}/${picked.name} (${Math.round(picked.sizeBytes / 1048576)} МБ), sha256=${picked.sha256 ? 'есть' : 'НЕТ В ИСТОЧНИКЕ'}` : 'каталог пуст');
   if (picked) {
     const d = await jget(`/api/discovery/model?key=${encodeURIComponent(picked.key)}`);

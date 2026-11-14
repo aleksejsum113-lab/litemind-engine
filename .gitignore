@@ -67,3 +67,4 @@ RELEASE_REVIEW.md
 *.bun-build
 tsconfig.tsbuildinfo
 /artifacts/
+core

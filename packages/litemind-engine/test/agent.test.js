@@ -305,3 +305,48 @@ test('отказ от «пустого DONE»: без инструментов �
   assert.ok(full.messages.filter((m) => m.type === 'note' && String(m.text).includes('инструмент')).length === 2);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('анти-фейк TEXT: «сделал» словами без инструментов отклоняется, после подсказки задача выполняется', async () => {
+  const { dir, cfgPath } = tmpConfigDir();
+  const proj = path.join(dir, 'project');
+  await fsp.mkdir(proj, { recursive: true });
+  const { mgr } = makeManager({
+    cfgPath,
+    projectDir: proj,
+    replies: [
+      // 1. фейковый отчёт словами — write_file НЕ вызван
+      'TEXT: {"text":"Готово! Я создал файл hello.js со строкой Привет, LiteMind!"}',
+      // 2. после подсказки модель реально вызывает инструмент
+      'ACTION: {"tool":"write_file","args":{"path":"hello.js","content":"console.log(\'Привет, LiteMind!\')"}}',
+      // 3. подтверждение → DONE
+      'DONE: {"summary":"файл hello.js создан","created":["hello.js"]}'
+    ]
+  });
+  const s = mgr.createSession({ projectDir: proj });
+  const v1 = await mgr.postMessage(s.id, { text: 'создай файл hello.js со строкой Привет, LiteMind!', wait: true });
+  assert.equal(v1.state, 'awaiting_confirmation', 'после подсказки модель вызвала write_file');
+  const v2 = await mgr.decide(s.id, { approvalId: v1.pendingApproval.id, approved: true, wait: true });
+  assert.equal(v2.state, 'done');
+  assert.ok(fs.existsSync(path.join(proj, 'hello.js')), 'файл реально создан после анти-фейка');
+  const full = mgr.fullView(s.id);
+  assert.ok(full.messages.some((m) => m.type === 'note' && String(m.text).includes('не вызвав ни одного инструмента')), 'подсказка анти-фейка в истории');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('анти-фейк TEXT: после 2 подсказок текст принимается (честное объяснение)', async () => {
+  const { dir, cfgPath } = tmpConfigDir();
+  const { mgr } = makeManager({
+    cfgPath,
+    replies: [
+      'TEXT: {"text":"Готово, всё сделано!"}',
+      'TEXT: {"text":"Я не могу выполнить действие, у меня нет доступа."}',
+      'TEXT: {"text":"Задача невыполнима без инструментов — вот как сделать вручную: …"}'
+    ]
+  });
+  const s = mgr.createSession({});
+  const v = await mgr.postMessage(s.id, { text: 'сделай что-нибудь', wait: true });
+  assert.equal(v.state, 'idle', 'третий текст принят без бесконечной петли');
+  const full = mgr.fullView(s.id);
+  assert.equal(full.messages.filter((m) => m.type === 'note' && String(m.text).includes('не вызвав ни одного инструмента')).length, 2, 'ровно 2 подсказки');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
