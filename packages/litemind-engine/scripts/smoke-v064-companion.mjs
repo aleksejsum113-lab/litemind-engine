@@ -166,12 +166,20 @@ try {
     throw new Error('агент не ответил на первое сообщение');
   }
   // Дождаться завершения: state должен стать idle/done/waiting_user (не running навсегда).
+  // Прогон smoke 43598202411: POST возвращает мгновенно (kick сессии асинхронный),
+  // первый GET ловил исходное state=idle ДО первого running и цикл завершался
+  // за 2 мс — тест не ждал ни инструмента, ни модели. Терминальным состоянием
+  // считаем только то, что наступило ПОСЛЕ хотя бы одного 'running'.
   let finalView = null;
+  let sawRunning = false;
   const t0 = Date.now();
   while (Date.now() - t0 < 180000) {
     const v = await api(`/api/agent/sessions/${sid}`, { timeoutMs: 15000 });
     finalView = v.data;
-    if (!['running'].includes(finalView?.state)) break;
+    if (finalView?.state === 'running') sawRunning = true;
+    if (sawRunning && !['running'].includes(finalView?.state)) break;
+    // страховка: если за 45 с сессия так и не вошла в running — принимаем как есть
+    if (!sawRunning && Date.now() - t0 > 45000) break;
     await new Promise((r) => setTimeout(r, 3000));
   }
   check('агент: задача завершилась (не вечное «Обдумывание шага») (Тест D)',

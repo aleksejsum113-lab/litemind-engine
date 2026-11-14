@@ -741,7 +741,7 @@ export class AgentManager {
           if ((s.stats.toolCalls ?? 0) === 0 && (s._textNudges ?? 0) < 2) {
             s._textNudges = (s._textNudges ?? 0) + 1;
             this._append(s, { role: 'event', type: 'note', text: 'модель ответила словами, не вызвав ни одного инструмента — требую реальные действия' });
-            s.messages.push({ id: ++s.cursor, role: 'user', ts: nowIso(), text: '[система: отказано. Ты не вызвал ни одного инструмента — словами задача не выполнена. Используй ACTION с нужным инструментом (write_file/terminal/…), дождись [результат инструмента] и только потом сообщай результат.]' });
+            s.messages.push({ id: ++s.cursor, role: 'user', ts: nowIso(), text: '[система: отказано. Ты не вызвал ни одного инструмента — словами задача не выполнена. Ответь РОВНО ОДНОЙ строкой формата ACTION: {"tool":"имя_инструмента","args":{...}} — подходящий инструмент (write_file/terminal/edit_file/…), без слов до и после строки. Дождись [результат инструмента] и только потом сообщай результат.]' });
             continue;
           }
           this._append(s, { role: 'assistant', text: t });
@@ -778,7 +778,7 @@ export class AgentManager {
           if ((s.stats.toolCalls ?? 0) === 0 && (s._nudges ?? 0) < 2) {
             s._nudges = (s._nudges ?? 0) + 1;
             this._append(s, { role: 'event', type: 'note', text: 'модель отчиталась без выполнения действий — требую инструменты' });
-            s.messages.push({ id: ++s.cursor, role: 'user', ts: nowIso(), text: '[система: отказано. Ты не вызвал ни одного инструмента — задача фактически не выполнена. Используй ACTION с нужным инструментом (write_file/terminal/…), дождись [результат инструмента] и только потом DONE.]' });
+            s.messages.push({ id: ++s.cursor, role: 'user', ts: nowIso(), text: '[система: отказано. Ты не вызвал ни одного инструмента — задача фактически не выполнена. Ответь РОВНО ОДНОЙ строкой формата ACTION: {"tool":"имя_инструмента","args":{...}} — подходящий инструмент (write_file/terminal/edit_file/…), без слов до и после строки. Дождись [результат инструмента] и только потом DONE.]' });
             continue;
           }
           const report = {
