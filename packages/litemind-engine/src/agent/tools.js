@@ -34,9 +34,23 @@ const TOOL_SPECS = [
   { name: 'delete_file', args: { path: 'путь' }, desc: 'Удалить файл. Требует подтверждения.' },
   { name: 'search', args: { query: 'текст или регулярка', is_regex: '(опц.) true/false' }, desc: 'Найти текст в файлах проекта (grep).' },
   { name: 'terminal', args: { command: 'команда', timeout_sec: '(опц.) 1..300' }, desc: 'Выполнить команду в папке проекта. Требует подтверждения.' },
+  { name: 'weather', args: { place: 'город, напр. Иркутск' }, desc: 'Текущая погода из открытого сервиса Open-Meteo (нужен включённый интернет).' },
+  { name: 'web_search', args: { query: 'поисковый запрос' }, desc: 'Поиск в интернете через DuckDuckGo (нужен включённый интернет).' },
+  { name: 'calculator', args: { expression: 'математическое выражение, напр. 234*7' }, desc: 'Точно вычислить математическое выражение.' },
+  { name: 'memory_save', args: { text: 'факт для долговременной памяти' }, desc: 'Сохранить факт в память помощника.' },
+  { name: 'memory_search', args: { query: 'что найти в памяти' }, desc: 'Найти сохранённые факты пользователя.' },
+  { name: 'task_create', args: { text: 'что сделать', due_at: '(опц.) ISO-дата напоминания', repeat: '(опц.) none|daily|weekdays|weekly' }, desc: 'Создать задачу/напоминание в планировщике LiteMind.' },
+  { name: 'task_list', args: {}, desc: 'Показать активные задачи пользователя.' },
+  { name: 'screen_look', args: {}, desc: 'Прочитать текст с экрана пользователя (только в Desktop с включённым разрешением).' },
   { name: 'ask_user', args: { question: 'вопрос' }, desc: 'Задать пользователю вопрос и дождаться ответа в диалоге.' },
   { name: 'done', args: { summary: 'итог для пользователя', created: ['созданные файлы'], modified: ['изменённые файлы'], failed: ['что не удалось'] }, desc: 'Завершить задачу с итоговым отчётом.' }
 ];
+
+/** Инструменты, которым НЕ нужен открытый проект (сервисные). */
+const NON_PROJECT_TOOLS = new Set([
+  'weather', 'web_search', 'calculator', 'memory_save', 'memory_search',
+  'task_create', 'task_list', 'screen_look', 'web_fetch', 'github', 'ask_user', 'done'
+]);
 
 /** Спецификация для системного промпта: одна строка на инструмент. */
 export function toolsPromptLine() {
@@ -225,9 +239,13 @@ export function createToolRegistry({ config, logger } = {}) {
      * Для мутирующих — возвращает change + apply (запись выполняет сессия ПОСЛЕ подтверждения).
      */
     async execute(name, args, ctx) {
-      const root = ctx?.projectRoot;
-      if (!root) throw new Error('не выбран проект (workspace) — работа с файлами невозможна');
       args = args && typeof args === 'object' ? args : {};
+      const root = ctx?.projectRoot ?? null;
+      // Сервисные инструменты не требуют открытого проекта.
+      if (!NON_PROJECT_TOOLS.has(name) && !root) {
+        throw new Error('не выбран проект (workspace) — работа с файлами невозможна');
+      }
+      const services = ctx?.services ?? {}; // { memory, tasks, intelligence, web }
 
       switch (name) {
         case 'list_files': {
@@ -326,6 +344,77 @@ export function createToolRegistry({ config, logger } = {}) {
           if (!ctx?.web?.enabled) throw new Error('доступ к интернету выключен (Настройки → Интернет)');
           const r = await ctx.web.github(args);
           return { ok: true, result: cap(r.text, 20_000) };
+        }
+
+        // ── ТЗ v0.6.4: сервисные инструменты компаньона ────────────────────
+
+        case 'weather': {
+          const place = String(args.place ?? '').trim();
+          if (!place) throw new Error('weather: нужен place (город)');
+          if (!ctx?.web?.enabled) throw new Error('доступ к интернету выключен (Настройки → Интернет) — актуальную погоду проверить нельзя');
+          const { currentWeather } = await import('../web/weather.js');
+          const w = await currentWeather(place, { fetchImpl: ctx?.fetchImpl ?? fetch });
+          return { ok: true, result: cap(`${w.summary} Время наблюдения (местное): ${w.observedAt}. Источник: Open-Meteo (${w.source}). Сообщи пользователю эти данные с указанием источника и времени.`, 4000) };
+        }
+
+        case 'web_search': {
+          const q = String(args.query ?? '').trim();
+          if (!q) throw new Error('web_search: нужен query');
+          if (!ctx?.web?.enabled) throw new Error('доступ к интернету выключен (Настройки → Интернет)');
+          const { webSearch, fetchSearchPages } = await import('../web/search.js');
+          const found = await webSearch(q, { fetchImpl: ctx?.fetchImpl ?? fetch });
+          const pages = await fetchSearchPages(found.results.slice(0, 3), { fetchText: (u) => ctx.web.fetchText(u), perPageChars: 2000 });
+          const lines = [`Поиск (${found.engine}), получено ${found.fetchedAt}:`];
+          found.results.slice(0, 6).forEach((r, i) => lines.push(`${i + 1}. ${r.title} — ${r.url}`));
+          for (const p of pages.filter((x) => x.ok)) lines.push(`--- ${p.url} ---\n${cap(p.text, 2000)}`);
+          return { ok: true, result: cap(lines.join('\n'), 20_000) };
+        }
+
+        case 'calculator': {
+          const expr = String(args.expression ?? '').trim();
+          if (!expr) throw new Error('calculator: нужен expression');
+          const { evaluateExpression } = await import('../intelligence/calculator.js');
+          const result = evaluateExpression(expr);
+          return { ok: true, result: `${expr} = ${result}` };
+        }
+
+        case 'memory_save': {
+          const text = String(args.text ?? '').trim();
+          if (!text) throw new Error('memory_save: нужен text');
+          if (!services.memory) throw new Error('память недоступна');
+          const r = services.memory.add({ text, source: 'assistant' });
+          return { ok: true, result: `сохранено в память: «${String(r.entry.text).slice(0, 120)}»` };
+        }
+
+        case 'memory_search': {
+          const q = String(args.query ?? '').trim();
+          if (!services.memory) throw new Error('память недоступна');
+          const hits = services.memory.search(q, { limit: 8 });
+          return { ok: true, result: hits.length ? hits.map((e) => `- ${String(e.text).slice(0, 160)}`).join('\n') : 'в памяти ничего не найдено' };
+        }
+
+        case 'task_create': {
+          const text = String(args.text ?? '').trim();
+          if (!text) throw new Error('task_create: нужен text');
+          if (!services.tasks) throw new Error('планировщик недоступен');
+          const t = services.tasks.add({ text, dueAt: args.due_at ?? null, repeat: ['none', 'daily', 'weekdays', 'weekly'].includes(args.repeat) ? args.repeat : 'none', source: 'agent' });
+          return { ok: true, result: `задача создана: «${t.text.slice(0, 120)}»${t.dueAt ? `, напоминание: ${t.dueAt}` : ', без напоминания'}` };
+        }
+
+        case 'task_list': {
+          if (!services.tasks) throw new Error('планировщик недоступен');
+          const list = services.tasks.list({ includeDone: false });
+          return { ok: true, result: list.length ? list.map((t) => `- ${t.text}${t.dueAt ? ` (напоминание: ${t.dueAt}, повтор: ${t.repeat})` : ''}`).join('\n') : 'активных задач нет' };
+        }
+
+        case 'screen_look': {
+          const host = services.intelligence?.host?.();
+          if (!host || typeof host.captureScreenText !== 'function') {
+            return { ok: false, result: 'просмотр экрана доступен только в LiteMind Desktop с включённым разрешением (Компаньон → Разрешения). Не притворяйся, что видишь экран.' };
+          }
+          const r = await host.captureScreenText({});
+          if (!r?.ok) return { ok: false, result: `экран прочитать не удалось: ${r?.error ?? 'неизвестная ошибка'}` };
+          return { ok: true, result: `Текст с экрана (получено ${r.retrievedAt}):\n${cap(r.text, 4000)}` };
         }
 
         default:

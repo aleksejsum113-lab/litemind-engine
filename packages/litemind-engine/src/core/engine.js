@@ -366,7 +366,7 @@ export class Engine {
    * request timeout, stream idle watchdog. Always releases its slot.
    * После beginStop()/shutdownFull() новые генерации отклоняются (ТЗ §16).
    */
-  async generate({ model, messages, contextTokens, maxOutputTokens, threads, signal, onToken }) {
+  async generate({ model, messages, contextTokens, maxOutputTokens, threads, signal, onToken, stop = null, sampler = null }) {
     this._assertRunning();
     // ТЗ v0.6.3 §1.4: модель — только строка-идентификатор. Если выше по стеку
     // просочился объект ({id: 'name'}) — приводим к строке здесь; голый объект
@@ -522,6 +522,11 @@ export class Engine {
         profile: this.config.profile,
         signal: ctrl.signal,
         onToken: wrappedOnToken,
+        // ТЗ v0.6.4 §4: stop-последовательности и параметры сэмплирования
+        // подбираются Intelligence Layer под семейство модели — служебные
+        // токены чат-шаблона не попадают в ответ, повторы подавляются.
+        stop,
+        sampler,
         // Этап 2 §2: точные границы стадий сообщает сам бэкенд.
         onServerReady: (serverInfo) => {
           trace.end(STAGES_SERVER_START, {

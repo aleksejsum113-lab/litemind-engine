@@ -678,7 +678,7 @@ export class LlamaCppBackend {
    */
   async generate({ model, messages, contextTokens = 4096, maxOutputTokens = 512, threads = 0, threadsBatch = 0,
                    numBatch = 0, useMmap = null, cacheReuse = 0, profile = null, signal, onToken,
-                   onServerReady = null, onHeaders = null }) {
+                   onServerReady = null, onHeaders = null, stop = null, sampler = null }) {
     const scanned = await this.scanModels();
     const meta = scanned.find((m) => m.id === model && m.ok);
     if (!meta) {
@@ -702,7 +702,7 @@ export class LlamaCppBackend {
       const baseUrl = await this.ensureServer({ file: meta.file, contextTokens, threads, threadsBatch, numBatch, useMmap, cacheReuse, profile, self: true });
       return await this._generateStreaming({ model, messages, baseUrl, meta, contextTokens, maxOutputTokens,
         threads, threadsBatch, numBatch, useMmap, cacheReuse, profile, signal, onToken, onServerReady, onHeaders,
-        tServer0, wasRunning });
+        tServer0, wasRunning, stop, sampler });
     } finally {
       this._activeStreams = Math.max(0, this._activeStreams - 1);
     }
@@ -711,7 +711,7 @@ export class LlamaCppBackend {
   async _generateStreaming({ model, messages, baseUrl, meta, contextTokens = 4096, maxOutputTokens = 512,
                             threads = 0, threadsBatch = 0, numBatch = 0, useMmap = null, cacheReuse = 0,
                             profile = null, signal, onToken, onServerReady = null, onHeaders = null,
-                            tServer0, wasRunning }) {
+                            tServer0, wasRunning, stop = null, sampler = null }) {
     const serverInfo = {
       restarted: !wasRunning,
       loadMs: this.lastLoadMs,
@@ -730,6 +730,18 @@ export class LlamaCppBackend {
       max_tokens: maxOutputTokens > 0 ? maxOutputTokens : 512,
       stream_options: { include_usage: true }
     };
+    // ТЗ v0.6.4 §4: stop-токены чат-шаблона («<|im_end|>», «### Instruction:»…)
+    // и параметры против повторов — Intelligence Layer подбирает по семейству
+    // модели. llama-server останавливает генерацию ДО того, как служебные
+    // фрагменты попадут в стрим, а repeat_penalty убирает зацикливание.
+    if (Array.isArray(stop) && stop.length) body.stop = stop.slice(0, 8);
+    if (sampler && typeof sampler === 'object') {
+      for (const [k, v] of Object.entries(sampler)) {
+        if (Number.isFinite(Number(v)) && ['temperature', 'top_p', 'top_k', 'repeat_penalty', 'presence_penalty', 'frequency_penalty'].includes(k)) {
+          body[k] = Number(v);
+        }
+      }
+    }
 
     // Abort-обвязка держится весь стрим: отключение клиента = остановка генерации.
     const ctrl = new AbortController();

@@ -26,7 +26,12 @@ const DEFAULTS = {
   stepMaxOutputTokens: 800,     // ответ модели на шаг (ACTION-блок короткий)
   maxRuntimeMs: 20 * 60_000,    // предохранитель по времени на прогон
   maxDialogChars: 600_000,      // физический предел истории сессии
-  toolResultChars: 6_000        // сколько символов результата инструмента уходит модели
+  toolResultChars: 6_000,       // сколько символов результата инструмента уходит модели
+  // ТЗ v0.6.4 (агент §6): предел на ОДИН шаг модели. Раньше «Обдумывание шага»
+  // могло висеть вечно (медленный prefill/перезапуск модели), пользователь не
+  // получал ни ответа, ни ошибки. Теперь шаг, дольше 5 минут, честно завершается
+  // ошибкой с понятным сообщением и возможностью повторить/остановить.
+  stepTimeoutMs: 5 * 60_000
 };
 
 const STATE_LABEL = {
@@ -310,7 +315,7 @@ export class AgentManager {
         result: result.result ?? '', ts: nowIso()
       });
       s.state = 'running';
-      s.currentStage = 'продолжение после подтверждения';
+      s.currentStage = 'продолжение после подтверждения'; // стадия сбрасывается _stage() в цикле
       void this._persist(s);
       if (wait) await this._kick(s);
       else void this._kick(s);
@@ -528,6 +533,62 @@ export class AgentManager {
     return undefined;
   }
 
+  /** Видимый статус этапа: в сессию + мгновенно в SSE (не хранится в диалоге). */
+  _stage(s, text) {
+    s.currentStage = text;
+    this._broadcast(s, { id: s.cursor, role: 'stage', text, ts: nowIso(), _transient: true });
+  }
+
+  /**
+   * ТЗ v0.6.4 §6.1: детерминированная маршрутизация типовых запросов ПЕРЕД
+   * первым шагом модели. Погода и поиск — инструменты приложения (модель
+   * только озвучивает результат); результат кладётся в диалог как
+   * [результат инструмента]. Выполняется один раз на сообщение пользователя
+   * (s._preRoutedFor = id последнего user-сообщения).
+   */
+  async _preRoute(s, ctx) {
+    const lastUser = [...s.messages].reverse().find((m) => m.role === 'user');
+    if (!lastUser) return;
+    if (s._preRoutedFor === lastUser.id) return; // повторный прогон (нудж/уточнение) — не дублируем
+    const text = String(lastUser.text ?? '');
+    const { classifyIntent } = await import('../intelligence/intents.js');
+    const intent = classifyIntent(text, { webEnabled: Boolean(ctx.web?.enabled) });
+    if (!['weather', 'search'].includes(intent.intent)) return;
+
+    s._preRoutedFor = lastUser.id;
+    const tool = intent.intent === 'weather' ? 'weather' : 'web_search';
+    const args = intent.intent === 'weather'
+      ? { place: intent.slots.place ?? '' }
+      : { query: text.slice(0, 200) };
+    this._stage(s, intent.intent === 'weather'
+      ? `погода: запрос к сервису${intent.slots.place ? ` (${intent.slots.place})` : ''}`
+      : 'поиск: DuckDuckGo');
+    if (intent.intent === 'weather' && !intent.slots.place) {
+      this._append(s, {
+        role: 'tool', tool, args, ok: false,
+        result: 'в запросе не указан город. Пользователю нужен честный вопрос «о каком городе?» — погоду без города называть НЕЛЬЗЯ.'
+      });
+      return;
+    }
+    if (intent.intent === 'weather' && !ctx.web?.enabled) {
+      this._append(s, {
+        role: 'tool', tool, args, ok: false,
+        result: 'доступ к интернету выключен (кнопка «земной шар»). Актуальную погоду проверить НЕЛЬЗЯ — сообщи пользователю прямо: не проверял и не буду выдумывать.'
+      });
+      return;
+    }
+    let exec;
+    try {
+      exec = await this.tools.execute(tool, args, ctx);
+    } catch (err) {
+      this._append(s, { role: 'tool', tool, args, ok: false, result: `ошибка инструмента: ${String(err?.message ?? err).slice(0, 400)}` });
+      return;
+    }
+    s.stats.toolCalls = (s.stats.toolCalls ?? 0) + 1;
+    this._append(s, { role: 'tool', tool, args, ok: exec.ok !== false, result: exec.result ?? '' });
+    this._stage(s, intent.intent === 'weather' ? 'погода: данные получены' : 'поиск: источники получены');
+  }
+
   async _runLoop(s) {
     this._assertProject(s);
     s.stats.runs++;
@@ -541,11 +602,24 @@ export class AgentManager {
       projectRoot: s.projectDir,
       web: this.webCtx(),
       signal: s._ctrl.signal,
+      // ТЗ v0.6.4: сервисы компаньона для инструментов memory_*/task_*/screen_look
+      services: this.services(),
       // процессы терминала регистрируются в сессии — stop() убивает их дерево
       onTermStart: (pid, kill) => { (s._termKills ??= []).push(kill); }
     };
     const startedAt = Date.now();
     let parseFails = 0;
+
+    // ТЗ v0.6.4 (агент §6.1): надёжная маршрутизация приложения для типовых
+    // запросов. Погода/поиск выполняются ИНСТРУМЕНТОМ сразу — слабая модель
+    // получает готовые факты и формулирует ответ, а не висит «в раздумьях».
+    try {
+      await this._preRoute(s, ctx);
+    } catch (err) {
+      // Ошибка маршрутизации не убивает цикл: модель получит текст ошибки
+      // как [результат инструмента] и честно сообщит пользователю.
+      this.log?.warn?.('agent pre-route failed', { id: s.id, error: String(err?.message ?? err).slice(0, 200) });
+    }
 
     try {
       while (true) {
@@ -564,7 +638,7 @@ export class AgentManager {
 
         // 1. шаг: генерация ответа модели (стрим в диалог)
         s.state = 'running';
-        s.currentStage = 'обдумывание шага';
+        this._stage(s, 'анализ задачи');
         const payload = this._buildMessages(s);
         let full = '';
         let lastEmit = 0;
@@ -576,13 +650,42 @@ export class AgentManager {
             this._broadcast(s, { id: s.cursor, role: 'delta', text: full, ts: nowIso(), _transient: true });
           }
         };
-        const res = await this.generateFn({
-          model: await this._resolveModel(s),
-          messages: payload,
-          maxOutputTokens: this.limits.stepMaxOutputTokens,
-          signal: s._ctrl.signal,
-          onToken
-        });
+        // ТЗ v0.6.4: пошаговый таймаут — «Обдумывание шага» больше не вечно.
+        const stepStarted = Date.now();
+        let res;
+        try {
+          const stepTimer = new Promise((_resolve, reject) => {
+            const t = setTimeout(() => {
+              const e = new Error(`модель отвечала дольше ${Math.round(this.limits.stepTimeoutMs / 1000)} с на одном шаге — шаг остановлен`);
+              e.code = 'STEP_TIMEOUT';
+              reject(e);
+            }, Math.max(5_000, Number(this.limits.stepTimeoutMs) || 300_000));
+            t.unref?.();
+            s._stepTimer = t;
+          });
+          try {
+            res = await Promise.race([
+              this.generateFn({
+                model: await this._resolveModel(s),
+                messages: payload,
+                maxOutputTokens: this.limits.stepMaxOutputTokens,
+                signal: s._ctrl.signal,
+                onToken
+              }),
+              stepTimer
+            ]);
+          } finally {
+            if (s._stepTimer) { clearTimeout(s._stepTimer); s._stepTimer = null; }
+          }
+        } catch (stepErr) {
+          if (s._ctrl.signal.aborted) { s.state = 'stopped'; s.stats.endedAt = nowIso(); return; }
+          const msg = String(stepErr?.message ?? stepErr).slice(0, 300);
+          s.state = 'error';
+          s.error = msg;
+          s.stats.endedAt = nowIso();
+          this._append(s, { role: 'event', type: 'error', text: `шаг не завершился: ${msg}. Задачу можно продолжить сообщением или остановить.` });
+          return;
+        }
         const reply = String(res?.text ?? full ?? '');
         s.stats.steps++;
 
@@ -610,7 +713,7 @@ export class AgentManager {
           if (!t) continue;
           this._append(s, { role: 'assistant', text: t });
           s.state = 'idle'; // ответ дан, ждём пользователя; задача может быть продолжена
-          s.currentStage = null;
+          this._stage(s, 'готово');
           await this._persist(s);
           return;
         }
@@ -619,7 +722,7 @@ export class AgentManager {
           const q = String(parsed.data.question ?? parsed.data.text ?? '').trim();
           if (q) this._append(s, { role: 'assistant', text: q });
           s.state = 'waiting_user';
-          s.currentStage = 'ждёт ответа пользователя';
+          this._stage(s, 'ждёт ответа пользователя');
           await this._persist(s);
           return; // цикл перезапустится из postMessage
         }
@@ -642,7 +745,7 @@ export class AgentManager {
           };
           this._append(s, { role: 'event', type: 'report', text: report.summary, report });
           s.state = 'done';
-          s.currentStage = null;
+          this._stage(s, 'задача выполнена');
           s.plan = [];
           s.stats.endedAt = nowIso();
           await this._persist(s);
@@ -662,7 +765,7 @@ export class AgentManager {
         }
 
         // план: первое ACTION после постановки задачи — фиксируем заголовок этапа
-        s.currentStage = `инструмент ${tool}`;
+        this._stage(s, `выполнение: ${tool}`);
 
         // Ошибки инструмента (плохой путь, нет файла и т.п.) не убивают цикл —
         // модель получает текст ошибки и корректирует следующий шаг.
@@ -721,7 +824,19 @@ export class AgentManager {
   }
 }
 
-/** Установка веб-контекста извне (server.js импортирует fetcher и передаёт сюда). */
-AgentManager.prototype.setWebContext = function (webCtx) {
-  this._webCtx = webCtx ?? { enabled: false, fetchText: null, github: null };
-};
+  /** Установка веб-контекста извне (server.js импортирует fetcher и передаёт сюда). */
+  AgentManager.prototype.setWebContext = function (webCtx) {
+    this._webCtx = webCtx ?? { enabled: false, fetchText: null, github: null };
+  };
+
+  /**
+   * ТЗ v0.6.4: сервисы компаньона (память/задачи/intelligence) — передаются
+   * сервером; их используют инструменты memory_save, task_create, screen_look.
+   */
+  AgentManager.prototype.setServices = function (services) {
+    this._services = services ?? {};
+  };
+
+  AgentManager.prototype.services = function () {
+    return this._services ?? {};
+  };

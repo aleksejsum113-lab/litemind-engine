@@ -19,6 +19,16 @@ import * as wsx from '../project/workspace.js';
 import { extractText } from '../attachments/extract.js';
 import { saveConfig } from '../config.js';
 import { AgentManager } from '../agent/session.js';
+// ТЗ v0.6.4: Intelligence Layer (интенты, инструменты, самопроверка), память,
+// задачи/напоминания, компаньон, голос. Службы приходят из index.js; при
+// прямом создании сервера (тесты) создаются локальные экземпляры.
+import { createIntelligenceLayer } from '../intelligence/layer.js';
+import { MemoryStore } from '../memory/store.js';
+import { TaskStore } from '../tasks/store.js';
+import { CompanionHub } from '../companion/companion.js';
+import { createVoiceManager } from '../voice/voice.js';
+import { webSearch, fetchSearchPages } from '../web/search.js';
+import { currentWeather } from '../web/weather.js';
 // ТЗ v0.6.1 §2–5: Генератор изображений (stable-diffusion.cpp) — CLI-процесс,
 // без сторонних портов; память проверяется тем же gate'ом, что и у LLM.
 import { ImageGenManager, sanitizeParams } from '../image/generate.js';
@@ -155,7 +165,10 @@ function readBody(req, maxBytes = MAX_BODY) {
   });
 }
 
-export function createServer({ config, engine, logger, downloads: downloadsOverride = null, onEngineStopped = null }) {
+export function createServer({ config, engine, logger, downloads: downloadsOverride = null, onEngineStopped = null,
+                               memory: memoryOverride = null, tasks: tasksOverride = null,
+                               companion: companionOverride = null, voice: voiceOverride = null,
+                               intelligence: intelligenceOverride = null }) {
   // v0.6.1: предохранители процесса. Без них ЛЮБОЕ необработанное отклонение
   // (Node >= 15 — crash по умолчанию) или редкое событие 'error' на потоке
   // убивало весь движок: smoke в CI показывал «после приёма задачи движок
@@ -190,6 +203,21 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
   const webCtx = createWebContext(config);
   const agent = new AgentManager({ config, engine, logger });
   agent.setWebContext(webCtx);
+  // ── ТЗ v0.6.4: службы компаньона. Тесты могут подать свои экземпляры; в
+  // standalone-режиме создаём локальные (данные — рядом с config.json).
+  const dataDir = path.dirname(config.paths.configPath);
+  const memory = memoryOverride ?? new MemoryStore(path.join(dataDir, 'memory'), { logger });
+  const companion = companionOverride ?? new CompanionHub({ config, logger });
+  const tasks = tasksOverride ?? new TaskStore(path.join(dataDir, 'tasks'), { logger });
+  const voice = voiceOverride ?? createVoiceManager({ config, logger, companion });
+  const intelligence = intelligenceOverride ?? createIntelligenceLayer({
+    config, engine, logger, memory, tasks,
+    web: { enabled: () => config.web?.enabled === true, fetchText: (u) => webCtx.fetchText(u), fetchImpl: fetch },
+    host: null
+  });
+  // ТЗ v0.6.4: агент получает сервисы компаньона (memory_save, task_create,
+  // screen_look и др. инструменты работают без открытого проекта).
+  agent.setServices({ memory, tasks, intelligence, web: webCtx, fetchImpl: fetch });
   // ТЗ v0.6.1 §5: генерация изображений и LLM делят одну память — при
   // нехватке честно предлагаем выгрузить модель, а не висим/падаем.
   const imageGateVerdict = async (est) => {
@@ -1856,6 +1884,329 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       }
     }
 
+    // ═════════ ТЗ v0.6.4: Intelligence Layer, память, задачи, компаньон, голос ═════════
+
+    // Настройки интеллекта: режим (quick/smart/expert), разрешения, autoMemory.
+    if (p === '/api/intelligence' && req.method === 'GET') {
+      return json(res, 200, {
+        mode: config.intelligence?.mode ?? 'smart',
+        modes: { quick: 'Быстрый', smart: 'Умный', expert: 'Экспертный' },
+        autoMemory: config.intelligence?.autoMemory === true,
+        permissions: config.intelligence?.permissions ?? {},
+        hostBridge: intelligence.hasHost() ? Object.keys(intelligence.host()) : []
+      });
+    }
+    if (p === '/api/intelligence' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      config.intelligence = config.intelligence ?? { mode: 'smart', autoMemory: false, permissions: {} };
+      if (typeof body.mode === 'string' && ['quick', 'smart', 'expert'].includes(body.mode)) config.intelligence.mode = body.mode;
+      if (typeof body.autoMemory === 'boolean') config.intelligence.autoMemory = body.autoMemory;
+      if (body.permissions && typeof body.permissions === 'object') {
+        config.intelligence.permissions = { ...(config.intelligence.permissions ?? {}), ...body.permissions };
+      }
+      saveConfig(config, config.paths.configPath);
+      logger?.info('intelligence settings saved', { intelligence: config.intelligence });
+      return json(res, 200, { ok: true, config: config.intelligence });
+    }
+
+    // --- Веб-поиск и погода (кнопка «земной шар») -------------------------
+    if (req.method === 'POST' && p === '/api/web/search') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (!config.web?.enabled) return openaiError(res, 403, 'доступ к интернету выключен (Настройки → Интернет)', 'web_error');
+      try {
+        const { results, engine: searchEngine, fetchedAt } = await webSearch(String(body.query ?? ''), { fetchImpl: fetch, limit: Number(body.limit) || 8 });
+        const pages = await fetchSearchPages(results.slice(0, 3), { fetchText: (u) => webCtx.fetchText(u), perPageChars: 2600 });
+        return json(res, 200, { ok: true, engine: searchEngine, fetchedAt, results, pages });
+      } catch (err) {
+        return openaiError(res, 502, err.message, 'web_error');
+      }
+    }
+    if (req.method === 'POST' && p === '/api/web/weather') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (!config.web?.enabled) return openaiError(res, 403, 'доступ к интернету выключен — актуальную погоду проверить нельзя (честность ТЗ §5.3)', 'web_error');
+      try {
+        const w = await currentWeather(String(body.place ?? ''), { fetchImpl: fetch });
+        return json(res, 200, { ok: true, ...w });
+      } catch (err) {
+        return openaiError(res, 502, err.message, 'web_error');
+      }
+    }
+
+    // --- Долговременная память --------------------------------------------
+    if (p === '/api/memory' && req.method === 'GET') {
+      return json(res, 200, { entries: memory.entries, stats: memory.stats() });
+    }
+    if (req.method === 'POST' && p === '/api/memory') {
+      const body = JSON.parse((await readBody(req, MAX_BODY_FILE)) || '{}');
+      try {
+        const r = memory.add({ text: String(body.text ?? ''), tags: Array.isArray(body.tags) ? body.tags : [], source: body.source === 'auto' ? 'auto' : 'user', pinned: body.pinned === true });
+        companion.event('memory', r.updated ? 'память обновлена' : 'факт сохранён в память');
+        return json(res, 200, { ok: true, ...r });
+      } catch (err) {
+        return openaiError(res, err.status || 400, err.message, 'memory_error', err.code);
+      }
+    }
+    if (req.method === 'POST' && p === '/api/memory/search') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      return json(res, 200, { entries: memory.search(String(body.query ?? ''), { limit: Math.min(Number(body.limit) || 10, 50) }) });
+    }
+    {
+      const m = /^\/api\/memory\/([\w-]+)$/.exec(p);
+      if (m) {
+        const id = m[1];
+        // Только PATCH: POST-маршруты /api/memory/block и /api/memory/clear
+        // объявлены ниже и не должны перехватываться веткой правки.
+        if (req.method === 'PATCH') {
+          const body = JSON.parse((await readBody(req)) || '{}');
+          const e = memory.update(id, { text: typeof body.text === 'string' ? body.text : null, pinned: typeof body.pinned === 'boolean' ? body.pinned : null });
+          if (!e) return openaiError(res, 404, 'запись не найдена', 'not_found');
+          return json(res, 200, { ok: true, entry: e });
+        }
+        if (req.method === 'DELETE') {
+          if (!memory.remove(id)) return openaiError(res, 404, 'запись не найдена', 'not_found');
+          return json(res, 200, { ok: true });
+        }
+      }
+    }
+    if (req.method === 'POST' && p === '/api/memory/clear') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const r = memory.clear({ keepPinned: body.keepPinned === true });
+      companion.event('memory', `память очищена (осталось ${r.remaining})`);
+      return json(res, 200, { ok: true, ...r });
+    }
+    if (req.method === 'POST' && p === '/api/memory/block') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      try {
+        const r = memory.blockTopic(String(body.topic ?? ''));
+        return json(res, 200, { ok: true, ...r });
+      } catch (err) {
+        return openaiError(res, err.status || 400, err.message, 'memory_error');
+      }
+    }
+    if (req.method === 'POST' && p === '/api/memory/unblock') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const r = memory.unblockTopic(String(body.topic ?? ''));
+      return json(res, 200, { ok: true, ...r });
+    }
+
+    // --- Задачи и напоминания ----------------------------------------------
+    if (p === '/api/tasks' && req.method === 'GET') {
+      return json(res, 200, { tasks: tasks.list({ includeDone: true }), stats: tasks.stats() });
+    }
+    if (req.method === 'POST' && p === '/api/tasks') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      try {
+        const t = tasks.add({ text: String(body.text ?? ''), dueAt: body.dueAt ?? null, repeat: body.repeat ?? 'none', source: body.source ?? 'user', tags: Array.isArray(body.tags) ? body.tags : [] });
+        companion.event('task', `задача: ${t.text.slice(0, 100)}`);
+        return json(res, 200, { ok: true, task: t });
+      } catch (err) {
+        return openaiError(res, err.status || 400, err.message, 'task_error');
+      }
+    }
+    if (req.method === 'POST' && p === '/api/tasks/clear-done') {
+      tasks.clearDone();
+      return json(res, 200, { ok: true });
+    }
+    {
+      const m = /^\/api\/tasks\/([\w-]+)(\/(complete|reopen))?$/.exec(p);
+      if (m) {
+        const id = m[1];
+        const action = m[3] ?? null;
+        if (req.method === 'POST' && action === 'complete') {
+          const t = tasks.complete(id);
+          if (!t) return openaiError(res, 404, 'задача не найдена', 'not_found');
+          companion.event('task', `выполнено: ${t.text.slice(0, 100)}`);
+          return json(res, 200, { ok: true, task: t });
+        }
+        if (req.method === 'POST' && action === 'reopen') {
+          const t = tasks.reopen(id);
+          if (!t) return openaiError(res, 404, 'задача не найдена', 'not_found');
+          return json(res, 200, { ok: true, task: t });
+        }
+        if (req.method === 'DELETE') {
+          if (!tasks.remove(id)) return openaiError(res, 404, 'задача не найдена', 'not_found');
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === 'POST' && !action) {
+          // Правка задачи (текст/время).
+          const body = JSON.parse((await readBody(req)) || '{}');
+          const t = tasks.tasks?.find?.((x) => x.id === id);
+          if (!t) return openaiError(res, 404, 'задача не найдена', 'not_found');
+          if (typeof body.text === 'string' && body.text.trim()) t.text = body.text.trim().slice(0, 500);
+          if (body.dueAt !== undefined) {
+            if (body.dueAt === null) t.dueAt = null;
+            else {
+              const d = new Date(body.dueAt);
+              if (Number.isNaN(d.getTime())) return openaiError(res, 400, 'некорректная дата', 'task_error');
+              t.dueAt = d.toISOString();
+              t.notifiedAt = null;
+            }
+          }
+          if (typeof body.repeat === 'string') t.repeat = body.repeat;
+          await tasks._persist?.();
+          return json(res, 200, { ok: true, task: t });
+        }
+      }
+    }
+    // --- Компаньон: состояние, настройки, события, SSE -----------------------
+    if (p === '/api/companion/status' && req.method === 'GET') {
+      return json(res, 200, companion.status());
+    }
+    if (req.method === 'POST' && p === '/api/companion/settings') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const s = companion.updateSettings(body);
+      saveConfig(config, config.paths.configPath);
+      return json(res, 200, { ok: true, settings: s });
+    }
+    if (req.method === 'POST' && p === '/api/companion/state') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const st = companion.setState(String(body.state ?? 'idle'), body.detail ?? null);
+      return json(res, 200, st);
+    }
+    if (req.method === 'POST' && p === '/api/companion/visible') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      companion.setVisible(body.visible === true);
+      return json(res, 200, { ok: true, visible: companion.visibleNow() });
+    }
+    if (p === '/api/companion/events' && req.method === 'GET') {
+      return json(res, 200, { events: companion.eventsList({ limit: Math.min(Number(url.searchParams.get('limit')) || 60, 200) }) });
+    }
+    if (p === '/api/companion/events/stream' && req.method === 'GET') {
+      return companion.subscribe(res);
+    }
+    if (req.method === 'POST' && p === '/api/companion/event') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const e = companion.event(String(body.type ?? 'note'), String(body.text ?? ''));
+      return json(res, 200, { ok: true, event: e });
+    }
+
+    // --- Голос: статус, установка, TTS, ASR ----------------------------------
+    if (p === '/api/voice/status' && req.method === 'GET') {
+      return json(res, 200, await voice.status());
+    }
+    if (req.method === 'POST' && p === '/api/voice/install') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (typeof body.component !== 'string') return openaiError(res, 400, 'нужен component (id из /api/voice/status)', 'invalid_request_error');
+      try {
+        const r = await voice.install(body.component, {
+          onProgress: (prog) => {
+            companion.setState('working', `установка голосового компонента ${body.component}: ${prog.phase}`);
+          }
+        });
+        companion.event('voice', `компонент установлен: ${body.component}`);
+        companion.setState('idle');
+        return json(res, 200, r);
+      } catch (err) {
+        companion.setState('idle');
+        return openaiError(res, err.status || 500, err.message, 'voice_error');
+      }
+    }
+    if (req.method === 'POST' && p === '/api/voice/tts') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      const r = await voice.tts(String(body.text ?? ''));
+      if (!r.ok) return openaiError(res, 503, r.error, 'voice_error');
+      companion.event('voice', 'озвучивание ответа');
+      return json(res, 200, { ok: true, wav: path.basename(r.wavPath), ms: r.ms, voice: r.voice, rate: r.rate });
+    }
+    if (req.method === 'POST' && p === '/api/voice/asr') {
+      const body = JSON.parse((await readBody(req, 12 * 1024 * 1024)) || '{}');
+      if (!body.wavBase64) return openaiError(res, 400, 'нужен wavBase64 (аудиозапись WAV)', 'invalid_request_error');
+      const buf = Buffer.from(String(body.wavBase64).replace(/^data:[^,]+,/, ''), 'base64');
+      const tmpDir = voice.tmpDir;
+      await fs.promises.mkdir(tmpDir, { recursive: true }).catch(() => {});
+      const wavFile = path.join(tmpDir, `asr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.wav`);
+      await fs.promises.writeFile(wavFile, buf);
+      try {
+        const r = await voice.asr(wavFile);
+        if (!r.ok) return openaiError(res, 503, r.error, 'voice_error');
+        return json(res, 200, { ok: true, text: r.text, ms: r.ms });
+      } finally {
+        await fs.promises.rm(wavFile, { force: true }).catch(() => {});
+      }
+    }
+    if (req.method === 'POST' && p === '/api/voice/settings') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      config.voice = { ...(config.voice ?? {}) };
+      if (typeof body.enabled === 'boolean') config.voice.enabled = body.enabled;
+      if (typeof body.speakReplies === 'boolean') config.voice.speakReplies = body.speakReplies;
+      if (typeof body.speakReminders === 'boolean') config.voice.speakReminders = body.speakReminders;
+      if (Number.isFinite(Number(body.ttsRate))) config.voice.ttsRate = Math.max(0.5, Math.min(1.5, Number(body.ttsRate)));
+      saveConfig(config, config.paths.configPath);
+      return json(res, 200, { ok: true, settings: config.voice });
+    }
+    // WAV-файл озвучивания (только имя внутри tmp-каталога голоса — без путей).
+    if (req.method === 'GET' && p === '/api/voice/wav') {
+      const name = url.searchParams.get('name') ?? '';
+      if (!/^[\w-]+\.wav$/.test(name)) return openaiError(res, 400, 'недопустимое имя файла', 'invalid_request_error');
+      const file = path.join(voice.tmpDir, name);
+      let st;
+      try { st = await fs.promises.stat(file); } catch { return openaiError(res, 404, 'файл не найден', 'not_found'); }
+      res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': st.size, 'cache-control': 'no-store' });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+
+    // --- Экран и Windows (через host-мост Desktop, по разрешениям) ----------
+    if (req.method === 'POST' && p === '/api/screen/look') {
+      const hostBridge = intelligence.host();
+      if (!config.intelligence?.permissions?.screenLook) {
+        return json(res, 200, { ok: false, error: 'Функция «Посмотри на экран» выключена — включите её в разделе «Компаньон → Разрешения».' });
+      }
+      if (!hostBridge || typeof hostBridge.captureScreenText !== 'function') {
+        return json(res, 200, { ok: false, error: 'Просмотр экрана доступен только в LiteMind Desktop.' });
+      }
+      try {
+        const r = await hostBridge.captureScreenText({});
+        companion.event('screen', r.ok ? 'экран прочитан (локально)' : `экран: ${r.error ?? 'ошибка'}`);
+        return json(res, 200, r);
+      } catch (err) {
+        return openaiError(res, 500, err.message, 'host_error');
+      }
+    }
+    if (req.method === 'POST' && p === '/api/windows/open') {
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (!config.intelligence?.permissions?.openApps) {
+        return json(res, 200, { ok: false, error: 'Открытие приложений запрещено в разрешениях компаньона.' });
+      }
+      const hostBridge = intelligence.host();
+      if (!hostBridge || typeof hostBridge.openTarget !== 'function') {
+        return json(res, 200, { ok: false, error: 'Управление Windows доступно только в LiteMind Desktop.' });
+      }
+      try {
+        const r = await hostBridge.openTarget({ kind: String(body.kind ?? 'auto'), target: String(body.target ?? '') });
+        companion.event('windows', `открыто: ${String(body.target ?? '').slice(0, 100)}`);
+        return json(res, 200, r);
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'host_error');
+      }
+    }
+    if (req.method === 'POST' && p === '/api/windows/action') {
+      // Нажатия/ввод в чужих окнах: только при включённом разрешении и через
+      // подтверждение UI (Desktop показывает диалог подтверждения сам).
+      const body = JSON.parse((await readBody(req)) || '{}');
+      if (!config.intelligence?.permissions?.windowsControl) {
+        return json(res, 200, { ok: false, error: 'Управление окнами запрещено в разрешениях компаньона (Компаньон → Разрешения).' });
+      }
+      const hostBridge = intelligence.host();
+      if (!hostBridge || typeof hostBridge.uiAction !== 'function') {
+        return json(res, 200, { ok: false, error: 'Управление окнами доступно только в LiteMind Desktop.' });
+      }
+      try {
+        const r = await hostBridge.uiAction({ action: String(body.action ?? ''), target: body.target ?? null, text: body.text ?? null, confirm: body.confirm === true });
+        companion.event('windows', `действие: ${String(body.action ?? '')} ${r.ok ? 'выполнено' : 'отклонено'}`);
+        return json(res, 200, r);
+      } catch (err) {
+        return openaiError(res, err.status || 500, err.message, 'host_error');
+      }
+    }
+    if (p === '/api/host/status' && req.method === 'GET') {
+      const hostBridge = intelligence.host();
+      return json(res, 200, {
+        connected: Boolean(hostBridge),
+        features: hostBridge ? Object.keys(hostBridge) : []
+      });
+    }
+
     // --- ТЗ §7: управляемый интернет (по умолчанию выключен) -------------
     if (req.method === 'POST' && p === '/api/web/fetch') {
       try {
@@ -1909,6 +2260,31 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       return openaiError(res, 503, engine.health.error || 'Backend is not reachable.', 'api_error', 'BACKEND_UNAVAILABLE');
     }
 
+    // ── ТЗ v0.6.4: Intelligence Layer ────────────────────────────────────────
+    // Классификация интента (0 мс) → надёжные инструменты (погода/поиск/
+    // калькулятор/время/память/задачи/экран) → краткие факты + стабильный
+    // системный промпт (prompt-cache) → stop-токены и сэмплер по семейству
+    // модели. Глобус чата (web_globe) разрешает веб-инструменты на этот запрос.
+    let prep = null;
+    try {
+      prep = await intelligence.prepareRequest({
+        messages,
+        model,
+        globeEnabled: body.web_globe === true,
+        modeOverride: typeof body.intelligence_mode === 'string' ? body.intelligence_mode : null
+      });
+    } catch (prepErr) {
+      // Слой не должен ломать чат: сбой инструментов уже перехвачен внутри,
+      // здесь остаётся только поломка самого prepare — идём без него.
+      logger?.warn?.('intelligence prepare failed — запрос идёт без слоя', { error: String(prepErr?.message ?? prepErr).slice(0, 300) });
+    }
+    if (prep?.meta?.toolsRun?.length) {
+      companion.event('tools', `инструменты: ${prep.meta.toolsRun.join(', ')}`);
+    }
+    const genMessages = prep?.messages ?? messages;
+    const genStop = prep?.stop ?? null;
+    const genSampler = prep?.sampler ?? null;
+
     const stream = body.stream === true;
     const id = `chatcmpl-${Math.random().toString(36).slice(2, 10)}`;
     const created = Math.floor(Date.now() / 1000);
@@ -1917,23 +2293,29 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
       try {
         const result = await engine.generate({
           model,
-          messages,
+          messages: genMessages,
           contextTokens: body.context_tokens,
           maxOutputTokens: body.max_tokens ?? body.max_completion_tokens,
-          threads: body.num_threads
+          threads: body.num_threads,
+          stop: genStop,
+          sampler: genSampler
         });
+        // Самопроверка (дополнение §6): очистка служебных токенов + проверка.
+        const cleaned = intelligence.cleanReplyText(result.text);
+        const userText = [...genMessages].reverse().find((m) => m.role === 'user')?.content ?? '';
+        const verdict = intelligence.checkReply({ text: cleaned, userText });
         return json(res, 200, {
           id,
           object: 'chat.completion',
           created,
           model,
-          choices: [{ index: 0, message: { role: 'assistant', content: result.text }, finish_reason: 'stop' }],
+          choices: [{ index: 0, message: { role: 'assistant', content: cleaned }, finish_reason: 'stop' }],
           usage: {
             prompt_tokens: result.usage.promptTokens ?? null,
             completion_tokens: result.usage.completionTokens ?? null,
             total_tokens: (result.usage.promptTokens ?? 0) + (result.usage.completionTokens ?? 0)
           },
-          litemind: { request_id: result.requestId, timings: result.timings }
+          litemind: { request_id: result.requestId, timings: result.timings, intelligence: prep?.meta ?? null, selfcheck: verdict }
         });
       } catch (err) {
         const status = err.status && err.status !== 499 ? err.status : 500;
@@ -1970,17 +2352,22 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
     let requestId = null;
     let finalTimings = null;
     try {
+      companion.setState('thinking', 'генерация ответа');
       const result = await engine.generate({
         model,
-        messages,
+        messages: genMessages,
         contextTokens: body.context_tokens,
         maxOutputTokens: body.max_tokens ?? body.max_completion_tokens,
         threads: body.num_threads,
+        stop: genStop,
+        sampler: genSampler,
         signal: abort.signal,
         onToken: (delta) => {
+          companion.setState('speaking', 'передаёт ответ');
           send({ id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] });
         }
       });
+      companion.setState('idle');
       requestId = result.requestId;
       // Этап 2 §7/§12: честные числа в последнем чанке — UI показывает их под ответом:
       // загрузка модели, TTFT без загрузки, скорость генерации. Не выдуманные цифры.
@@ -1989,9 +2376,53 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         usage: result.usage ?? null,
         server: result.server ?? null
       };
-      send({ id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: {}, finish_reason: null }], litemind: { request_id: requestId, timings: finalTimings } });
+      // ── Самопроверка (дополнение §6): НЕ более одной исправляющей попытки и
+      // только в экспертном режиме, чтобы не замедлять слабый ПК. ──
+      const userText = [...genMessages].reverse().find((m) => m.role === 'user')?.content ?? '';
+      let verdict = intelligence.checkReply({ text: result.text, userText });
+      const selfcheckMeta = { ...verdict, mode: prep?.meta?.mode ?? null, revised: false };
+      if (!verdict.ok && (prep?.meta?.mode ?? 'smart') === 'expert' && !abort.signal.aborted) {
+        logger?.warn?.('selfcheck failed — одна исправляющая попытка', { issues: verdict.issues });
+        companion.event('selfcheck', `самопроверка: ${verdict.issues.join('; ')} — перегенерация`);
+        const nudge = {
+          role: 'system',
+          content: `ПРЕДЫДУЩИЙ ОТВЕТ ЗАБРАКОВАН САМОПРОВЕРКОЙ (${verdict.issues.join('; ')}). Дай ответ заново: кратко, по-русски, без служебных токенов и повторов, по существу вопроса.`
+        };
+        try {
+          const retry = await engine.generate({
+            model,
+            messages: [...genMessages, nudge],
+            contextTokens: body.context_tokens,
+            maxOutputTokens: body.max_tokens ?? body.max_completion_tokens,
+            threads: body.num_threads,
+            stop: genStop,
+            sampler: genSampler,
+            signal: abort.signal,
+            onToken: (delta) => send({ id, object: 'chat.completion.chunk', created, model, revision: true, choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] })
+          });
+          const revised = intelligence.cleanReplyText(retry.text);
+          const verdict2 = intelligence.checkReply({ text: revised, userText });
+          if (verdict2.ok) {
+            selfcheckMeta.issues = [];
+            selfcheckMeta.ok = true;
+            selfcheckMeta.revised = true;
+            // Заменяем содержимое: UI рендерит ревизию вместо накопленного текста.
+            send({ id, object: 'chat.completion.chunk', created, model, revision: true, replace: true, choices: [{ index: 0, delta: { content: revised }, finish_reason: null }] });
+            result.text = revised;
+            if (retry.usage) finalTimings.usage = retry.usage;
+            if (retry.timings) finalTimings = { ...finalTimings, ...(retry.timings ?? {}) };
+          }
+        } catch (retryErr) {
+          if (!(retryErr.code === 'CANCELLED')) logger?.warn?.('selfcheck retry failed', { error: String(retryErr?.message ?? retryErr).slice(0, 200) });
+        }
+      } else if (!verdict.ok) {
+        // В «Умном» режиме исправляющей попытки нет — предупреждение идёт UI честно.
+        send({ id, object: 'chat.completion.chunk', created, model, litemind: { selfcheck: verdict } });
+      }
+      send({ id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: {}, finish_reason: null }], litemind: { request_id: requestId, timings: finalTimings, intelligence: prep?.meta ?? null, selfcheck: selfcheckMeta } });
       finish('stop');
     } catch (err) {
+      companion.setState('idle');
       const reason = err.code === 'CANCELLED' || abort.signal.aborted ? 'cancelled' : 'error';
       if (reason === 'error') {
         send({ error: { message: err.message, type: 'api_error', code: err.code || null } });

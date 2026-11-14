@@ -142,7 +142,40 @@ export const DEFAULT_CONFIG = {
   agent: {
     maxSteps: 24,             // максимум вызовов инструментов за прогон
     stepMaxOutputTokens: 800, // лимит ответа модели на один шаг
-    maxRuntimeMs: 1200000     // предохранитель по времени на прогон (20 мин)
+    maxRuntimeMs: 1200000,    // предохранитель по времени на прогон (20 мин)
+    stepTimeoutMs: 300000     // v0.6.4: предел на ОДИН шаг модели (5 мин) —
+                              // «Обдумывание шага» больше не может висеть вечно
+  },
+  // v0.6.4: LiteMind Intelligence Layer (дополнение ТЗ §1–§8).
+  intelligence: {
+    mode: 'smart',            // quick | smart | expert — режимы реально меняют работу
+    autoMemory: false,        // автоматическое сохранение фактов из сообщений (приватность: выкл)
+    permissions: {
+      screenLook: false,      // «Посмотри на экран» — скриншот + локальный OCR
+      openApps: true,         // открытие приложений/папок/ссылок
+      windowsControl: false,  // нажатия/ввод в чужих окнах (только через подтверждения)
+      speak: true             // озвучивание ответов, если установлен голос
+    }
+  },
+  // v0.6.4: компаньон (ТЗ Roamies-дополнение §1).
+  companion: {
+    enabled: false,           // персонаж выключен по умолчанию — обычный интерфейс
+    character: 'lumi',        // lumi | spark | orb — собственные персонажи LiteMind
+    size: 140,                // px (80..280)
+    opacity: 0.95,            // 0.4..1
+    alwaysOnTop: true,
+    position: null,           // { x, y } сохраняется Desktop'ом
+    autoShowOnStart: true
+  },
+  // v0.6.4: голос (локальные движки, загружаются по требованию — ТЗ §9).
+  voice: {
+    enabled: false,           // голосовые компоненты выключены по умолчанию
+    asr: null,                // движок распознавания (whisper-tiny), устанавливается по кнопке
+    tts: null,                // движок озвучивания (piper + ru-голос)
+    ttsVoice: 'ru_RU-irina-medium',
+    ttsRate: 1.0,             // скорость речи 0.5..1.5
+    speakReplies: false,      // озвучивать ответы чата
+    speakReminders: true      // произносить напоминания голосом
   },
   // Генератор изображений (ТЗ v0.6.1 §2–5): stable-diffusion.cpp как CLI-процесс.
   image: {
