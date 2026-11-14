@@ -363,7 +363,7 @@ test('погода: резервный геокодер Nominatim, если Open
   const omDown = async (url) => {
     if (String(url).includes('geocoding-api')) { const e = new Error('fetch failed'); e.cause = { code: 'ETIMEDOUT' }; throw e; }
     if (String(url).includes('nominatim')) {
-      return { ok: true, status: 200, json: async () => [{ lat: '52.2891225', lon: '104.2798290', name: 'Иркутск', display_name: 'Иркутск, городской округ Иркутск, Иркутская область' }] };
+      return { ok: true, status: 200, json: async () => [{ class: 'place', type: 'city', lat: '52.2891225', lon: '104.2798290', name: 'Иркутск', display_name: 'Иркутск, городской округ Иркутск, Иркутская область' }] };
     }
     if (String(url).includes('api.open-meteo.com')) {
       return { ok: true, status: 200, json: async () => ({ current: { time: '2026-11-14T15:00', temperature_2m: -3.4, weather_code: 71 } }) };
@@ -431,7 +431,9 @@ test('агент: заземление итога по факту погоды �
   assert.match(r.text, /-4\.6 °C/);
   assert.ok(!/-15\s*°/.test(r.text), 'выдуманного числа нет');
   const rOk = mgr._grounded({ _weatherFact: fact }, 'Сейчас в Иркутске -4.6 °C, ясно. Источник: Open-Meteo.');
-  assert.equal(rOk.replaced, false, 'корректный пересказ остаётся');
+  assert.equal(rOk.replaced, true, 'погодный ответ всегда собирается детерминированно');
+  assert.match(rOk.text, /-4\.6 °C/);
+  assert.match(rOk.text, /Open-Meteo/);
   const rOff = mgr._grounded({ _weatherFact: { kind: 'погода', ok: false, webOff: true } }, 'не могу узнать погоду');
   assert.equal(rOff.replaced, true);
   assert.match(rOff.text, /Интернет выключен/);
@@ -518,19 +520,35 @@ test('слой: погодный запрос при выключенном ин
   const { layer } = makeLayer({ webEnabled: false });
   const prep = await layer.prepareRequest({
     messages: [{ role: 'user', content: 'Какая погода в Иркутске?' }],
-    model: 'deepseek-coder-1.3b-instruct.Q4_K_M'
+    model: 'deepseek-coder-1.3b-instruct.Q4_K_M',
+    globeEnabled: true // мастер-выключатель выключен, глобус включён — отказ
   });
   const fact = prep.messages.find((m) => m.role === 'system' && String(m.content).includes('Данные инструмента'));
   assert.ok(fact, 'блок фактов добавлен');
   assert.ok(/Интернет выключен/.test(fact.content), 'факт честно сообщает об отключённом интернете');
   assert.equal(prep.meta.facts[0].ok, false);
+  assert.equal(prep.meta.__factDetails?.[0]?.webOff, true, 'причина: мастер-выключатель');
+});
+
+test('слой: глобус выключен — инструменты не запускаются даже с включённым интернетом', async () => {
+  const { layer } = makeLayer({ webEnabled: true });
+  const prep = await layer.prepareRequest({
+    messages: [{ role: 'user', content: 'Какая погода в Иркутске?' }],
+    model: 'm'
+    // globeEnabled не передан: кнопка «земной шар» в чате выключена
+  });
+  assert.equal(prep.meta.facts[0].ok, false, 'без реальных данных');
+  assert.equal(prep.meta.__factDetails?.[0]?.webOff, true, 'причина: глобус выключен');
+  const sys = prep.messages.find((m) => m.role === 'system' && String(m.content).includes('Данные инструмента'));
+  assert.match(String(sys?.content ?? ''), /земной шар/, 'подсказка включить глобус');
 });
 
 test('слой: погодный запрос с включённым интернетом подставляет данные Open-Meteo', async () => {
   const { layer } = makeLayer({ webEnabled: true });
   const prep = await layer.prepareRequest({
     messages: [{ role: 'user', content: 'Какая погода в Иркутске?' }],
-    model: 'qwen2.5-0.5b-instruct-q4_k_m'
+    model: 'qwen2.5-0.5b-instruct-q4_k_m',
+    globeEnabled: true
   });
   const fact = prep.messages.find((m) => m.role === 'system' && String(m.content).includes('Open-Meteo'));
   assert.ok(fact, 'факт с данными Open-Meteo');

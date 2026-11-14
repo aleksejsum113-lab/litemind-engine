@@ -762,6 +762,11 @@ export class AgentManager {
             modified: parsed.data.modified ?? [],
             failed: parsed.data.failed ?? []
           };
+          // Погодный вопрос: детерминированный ответ сервиса виден пользователю
+          // как ответ ассистента (DONE-отчёт — служебное событие в истории).
+          if (s._weatherFact) {
+            this._append(s, { role: 'assistant', text: report.summary });
+          }
           this._append(s, { role: 'event', type: 'report', text: report.summary, report });
           s.state = 'done';
           this._stage(s, 'задача выполнена');

@@ -132,15 +132,18 @@ export async function geocodePlace(place, { fetchImpl = fetch, timeoutMs = TIMEO
   }
 
   // Источник 2: Nominatim (OpenStreetMap) — независимый индекс. Сначала
-  // featuretype=city (только города — без POI вроде «Кирпич в Иркутске»),
-  // затем свободный поиск; приоритет у объектов класса place.
+  // featuretype=city (только города), затем свободный поиск — но и там
+  // принимаем ТОЛЬКО населённые пункты (class=place): POI вида
+  // «Кирпич в Иркутске» не должен подменять город — лучше честный отказ.
+  const PLACE_TYPES = new Set(['city', 'town', 'village', 'hamlet', 'suburb', 'borough', 'municipality']);
+
   async function osmHit(q, cityOnly) {
-    const url = `${NOMINATIM_URL}?q=${encodeURIComponent(q)}&format=jsonv2&limit=${cityOnly ? 3 : 5}&accept-language=ru${cityOnly ? '&featuretype=city' : ''}`;
+    const url = `${NOMINATIM_URL}?q=${encodeURIComponent(q)}&format=jsonv2&limit=${cityOnly ? 3 : 10}&accept-language=ru${cityOnly ? '&featuretype=city' : ''}`;
     const j = await withRetry(() => fetchJson(url, { 'user-agent': NOMINATIM_UA, accept: 'application/json' }),
       { attempts: retryAttempts, delayMs: retryDelayMs });
     const arr = Array.isArray(j) ? j : [];
-    if (!arr.length) return null;
-    return arr.find((x) => x?.class === 'place') ?? arr[0];
+    const places = arr.filter((x) => x?.class === 'place' && PLACE_TYPES.has(String(x?.type ?? '')));
+    return places[0] ?? null;
   }
 
   try {

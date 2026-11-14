@@ -74,14 +74,12 @@ export function composeToolAnswer(fact) {
  * Детерминированная проверка ответа по фактам инструментов (дополнение §6:
  * «действительно ли выполнен запрошенный инструмент; не выдуманы ли…»).
  * Возвращает { text, replaced, issues }:
- *  - погода ok: в ответе должны быть ТОЛЬКО числа сервиса (°) — иначе
- *    ответ заменяется составленным (модельный текст ненадёжен для чисел);
- *  - погода !ok: любые «°» в ответе — выдумка, заменяем на честный отказ;
+ *  - погода (ok и !ok): ответ ВСЕГДА собирается детерминированно из факта
+ *    инструмента — модельный пересказ чисел ненадёжен (E2E: «давление -5°C»);
  *  - вычисление ok: точный результат обязан быть в ответе — иначе дописываем.
  */
 export function verifyToolAnswers({ meta, text }) {
   const t = String(text ?? '');
-  const facts = meta?.facts ?? [];
   const factList = meta?.__factDetails ?? [];
   const weather = factList.find((f) => f?.kind === 'погода');
   if (weather) {
@@ -92,17 +90,11 @@ export function verifyToolAnswers({ meta, text }) {
       // честным текстом — без выдуманных температур и без путаницы.
       return { text: composeToolAnswer(weather), replaced: true, issues: ['ответ заменён детерминированным честным отказом'] };
     }
-    const d = weather.data ?? {};
-    const allowed = new Set([Math.round(d.temperatureC), Math.round(d.apparentC ?? NaN)].filter(Number.isFinite));
-    const nums = [...t.matchAll(/([-+]?\d{1,2}(?:[.,]\d)?)\s*°/g)].map((m) => Math.round(Number(m[1].replace(',', '.'))));
-    const grounded = nums.length > 0 && nums.every((n) => allowed.has(n));
-    if (!grounded) {
-      return { text: composeToolAnswer(weather), replaced: true, issues: ['в ответе нет точных данных источника — подставлены данные Open-Meteo'] };
-    }
-    if (!/open-meteo/i.test(t)) {
-      return { text: `${t}\nИсточник: Open-Meteo — ${d.source ?? 'https://open-meteo.com'} (наблюдение ${d.observedAt ?? '—'}).`, replaced: false, issues: [] };
-    }
-    return { text: t, replaced: false, issues: [] };
+    // Числа сервиса не доверяются пересказу даже «заземлённой» модели:
+    // E2E v0.6.4 — 0.5B при сервисных «-4.8 °C» выдала «давление -5°C,
+    // влажность -85%». Погодный ответ всегда собирается приложением из
+    // фактов сервиса — числа в нём выдумать невозможно.
+    return { text: composeToolAnswer(weather), replaced: true, issues: ['ответ собран из данных Open-Meteo детерминированно'] };
   }
   const math = factList.find((f) => f?.kind === 'вычисление');
   if (math?.ok) {
@@ -238,14 +230,18 @@ export function createIntelligenceLayer({ config, engine, logger = null, memory 
 
   const hasHost = () => Boolean(host && typeof host === 'object');
 
-  async function doWeather(place) {
-    if (!web?.enabled?.()) {
+  async function doWeather(place, globeEnabled) {
+    // Два выключателя (ТЗ §5): мастер-доступ в Настройках и кнопка «земной
+    // шар» в чате. Интернет-инструменты работают только когда включены ОБА.
+    if (!globeEnabled || !web?.enabled?.()) {
       return {
         kind: 'погода',
         ok: false,
         webOff: true,
         retrievedAt: new Date().toISOString(),
-        text: 'Интернет выключен. Я НЕ могу проверить актуальную погоду и НЕ буду выдумывать температуру. Скажите пользователю прямо: для текущей погоды включите доступ к интернету (кнопка «земной шар») и повторите запрос.'
+        text: globeEnabled
+          ? 'Интернет выключен (доступ к интернету в Настройках). Я НЕ могу проверить актуальную погоду и НЕ буду выдумывать температуру. Скажите пользователю прямо: включите доступ к интернету в Настройках и повторите запрос.'
+          : 'Кнопка «земной шар» в этом чате выключена. Актуальную погоду я не проверял и выдумывать НЕ буду. Скажите пользователю прямо: включите кнопку «земной шар» рядом с полем ввода и повторите запрос.'
       };
     }
     try {
@@ -260,11 +256,13 @@ export function createIntelligenceLayer({ config, engine, logger = null, memory 
     }
   }
 
-  async function doSearch(query, { signal } = {}) {
-    if (!web?.enabled?.()) {
+  async function doSearch(query, { signal, globeEnabled = false } = {}) {
+    if (!globeEnabled || !web?.enabled?.()) {
       return {
         kind: 'поиск', ok: false, webOff: true, retrievedAt: new Date().toISOString(),
-        text: 'Интернет выключен (кнопка «земной шар»). Актуальные сведения проверить не могу — ответь без выдуманных фактов и предупреди пользователя.'
+        text: globeEnabled
+          ? 'Интернет выключен (доступ к интернету в Настройках). Актуальные сведения проверить не могу — ответь без выдуманных фактов и предупреди пользователя.'
+          : 'Кнопка «земной шар» в этом чате выключена. Актуальные сведения проверить не могу — ответь без выдуманных фактов и предупреди пользователя, что для поиска в интернете нужно включить кнопку «земной шар».'
       };
     }
     try {
@@ -377,11 +375,11 @@ export function createIntelligenceLayer({ config, engine, logger = null, memory 
       switch (intent.intent) {
         case 'weather':
           meta.toolsRun.push('погода');
-          facts.push(await doWeather(intent.slots.place));
+          facts.push(await doWeather(intent.slots.place, globeEnabled));
           break;
         case 'search': {
           meta.toolsRun.push('поиск');
-          const r = await doSearch(userText, { signal });
+          const r = await doSearch(userText, { signal, globeEnabled });
           facts.push(r);
           if (r.ok && r.sources) meta.sources = r.sources;
           break;
@@ -434,7 +432,9 @@ export function createIntelligenceLayer({ config, engine, logger = null, memory 
     const okFacts = facts.filter(Boolean);
     if (okFacts.length) {
       // Детали фактов — для детерминированной проверки ответа (числа сервиса).
-      meta.__factDetails = okFacts.map((f) => ({ kind: f.kind, ok: f.ok, data: f.data ?? null }));
+      // webOff/error обязательны: composeToolAnswer различает «интернет
+      // выключен» и «сервис недоступен» — без них отказ говорит не о том.
+      meta.__factDetails = okFacts.map((f) => ({ kind: f.kind, ok: f.ok, data: f.data ?? null, webOff: f.webOff === true, error: f.error ?? null }));
       const block = okFacts.map((f) => factBlock(f.kind, f)).join('\n\n');
       // Факты идут СТРОГО перед последним сообщением пользователя — стабильный
       // префикс (system + история) остаётся кэшируемым.

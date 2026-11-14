@@ -53,6 +53,22 @@ try {
   console.log('WARM status=', warm.status, '→ text:', String(wd.choices?.[0]?.message?.content ?? '(пусто)').slice(0, 120));
   console.log('WARM timings:', JSON.stringify(wd.litemind?.timings ?? wd.error ?? null));
 
+  // 4. Честность: выключаем интернет → чат с глобусом (как шаг 5 E2E)
+  const setRes = await fetch(`${BASE}/api/settings`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ web: { enabled: false } })
+  });
+  const setD = await setRes.json();
+  console.log('SETTINGS OFF status=', setRes.status, '→ web.enabled =', setD.web?.enabled);
+  const honest = await fetch(`${BASE}/v1/chat/completions`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'Qwen2.5-0.5B-Instruct-Q4_K_M', messages: [{ role: 'user', content: 'Какая погода в Иркутске прямо сейчас?' }], stream: false, web_globe: true, intelligence_mode: 'smart' })
+  });
+  const hd = await honest.json();
+  console.log('HONEST status=', honest.status, '→', JSON.stringify(hd.litemind?.intelligence ?? null).slice(0, 300));
+  console.log('HONEST TEXT:', String(hd.choices?.[0]?.message?.content ?? hd.error?.message ?? '(пусто)').slice(0, 200));
+  await fetch(`${BASE}/api/settings`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ web: { enabled: true } }) });
+
   console.log('ENGINE LOG (последние строки):');
   const logFile = path.join(WORK, 'logs', fs.readdirSync(path.join(WORK, 'logs')).at(-1));
   console.log(fs.readFileSync(logFile, 'utf8').split('\n').slice(-14).join('\n'));

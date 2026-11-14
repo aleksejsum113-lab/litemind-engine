@@ -30,7 +30,8 @@ const config = {
   // и резервом 512 МБ убирает флаковые блоки memory-gate. На реальном ПК
   // 16 ГБ работает профиль пользователя.
   profile: 'high',
-  profiles: { high: { contextTokens: 4096, memoryReserveMb: 512, kvOverheadKbPerToken: 24 } }
+  profiles: { high: { contextTokens: 4096, memoryReserveMb: 512, kvOverheadKbPerToken: 24 } },
+  resource: { maxRamUsageFraction: 0.95 } // гейт 75% флакует в песочнице 4 ГБ; сам cap покрыт юнит-тестами
 };
 fs.writeFileSync(path.join(WORK, 'config.json'), JSON.stringify(config));
 process.env.LITEMIND_CONFIG = path.join(WORK, 'config.json');
@@ -95,7 +96,9 @@ try {
     sr?.results?.length ? `${sr.results.length} шт., первый: ${sr.results[0].url}` : (sr?.error?.message ?? 'нет данных'));
 
   // ── 5. Интернет ВЫКЛЮЧЕН: честный отказ ──────────────────────────────────
-  await fetch(`${BASE}/api/settings`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ web: { enabled: false } }) });
+  const offRes = await fetch(`${BASE}/api/settings`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ web: { enabled: false } }) });
+  const offState = await offRes.json();
+  check('переключатель интернета реально выключился', offState?.web?.enabled === false, `web.enabled=${offState?.web?.enabled}`);
   const honest = await chatOnce({ globe: true, messages: [{ role: 'user', content: 'Какая погода в Иркутске прямо сейчас?' }] });
   check('без интернета: модель НЕ выдумывает погоду',
     /не могу (проверить|узнать)|выключен|недоступен|не провер/i.test(String(honest.text)) && !/-\s*\d+\s*°|\+\s*\d+\s*°/.test(String(honest.text)),
@@ -122,7 +125,7 @@ try {
     `state=${finalView?.state}, шагов=${finalView?.stats?.steps}, ${Math.round((Date.now() - tA) / 1000)} с`);
   const toolOk = (finalView?.messages ?? []).some((m) => m.role === 'tool' && m.tool === 'weather' && m.ok);
   check('агент вызвал инструмент погоды и получил данные', toolOk);
-  const agentText = (finalView?.messages ?? []).filter((m) => m.role === 'assistant').map((m) => m.text).join(' ');
+  const agentText = (finalView?.messages ?? []).filter((m) => m.role === 'assistant' || (m.role === 'event' && m.type === 'report')).map((m) => m.text).join(' ');
   check('итоговый ответ агента с температурой/источником', /open-meteo|°|температур/i.test(agentText), agentText.slice(0, 160));
 
   // ── 7. Память: сохранить → использовать в чате ───────────────────────────
