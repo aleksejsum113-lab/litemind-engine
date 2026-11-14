@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import { app } from "electron"
 import { debugBuild, memoryLogInterval } from "@opencode/gui-plugins/debug/options"
-import { APP_ID, APP_NAME, CHANNEL } from "../constants"
+import { APP_ID, APP_NAME, CHANNEL, STORAGE_ID } from "../constants"
 import { remoteDebuggingPort } from "../diagnostics/options"
 
 const testOnboarding = process.env.OPENCODE_TEST_ONBOARDING === "1"
@@ -44,7 +44,10 @@ export function configureApplication() {
     app.commandLine.appendSwitch("enable-precise-memory-info")
 
   const testRoot = createTestRoot()
-  app.setPath("userData", testRoot ? path.join(testRoot, "desktop") : path.join(app.getPath("appData"), APP_ID))
+  // ТЗ v0.6.4 §2: userData привязан к STORAGE_ID (историческое имя каталога),
+  // а не к AppUserModelID — смена AUMID на ai.litemind.desktop не должна
+  // переносить или терять чаты/настройки при обновлении поверх v0.6.3.
+  app.setPath("userData", testRoot ? path.join(testRoot, "desktop") : path.join(app.getPath("appData"), STORAGE_ID))
 
   if (testRoot) {
     app.setPath("sessionData", path.join(testRoot, "session"))

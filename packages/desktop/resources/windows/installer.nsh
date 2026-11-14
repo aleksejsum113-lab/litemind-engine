@@ -31,6 +31,18 @@
   nsExec::ExecToLog '"$SYSDIR\icacls.exe" "$INSTDIR" /grant "*S-1-15-2-2:(OI)(CI)(RX)"'
   Pop $0
   !insertmacro leaveSharedInstall
+  ; ── ТЗ v0.6.4 §2: починка закреплённого значка на панели задач ─────────────
+  ; В v0.6.1–v0.6.3 окно регистрировалось под чужим AppUserModelID
+  ; (ai.opencode.desktop), поэтому закреплённый пользователем ярлык хранил
+  ; неверную идентичность, и Windows рисовала на панели задач значок OpenCode.
+  ; Приложение теперь живёт под ai.litemind.desktop — тем же id, что и у ярлыка
+  ; установщика. Закреплённый ярлык «LiteMind Engine» переписываем на новый exe
+  ; и корректный AUMID, чтобы после обновления значок был собственным при
+  ; каждом запуске (критерий ТЗ: закрепить → закрыть → запустить — значок LiteMind).
+  ${If} ${FileExists} "$QUICKLAUNCH\User Pinned\TaskBar\${SHORTCUT_NAME}.lnk"
+    CreateShortCut "$QUICKLAUNCH\User Pinned\TaskBar\${SHORTCUT_NAME}.lnk" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" 0
+    WinShell::SetLnkAUMI "$QUICKLAUNCH\User Pinned\TaskBar\${SHORTCUT_NAME}.lnk" "${APP_ID}"
+  ${EndIf}
 !macroend
 
 ; Removes this channel's files from the shared directory, and the directory with the files every
