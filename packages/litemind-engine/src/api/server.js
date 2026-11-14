@@ -2301,8 +2301,17 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
           sampler: genSampler
         });
         // Самопроверка (дополнение §6): очистка служебных токенов + проверка.
-        const cleaned = intelligence.cleanReplyText(result.text);
+        let cleaned = intelligence.cleanReplyText(result.text);
         const userText = [...genMessages].reverse().find((m) => m.role === 'user')?.content ?? '';
+        // Детерминированная проверка по фактам инструментов: выдуманная
+        // температура/неверный результат вычисления заменяются честным ответом.
+        try {
+          const verified = intelligence.verifyToolAnswers({ meta: prep?.meta ?? null, text: cleaned });
+          if (verified.replaced) {
+            logger?.warn?.('tool answer replaced by deterministic answer', { issues: verified.issues });
+            cleaned = intelligence.cleanReplyText(verified.text);
+          }
+        } catch { /* проверка не должна ломать чат */ }
         const verdict = intelligence.checkReply({ text: cleaned, userText });
         return json(res, 200, {
           id,
@@ -2376,10 +2385,22 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
         usage: result.usage ?? null,
         server: result.server ?? null
       };
+      // ── Детерминированная проверка фактов: выдуманная температура/вычисление
+      // заменяются честным ответом приложения (стрим получает replace-чанк). ──
+      let streamText = result.text;
+      try {
+        const verified = intelligence.verifyToolAnswers({ meta: prep?.meta ?? null, text: streamText });
+        if (verified.replaced) {
+          logger?.warn?.('stream tool answer replaced', { issues: verified.issues });
+          streamText = intelligence.cleanReplyText(verified.text);
+          send({ id, object: 'chat.completion.chunk', created, model, revision: true, replace: true, choices: [{ index: 0, delta: { content: streamText }, finish_reason: null }] });
+        }
+      } catch { /* не ломаем чат */ }
+
       // ── Самопроверка (дополнение §6): НЕ более одной исправляющей попытки и
       // только в экспертном режиме, чтобы не замедлять слабый ПК. ──
       const userText = [...genMessages].reverse().find((m) => m.role === 'user')?.content ?? '';
-      let verdict = intelligence.checkReply({ text: result.text, userText });
+      let verdict = intelligence.checkReply({ text: streamText, userText });
       const selfcheckMeta = { ...verdict, mode: prep?.meta?.mode ?? null, revised: false };
       if (!verdict.ok && (prep?.meta?.mode ?? 'smart') === 'expert' && !abort.signal.aborted) {
         logger?.warn?.('selfcheck failed — одна исправляющая попытка', { issues: verdict.issues });

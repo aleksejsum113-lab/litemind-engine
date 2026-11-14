@@ -35,6 +35,77 @@ export const MODES = { quick: 'Быстрый', smart: 'Умный', expert: 'Э
 const LEAK_RE = /<\|im_(start|end)\|>|<\|[A-Za-z_]{2,24}\|>|<start_of_turn>|<end_of_turn>|###\s*(Instruction|Response)/i;
 
 /**
+ * Составить честный ответ из факта инструмента — БЕЗ участия модели
+ * (дополнение ТЗ §1: «для простых и типовых действий использовать надёжные
+ * алгоритмы на стороне LiteMind»). Такой ответ невозможно «выдумать».
+ */
+export function composeToolAnswer(fact) {
+  const at = new Date().toISOString();
+  if (fact?.kind === 'погода') {
+    if (!fact.ok) {
+      return [
+        'Интернет выключен, поэтому актуальную погоду проверить не могу —',
+        'называть температуру догадкой не буду.',
+        'Включите кнопку «земной шар» (и доступ к интернету в Настройках),',
+        'и я покажу реальную погоду с источником и временем наблюдения.'
+      ].join(' ');
+    }
+    const d = fact.data ?? {};
+    const bits = [`Сейчас ${d.place ?? 'в выбранном месте'}: ${d.temperatureC > 0 ? '+' : ''}${d.temperatureC} °C, ${d.description ?? ''}`];
+    if (d.apparentC != null) bits.push(`ощущается как ${d.apparentC} °C`);
+    if (d.windKph != null) bits.push(`ветер ${d.windKph} км/ч`);
+    if (d.humidityPct != null) bits.push(`влажность ${d.humidityPct}%`);
+    return `${bits.join(', ')}. Наблюдение: ${d.observedAt ?? '—'} (местное время). Источник: Open-Meteo — ${d.source ?? 'https://open-meteo.com'} (получено ${d.retrievedAt ?? at}).`;
+  }
+  return null;
+}
+
+/**
+ * Детерминированная проверка ответа по фактам инструментов (дополнение §6:
+ * «действительно ли выполнен запрошенный инструмент; не выдуманы ли…»).
+ * Возвращает { text, replaced, issues }:
+ *  - погода ok: в ответе должны быть ТОЛЬКО числа сервиса (°) — иначе
+ *    ответ заменяется составленным (модельный текст ненадёжен для чисел);
+ *  - погода !ok: любые «°» в ответе — выдумка, заменяем на честный отказ;
+ *  - вычисление ok: точный результат обязан быть в ответе — иначе дописываем.
+ */
+export function verifyToolAnswers({ meta, text }) {
+  const t = String(text ?? '');
+  const facts = meta?.facts ?? [];
+  const factList = meta?.__factDetails ?? [];
+  const weather = factList.find((f) => f?.kind === 'погода');
+  if (weather) {
+    if (!weather.ok) {
+      if (/°\s*[cс]?|-\s*\d+\s*°|\+\s*\d+\s*°/.test(t) || /\d+\s*(градус|градуса|градусов)/i.test(t)) {
+        return { text: composeToolAnswer(weather), replaced: true, issues: ['выдуманная температура заменена честным отказом'] };
+      }
+      // Модель честно отказалась сама — оставляем, но при пустом ответе подставляем.
+      if (!t.trim()) return { text: composeToolAnswer(weather), replaced: true, issues: ['пустой ответ заменён'] };
+      return { text: t, replaced: false, issues: [] };
+    }
+    const d = weather.data ?? {};
+    const allowed = new Set([Math.round(d.temperatureC), Math.round(d.apparentC ?? NaN)].filter(Number.isFinite));
+    const nums = [...t.matchAll(/([-+]?\d{1,2}(?:[.,]\d)?)\s*°/g)].map((m) => Math.round(Number(m[1].replace(',', '.'))));
+    const grounded = nums.length > 0 && nums.every((n) => allowed.has(n));
+    if (!grounded) {
+      return { text: composeToolAnswer(weather), replaced: true, issues: ['в ответе нет точных данных источника — подставлены данные Open-Meteo'] };
+    }
+    if (!/open-meteo/i.test(t)) {
+      return { text: `${t}\nИсточник: Open-Meteo — ${d.source ?? 'https://open-meteo.com'} (наблюдение ${d.observedAt ?? '—'}).`, replaced: false, issues: [] };
+    }
+    return { text: t, replaced: false, issues: [] };
+  }
+  const math = factList.find((f) => f?.kind === 'вычисление');
+  if (math?.ok) {
+    const m = String(math.data?.result ?? '');
+    if (m && !t.includes(m.replace(/\.0+$/, ''))) {
+      return { text: `${t}\nТочный результат: ${math.data.expression} = ${math.data.result} (вычислено калькулятором LiteMind).`, replaced: false, issues: [] };
+    }
+  }
+  return { text: t, replaced: false, issues: [] };
+}
+
+/**
  * Самопроверка ответа (дополнение §6): соответствует ли вопросу (непустой),
  * нет ли утечек шаблона, зацикленных повторов, перепутанных ролей, выдуманных
  * погодных цифр. Дешёвая (регулярки), для слабого ПК — 0 мс и 0 вызовов модели.
@@ -222,6 +293,7 @@ export function createIntelligenceLayer({ config, engine, logger = null, memory 
     if (!found) return null;
     return {
       kind: 'вычисление', ok: true, retrievedAt: new Date().toISOString(),
+      data: { expression: found.expression, result: found.result },
       text: `Точный результат выражения ${found.expression} = ${found.result}. Сообщи этот результат пользователю; объяснять вычисление не нужно, если не просили.`
     };
   }
@@ -350,6 +422,8 @@ export function createIntelligenceLayer({ config, engine, logger = null, memory 
 
     const okFacts = facts.filter(Boolean);
     if (okFacts.length) {
+      // Детали фактов — для детерминированной проверки ответа (числа сервиса).
+      meta.__factDetails = okFacts.map((f) => ({ kind: f.kind, ok: f.ok, data: f.data ?? null }));
       const block = okFacts.map((f) => factBlock(f.kind, f)).join('\n\n');
       // Факты идут СТРОГО перед последним сообщением пользователя — стабильный
       // префикс (system + история) остаётся кэшируемым.
@@ -364,6 +438,8 @@ export function createIntelligenceLayer({ config, engine, logger = null, memory 
   return {
     prepareRequest,
     checkReply,
+    verifyToolAnswers,
+    composeToolAnswer,
     cleanReplyText,
     mode,
     tools: { doWeather, doSearch: (q, o) => doSearch(q, o), doClock, doMath, doScreen: (t) => doScreen(t) },
