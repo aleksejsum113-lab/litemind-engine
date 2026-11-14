@@ -319,6 +319,13 @@
       let m;
       try { m = JSON.parse(ev.data); } catch { return; }
       if (m.role === 'delta') { showStreaming(m.text); return; }
+      // ТЗ v0.6.4: видимые статусы этапов (анализ, поиск, получение источников,
+      // выполнение, готово) — мгновенно в строке статуса, в диалог не попадают.
+      if (m.role === 'stage') {
+        if ($('agent-stage')) $('agent-stage').textContent = 'Этап: ' + (m.text ?? '');
+        setStateBadge('running');
+        return;
+      }
       if (m.id && m.id <= cursor) return;
       appendMsg(m);
       if (m.type === 'confirmation') setStateBadge('awaiting_confirmation');

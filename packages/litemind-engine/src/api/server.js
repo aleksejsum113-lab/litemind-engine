@@ -331,7 +331,7 @@ export function createServer({ config, engine, logger, downloads: downloadsOverr
 
     // --- dashboard static ----------------------------------------------
     if (req.method === 'GET' && (p === '/' || p === '/index.html')) return serveFile(res, 'index.html');
-    if (req.method === 'GET' && (p === '/app.js' || p === '/agent-ui.js' || p === '/discovery-ui.js' || p === '/style.css')) return serveFile(res, p.slice(1));
+    if (req.method === 'GET' && (p === '/app.js' || p === '/agent-ui.js' || p === '/discovery-ui.js' || p === '/companion-ui.js' || p === '/style.css')) return serveFile(res, p.slice(1));
 
     // --- health / status --------------------------------------------------
     if (req.method === 'GET' && p === '/health') {

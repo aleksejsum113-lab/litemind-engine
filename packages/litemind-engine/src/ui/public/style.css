@@ -819,3 +819,82 @@ details.glossary .glossary-body { margin-top: 8px; font-size: 13px; line-height:
 .modal-actions button:hover { background: var(--bg); }
 .modal-actions .modal-ok { background: var(--accent, #6c8cff); border-color: var(--accent, #6c8cff); color: #fff; }
 .modal-actions .modal-ok:hover { filter: brightness(1.08); background: var(--accent, #6c8cff); }
+
+/* ============================ ТЗ v0.6.4: компаньон, глобус, источники ============================ */
+
+/* Кнопка «земной шар» в композере чата: активное состояние подсвечивается. */
+.globe-btn { position: relative; }
+.globe-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.globe-btn.active::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.icon-btn.composer-icon.active { background: var(--accent-soft); color: var(--accent); }
+
+/* Источники под ответом (ТЗ §5.2): видны ссылки и дата получения данных. */
+.msg-sources {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  font-size: 12.5px;
+}
+.msg-sources .src-title { color: var(--text-dim); margin-bottom: 4px; font-weight: 600; }
+.msg-sources a { display: block; color: var(--accent); text-decoration: none; padding: 1px 0; word-break: break-all; }
+.msg-sources a:hover { text-decoration: underline; }
+
+/* Заметка самопроверки (дополнение §6). */
+.selfcheck-note { margin-top: 6px; font-size: 12px; color: var(--warn); }
+.selfcheck-note.ok { color: var(--ok); }
+
+/* ── Панель компаньона ── */
+.comp-tabs { margin-bottom: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+.comp-tabs button { border: 1px solid var(--border); background: var(--bg-elev); color: var(--text-dim); padding: 6px 12px; border-radius: 10px; cursor: pointer; font: inherit; font-size: 13px; }
+.comp-tabs button.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.comp-row { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px dashed var(--border); font-size: 13.5px; }
+.comp-row span { color: var(--text-dim); }
+.comp-row b { text-align: right; font-weight: 500; }
+.comp-list { margin-bottom: 10px; }
+.comp-features { margin: 0; padding-left: 18px; color: var(--text-dim); font-size: 13.5px; }
+.comp-features b { color: var(--text); }
+.comp-due { margin: 0; padding-left: 18px; color: var(--text); }
+.comp-mem-list li { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.comp-mem-item.pinned { border-left: 3px solid var(--accent); padding-left: 8px; }
+.comp-mem-text { font-size: 13.5px; }
+.comp-mem-meta { font-size: 11.5px; color: var(--text-dim); margin: 3px 0 6px; }
+.comp-task { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.comp-task-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.comp-task-check { color: var(--accent); }
+.comp-task.done .comp-task-text { text-decoration: line-through; color: var(--text-dim); }
+.comp-task-text { font-size: 13.5px; }
+.comp-task-when { font-size: 12px; color: var(--text-dim); margin-left: auto; }
+.comp-voice-list { margin: 0 0 8px; padding-left: 18px; font-size: 13.5px; }
+.comp-voice-list li { padding: 4px 0; }
+.comp-voice-list button { margin-left: 8px; }
+.comp-chars { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.comp-chars label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.comp-char-preview { display: inline-flex; width: 34px; height: 34px; border-radius: 50%; align-items: center; justify-content: center; font-size: 17px; color: #fff; }
+.cp-lumi { background: radial-gradient(circle at 35% 35%, #9fb8ff, #4a6bff); }
+.cp-spark { background: radial-gradient(circle at 40% 35%, #ffd98a, #ff8a3d); }
+.cp-orb { background: radial-gradient(circle at 38% 32%, #a5f0d8, #2fae83); }
+.grow { flex: 1; }
+#comp-content .card h3 { font-size: 13px; margin: 14px 0 6px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
+
+/* ── Компактный список моделей (ТЗ §7): строки вместо больших карточек ── */
+#my-models.model-list li,
+#my-models.model-list .model-item-main { padding-top: 6px; padding-bottom: 6px; }
+#my-models .model-item-sub { font-size: 11.5px; }
+#my-models .model-item-actions button { padding: 3px 9px; font-size: 11.5px; }
+.model-list li { list-style: none; }

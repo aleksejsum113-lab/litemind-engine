@@ -31,7 +31,8 @@ const TAB_TITLES = {
   agent: 'AI Agent', imagegen: 'Изображения', discovery: 'Новые модели',
   chat: 'ИИ-чат', models: 'Модели', catalog: 'Каталог', downloads: 'Загрузки',
   projects: 'Проекты', workspace: 'Workspace', terminal: 'AI Terminal', home: 'Состояние',
-  hardware: 'Железо', monitor: 'Мониторинг', control: 'Управление', settings: 'Настройки'
+  hardware: 'Железо', monitor: 'Мониторинг', control: 'Управление', settings: 'Настройки',
+  companion: 'Компаньон'
 };
 function setTitlebarPage(name) {
   const el = $('tb-page');
@@ -211,7 +212,8 @@ const TAB_LOADERS = {
   monitor: loadMonitor, control: refreshControl, home: refreshStatus,
   chat: loadChat, projects: loadProjects, workspace: loadWorkspace, terminal: loadTerminal,
   agent: () => window.__litemindLoadAgent?.(), imagegen: loadImageGen,
-  discovery: () => window.__litemindLoadDiscovery?.()
+  discovery: () => window.__litemindLoadDiscovery?.(),
+  companion: () => window.__litemindLoadCompanion?.()
 };
 
 function switchTab(rawName) {
@@ -817,6 +819,194 @@ on('model', 'change', () => {
   void startModelIfNeeded(v);
 });
 
+/* Мосты для companion-ui.js (функции объявлены ниже по коду). */
+window.__litemindEvent = event;
+window.__litemindModalPrompt = modalPrompt;
+window.__litemindShowError = showError;
+
+/* ============================ Интернет («земной шар») ============================ */
+/* ТЗ v0.6.4 §5: настоящий переключатель доступа к интернету для каждого чата.
+   Включён → запрос помечается web_globe=true и Intelligence Layer выполняет
+   реальные инструменты (Open-Meteo, DuckDuckGo) и подставляет факты с датой и
+   источником. Выключен → модель отвечает локально и честно предупреждает, что
+   актуальные сведения проверить не может. */
+function globeOn() {
+  const c = activeChat();
+  return Boolean(c?.globe);
+}
+function syncGlobeButton() {
+  const b = $('btn-globe');
+  if (!b) return;
+  const on = globeOn();
+  b.classList.toggle('active', on);
+  b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  b.title = on
+    ? 'Интернет включён: поиск и актуальные данные разрешены (источники показываются под ответом). Нажмите, чтобы выключить.'
+    : 'Интернет выключен — нажмите, чтобы разрешить поиск и актуальные данные (погода, новости).';
+}
+on('btn-globe', 'click', () => {
+  const c = activeChat();
+  if (!c) return;
+  c.globe = !c.globe;
+  saveChats();
+  syncGlobeButton();
+  event(c.globe ? 'интернет включён для этого чата (земной шар активен)' : 'интернет выключен для этого чата');
+  if (c.globe) {
+    // Честная проверка: доступ может быть запрещён в настройках движка.
+    api('/api/settings').then((s) => {
+      if (!s.web?.enabled) {
+        chatError('Доступ к интернету запрещён в настройках движка. Включите его: Настройки → Интернет → «Разрешить доступ к интернету», затем пользуйтесь глобусом.');
+      }
+    }).catch(() => {});
+  }
+});
+
+/* Режим интеллекта (дополнение ТЗ §7): Быстрый — минимум контекста; Умный —
+   память + инструменты; Экспертный — плюс самопроверка с исправляющей попыткой.
+   Значение уходит с каждым запросом (intelligence_mode). */
+try { $('mode').value = localStorage.getItem('litemind-mode') || 'smart'; } catch { /* */ }
+on('mode', 'change', () => {
+  try { localStorage.setItem('litemind-mode', $('mode').value); } catch { /* */ }
+  event(`режим интеллекта: ${$('mode').selectedOptions[0]?.textContent ?? $('mode').value}`);
+});
+
+/* ============================ Голос (Push-to-Talk и озвучивание) ============================ */
+/* Локальные движки (whisper.cpp + piper) устанавливаются в разделе «Компаньон →
+   Голос». Здесь: запись с микрофона только пока удерживается кнопка/клавиша,
+   распознавание в поле ввода и озвучивание ответов, если включено пользователем. */
+state.voice = { status: null, recording: false };
+async function refreshVoiceCaps() {
+  try {
+    state.voice.status = await api('/api/voice/status');
+    const mic = $('btn-mic');
+    if (mic) mic.hidden = !(state.voice.status?.asr?.installed);
+  } catch { /* движок недоступен */ }
+}
+function setVoiceSettings(patch) {
+  return api('/api/voice/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
+    .then((r) => { state.voice.status = null; return r; });
+}
+
+/* WAV-запись без зависимостей: ScriptProcessorNode → PCM16 → WAV. Микрофон
+   включается ТОЛЬКО на время удержания (ТЗ §9: не держать фон без разрешения). */
+function createWavRecorder() {
+  let ctx = null;
+  let processor = null;
+  let stream = null;
+  const chunks = [];
+  let sampleRate = 48000;
+  return {
+    async start() {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      sampleRate = ctx.sampleRate;
+      const src = ctx.createMediaStreamSource(stream);
+      processor = ctx.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (e) => {
+        const d = e.inputBuffer.getChannelData(0);
+        chunks.push(new Float32Array(d));
+      };
+      src.connect(processor);
+      processor.connect(ctx.destination);
+    },
+    async stop() {
+      try { processor?.disconnect(); } catch { /* */ }
+      try { stream?.getTracks().forEach((t) => t.stop()); } catch { /* */ }
+      try { await ctx?.close(); } catch { /* */ }
+      ctx = null;
+      const total = chunks.reduce((a, c) => a + c.length, 0);
+      if (!total) return null;
+      const wav = new ArrayBuffer(44 + total * 2);
+      const view = new DataView(wav);
+      const wstr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+      wstr(0, 'RIFF'); view.setUint32(4, 36 + total * 2, true); wstr(8, 'WAVEfmt ');
+      view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+      wstr(36, 'data'); view.setUint32(40, total * 2, true);
+      let off = 44;
+      for (const c of chunks) {
+        for (let i = 0; i < c.length; i++, off += 2) {
+          const s = Math.max(-1, Math.min(1, c[i]));
+          view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        }
+      }
+      return new Blob([wav], { type: 'audio/wav' });
+    },
+    get seconds() { return chunks.length ? (chunks.reduce((a, c) => a + c.length, 0) / sampleRate) : 0; }
+  };
+}
+
+let micRecorder = null;
+async function micStart() {
+  if (state.voice.recording) return;
+  if (!state.voice.status?.asr?.installed) {
+    chatError('Распознавание речи не установлено. Установите его в разделе «Компаньон → Голос» (локально, ~82 МБ, без облака).');
+    return;
+  }
+  try {
+    micRecorder = createWavRecorder();
+    await micRecorder.start();
+    state.voice.recording = true;
+    $('btn-mic').classList.add('active');
+    $('btn-mic').title = 'Идёт запись… отпустите кнопку, чтобы распознать речь';
+  } catch (err) {
+    chatError('Микрофон недоступен: ' + err.message);
+    micRecorder = null;
+  }
+}
+async function micStop() {
+  if (!state.voice.recording || !micRecorder) return;
+  state.voice.recording = false;
+  $('btn-mic').classList.remove('active');
+  $('btn-mic').title = 'Голосовой ввод: удерживайте и говорите (Push-to-Talk)';
+  const rec = micRecorder;
+  micRecorder = null;
+  const blob = await rec.stop();
+  if (!blob || rec.seconds < 0.3) { runStateNote('запись короткая — речь не распознана'); return; }
+  runStateNote('распознаю речь…');
+  try {
+    const b64 = arrayBufferToBase64(await blob.arrayBuffer());
+    const r = await api('/api/voice/asr', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wavBase64: b64 }) });
+    if (r.ok && r.text) {
+      const ta = $('prompt');
+      ta.value = (ta.value ? ta.value + ' ' : '') + r.text;
+      autoGrow();
+      runStateNote(`речь распознана за ${Math.round(r.ms / 100) / 10} с`);
+      setTimeout(() => { if ($('run-state').textContent.startsWith('речь распознана')) $('run-state').textContent = ''; }, 4000);
+    } else {
+      chatError('Распознавание не удалось: ' + (r.error ?? 'пустой результат'));
+    }
+  } catch (err) {
+    chatError('Распознавание речи: ' + err.message);
+  }
+}
+function runStateNote(t) { const el = $('run-state'); if (el) el.textContent = t; }
+on('btn-mic', 'mousedown', () => void micStart());
+on('btn-mic', 'mouseup', () => void micStop());
+on('btn-mic', 'mouseleave', () => { if (state.voice.recording) void micStop(); });
+on('btn-mic', 'touchstart', (e) => { e.preventDefault(); void micStart(); });
+on('btn-mic', 'touchend', (e) => { e.preventDefault(); void micStop(); });
+window.addEventListener('keydown', (e) => {
+  // Ctrl+Пробел — глобальный Push-to-Talk внутри окна чата (хоткеи всего
+  // приложения настраиваются в Desktop, ТЗ компаньон §8).
+  if (e.ctrlKey && e.code === 'Space' && !e.repeat) { e.preventDefault(); void micStart(); }
+});
+window.addEventListener('keyup', (e) => {
+  if (e.ctrlKey && e.code === 'Space') { e.preventDefault(); void micStop(); }
+});
+
+/* Озвучивание ответа: piper генерирует WAV локально, браузер проигрывает его. */
+async function speakText(text) {
+  const st = state.voice.status ?? await api('/api/voice/status').catch(() => null);
+  if (!st?.tts?.installed) return { ok: false, error: 'not-installed' };
+  const r = await api('/api/voice/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: String(text ?? '').slice(0, 900) }) });
+  if (!r.ok) return r;
+  const audio = new Audio(`${ENGINE_BASE}/api/voice/wav?name=${encodeURIComponent(r.wav)}`);
+  await audio.play().catch(() => {});
+  return r;
+}
+
 /* ============================ AI Chat — сессии ============================ */
 const CHATS_KEY = 'litemind-chats-v2';
 const ACTIVE_CHAT_KEY = 'litemind-active-chat-v2';
@@ -972,6 +1162,7 @@ function renderChatList() {
         renderChatList();
         renderMessages();
         restoreChatModel(c);
+        syncGlobeButton(); // глобус — свойство конкретного чата
       } else {
         switchTab('chat');
       }
@@ -1070,6 +1261,21 @@ function msgBubble(m, { streaming = false, last = false } = {}) {
         actions.appendChild(regen);
       }
       body.appendChild(actions);
+      // ТЗ v0.6.4: источники из интернета и заметка самопроверки — и после
+      // перезагрузки окна (данные хранятся в сообщении).
+      if (Array.isArray(m.sources) && m.sources.length) renderSources(body, m.sources);
+      if (Array.isArray(m.selfcheckIssues) && m.selfcheckIssues.length) {
+        const note = document.createElement('div');
+        note.className = 'selfcheck-note';
+        note.textContent = '⚠ самопроверка: ' + m.selfcheckIssues.join('; ');
+        body.appendChild(note);
+      }
+      if (m.revised) {
+        const note = document.createElement('div');
+        note.className = 'selfcheck-note ok';
+        note.textContent = '✓ ответ перепроверен и исправлен самопроверкой (экспертный режим)';
+        body.appendChild(note);
+      }
     }
   }
   wrap.append(avatar, body);
@@ -1147,6 +1353,8 @@ function loadChat() {
   renderChatList();
   renderMessages();
   restoreChatModel(activeChat());
+  syncGlobeButton();
+  void refreshVoiceCaps();
 }
 
 on('btn-newchat', 'click', () => newChat());
@@ -1385,6 +1593,10 @@ async function runCompletion(chat, modelArg) {
         stream: true,
         context_tokens: Number($('ctx').value),
         max_tokens: 1024,
+        // ТЗ v0.6.4 §5/дополнение §7: глобус этого чата и выбранный режим
+        // интеллекта уходят с каждым запросом.
+        web_globe: globeOn(),
+        intelligence_mode: $('mode')?.value || 'smart',
         messages: send
       })
     });
@@ -1410,6 +1622,16 @@ async function runCompletion(chat, modelArg) {
           let obj;
           try { obj = JSON.parse(payload); } catch { continue; }
           if (obj.error) throw new Error(obj.error.message);
+          // ТЗ v0.6.4: исправляющая попытка самопроверки (экспертный режим).
+          // Чанки с revision:true — новая генерация; replace:true полностью
+          // заменяет текст ответа чистовиком.
+          if (obj.revision) {
+            if (reply.revised === undefined) { reply.revised = true; }
+            if (obj.replace) reply.content = obj.choices?.[0]?.delta?.content ?? '';
+            else reply.content += obj.choices?.[0]?.delta?.content ?? '';
+            renderMd();
+            continue;
+          }
           // Этап 2 §7/§12: финальный чанк несёт честные замеры движка.
           if (obj.litemind?.timings) {
             lastTimings = obj.litemind.timings;
@@ -1418,6 +1640,12 @@ async function runCompletion(chat, modelArg) {
             const gen = t.tokensPerSecond ? ` · генерация: ${t.tokensPerSecond} т/с` : '';
             const prompt = t.usage?.promptTokens != null ? ` · промпт: ${t.usage.promptTokens} ток.` : '';
             serverTimingLine = `первый токен: ${ttft ?? '—'} мс (UI)${load}${gen}${prompt}`;
+          }
+          if (obj.litemind?.intelligence?.sources?.length) {
+            state.lastSources = obj.litemind.intelligence.sources;
+          }
+          if (obj.litemind?.selfcheck && obj.litemind.selfcheck.ok === false) {
+            state.lastSelfcheckIssues = obj.litemind.selfcheck.issues ?? [];
           }
           const delta = obj.choices?.[0]?.delta?.content;
           if (delta) {
@@ -1449,10 +1677,35 @@ async function runCompletion(chat, modelArg) {
     renderMd(true);
   } finally {
     if (reply.content || reply.stopped) {
-      chat.messages.push({ role: 'assistant', content: reply.content, stopped: reply.stopped });
+      chat.messages.push({ role: 'assistant', content: reply.content, stopped: reply.stopped,
+        sources: state.lastSources ?? undefined, selfcheckIssues: state.lastSelfcheckIssues ?? undefined, revised: reply.revised ?? undefined });
     } else {
-      botBubble.remove(); // ошибка до первого токена — пустой пузырь не нужен
+      botBubble.remove(); // ошибка до первого токена — пустой пузырь не нужна
     }
+    // ТЗ v0.6.4 §5.2/§5.3: источники с датой получения под ответом — виден
+    // каждый использованный источник и время, когда данные были получены.
+    if (state.lastSources?.length) {
+      const body = botBubble.querySelector('.msg-body');
+      if (body) renderSources(body, state.lastSources);
+    }
+    if (state.lastSelfcheckIssues?.length && !reply.revised) {
+      const body = botBubble.querySelector('.msg-body');
+      if (body) {
+        const note = document.createElement('div');
+        note.className = 'selfcheck-note';
+        note.textContent = '⚠ самопроверка: ' + state.lastSelfcheckIssues.join('; ');
+        body.appendChild(note);
+      }
+    }
+    // Озвучивание ответа (если включено в «Компаньон → Голос»).
+    try {
+      const st = state.voice.status;
+      if (st?.tts?.installed && st?.settings?.speakReplies && reply.content) {
+        void speakText(reply.content);
+      }
+    } catch { /* озвучивание необязательно */ }
+    state.lastSources = null;
+    state.lastSelfcheckIssues = null;
     // Этап 1В §3: если модель вернула ```file:... блоки — показываем панель
     // применения изменений (diff + подтверждение). Без подтверждения ничего не пишется.
     scanReplyForFileChanges(chat, reply);
@@ -1463,6 +1716,29 @@ async function runCompletion(chat, modelArg) {
     scrollChat();
     refreshStatus();
   }
+}
+
+/* Блок источников под ответом (ТЗ §5.2): заголовок, ссылки, дата получения. */
+function renderSources(bodyEl, sources) {
+  const old = bodyEl.querySelector('.msg-sources');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-sources';
+  const title = document.createElement('div');
+  title.className = 'src-title';
+  const when = sources[0]?.fetchedAt ? new Date(sources[0].fetchedAt).toLocaleString('ru-RU') : '';
+  title.textContent = `Источники${when ? ` (получено ${when})` : ''}:`;
+  wrap.appendChild(title);
+  for (const s of sources.slice(0, 8)) {
+    const a = document.createElement('a');
+    a.href = s.url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = s.title || s.url;
+    a.title = s.snippet ?? s.url;
+    wrap.appendChild(a);
+  }
+  bodyEl.appendChild(wrap);
 }
 
 on('btn-send', 'click', sendChat);
@@ -1596,6 +1872,17 @@ const VERIFYING = new Set();    // id моделей, которые прове�
 const STOPPED_NOW = new Set();  // остановлены в этой сессии (для статуса «остановлена»)
 let myModelsCache = [];
 
+/* ТЗ v0.6.4 §7: категория модели — для какой работы она действительно предназначена.
+   Классификация по семейству из имени файла; «агент» помечаем только подтверждённые
+   инструментальные модели (tool-поддержки у GGUF мы не обещаем — см. listModels). */
+function modelCategory(m) {
+  const id = String(m.id ?? '').toLowerCase();
+  if (/coder|code|starcoder/.test(id)) return 'код';
+  if (/whisper|piper|voice|tts|asr/.test(id)) return 'речь';
+  if (/vl|vision|llava|image/.test(id)) return 'зрение';
+  return 'языковая';
+}
+
 function myModelStatus(m, loadedIds, downloadNames) {
   if (VERIFYING.has(m.id)) return { text: 'проверяется', cls: 'warn-tag' };
   if (downloadNames.has((m.file ?? '').split(/[\\/]/).pop())) return { text: 'загружается', cls: 'warn-tag' };
@@ -1648,7 +1935,7 @@ async function loadMyModels() {
           ? `<div class="model-item-sub muted" title="${esc(sha)}">SHA-256: ${esc(String(sha).slice(0, 24))}… · вычислен локально (проверка целостности, не подтверждение источника)</div>`
           : '';
         const registeredNote = m.registered ? '<span class="tag">своя модель</span>' : '';
-        li.innerHTML = `<div class="model-item-main"><div class="model-item-title">${esc(m.id)} <span class="tag ${status.cls}">${status.text}</span> ${registeredNote}</div>
+        li.innerHTML = `<div class="model-item-main"><div class="model-item-title">${esc(m.id)} <span class="tag ${status.cls}">${status.text}</span> <span class="tag" title="Категория: для чего модель подходит">${esc(modelCategory(m))}</span> ${registeredNote}</div>
           <div class="model-item-sub">${fmtSize(m.sizeBytes)} · ${esc(m.architecture ?? '?')} · ${esc(m.quant ?? 'квант не определён')} · контекст ${m.contextLength ?? 'неизвестен'} · ≈${m.memoryEstimateMb} МБ RAM</div>
           <div class="model-item-sub muted" title="${esc(m.file ?? '')}">файл: ${esc(m.file ?? '—')}</div>
           ${shaNote}

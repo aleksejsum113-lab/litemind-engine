@@ -29,6 +29,7 @@
         <div class="nav-label">Разделы</div>
         <button class="nav-item" data-tab="chat"><i>✦</i><span>ИИ-чат</span></button>
         <button class="nav-item" data-tab="agent"><i>✩</i><span>ИИ-агент</span> <span id="agent-badge" class="nav-badge agent-badge" hidden></span></button>
+        <button class="nav-item" data-tab="companion"><i>◈</i><span>Компаньон</span></button>
         <button class="nav-item" data-tab="models"><i>▣</i><span>Модели</span></button>
         <button class="nav-item" data-tab="discovery"><i>✧</i><span>Новые модели</span> <span id="disco-badge" class="nav-badge" hidden></span></button>
         <button class="nav-item" data-tab="imagegen"><i>❋</i><span>Изображения</span></button>
@@ -107,11 +108,26 @@
               <button id="btn-attach" class="icon-btn composer-icon" title="Прикрепить файл (TXT, MD, CSV, JSON, код, PDF, DOCX)">📎</button>
               <input id="file-input" type="file" multiple hidden
                      accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.xml,.html,.js,.mjs,.ts,.tsx,.jsx,.py,.rb,.go,.rs,.java,.kt,.c,.h,.cpp,.hpp,.cs,.php,.sh,.ps1,.sql,.css,.log,.pdf,.docx" />
+              <!-- ТЗ v0.6.4 §5: кнопка «земной шар» — настоящий переключатель
+                   доступа к интернету для этого чата. Включена: модель получает
+                   реальные данные из интернета (погода Open-Meteo, поиск
+                   DuckDuckGo) и указывает источники. Выключена: честный ответ
+                   без выдуманных актуальных сведений. -->
+              <button id="btn-globe" class="icon-btn composer-icon globe-btn" title="Интернет выключен — нажмите, чтобы разрешить поиск и актуальные данные (погода, новости)" aria-pressed="false">🌐</button>
+              <button id="btn-mic" class="icon-btn composer-icon" title="Голосовой ввод: удерживайте и говорите (Push-to-Talk)" hidden>🎙</button>
               <textarea id="prompt" rows="1" placeholder="Спросите что-нибудь…  (Enter — отправить, Shift+Enter — новая строка)"></textarea>
               <button id="btn-send" class="send-btn" title="Отправить">↑</button>
               <button id="btn-stop" class="stop-btn" title="Остановить генерацию" hidden>■</button>
             </div>
             <div class="composer-meta">
+              <label class="composer-select" title="Модель интеллекта: режимы реально меняют работу движка">
+                <span>Режим</span>
+                <select id="mode">
+                  <option value="quick">Быстрый</option>
+                  <option value="smart" selected>Умный</option>
+                  <option value="expert">Экспертный</option>
+                </select>
+              </label>
               <label class="composer-select" title="Активная модель для этого чата">
                 <span>Модель</span>
                 <select id="model"></select>
@@ -193,6 +209,25 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <!-- КОМПАНЬОН (ТЗ v0.6.4, Roamies-дополнение): память, задачи/напоминания,
+           голос, внешность персонажа, разрешения, управление Windows, история.
+           Контент строится в companion-ui.js; здесь — контейнеры. -->
+      <section id="tab-companion" data-page hidden>
+        <h1>Компаньон LiteMind</h1>
+        <p class="page-note">Настольный помощник: помнит ваши проекты, ведёт задачи и напоминания, разговаривает голосом и помогает работать с Windows — всё локально.</p>
+        <div id="comp-tabs" class="task-picks comp-tabs">
+          <button data-comp-tab="main" class="active">Главная</button>
+          <button data-comp-tab="memory">Память</button>
+          <button data-comp-tab="tasks">Мои задачи</button>
+          <button data-comp-tab="voice">Голос</button>
+          <button data-comp-tab="appearance">Внешность</button>
+          <button data-comp-tab="windows">Управление Windows</button>
+          <button data-comp-tab="permissions">Разрешения</button>
+          <button data-comp-tab="history">История действий</button>
+        </div>
+        <div id="comp-content"></div>
       </section>
 
       <!-- ГЛАВНАЯ / СОСТОЯНИЕ -->
@@ -841,6 +876,7 @@
   </div>
 
   <script src="app.js"></script>
+  <script src="companion-ui.js"></script>
   <script src="discovery-ui.js"></script>
   <script src="agent-ui.js"></script>
 </body>
