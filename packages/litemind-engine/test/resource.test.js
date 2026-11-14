@@ -21,6 +21,21 @@ test('blocks start when forecast exceeds available minus reserve', () => {
   assert.match(r.reason, /exceeds safe budget/);
 });
 
+test('регресс [object Object]: reserveMb можно передать объектом от dynamicReserveMb', () => {
+  // engine._memoryGate передаёт reserveMb: dynamicReserveMb(...) → {reserveMb, reasons}.
+  const obj = { reserveMb: 1280, reasons: ['мало свободной RAM: 2000 МБ → +512 МБ'] };
+  const r = checkStartBudget({ estimatedMb: 892, availableRamMb: 2023, totalRamMb: 16000, usedRamMb: 14000, reserveMb: obj });
+  assert.equal(r.allowed, false);
+  assert.equal(r.severity, 'block');
+  assert.match(r.reason, /exceeds safe budget 743 MB/);
+  assert.ok(!r.reason.includes('[object Object]'), `нет подмены объекта: ${r.reason}`);
+  assert.ok(r.reason.includes('reserve 1280 MB'), `число резерва в сообщении: ${r.reason}`);
+
+  const r2 = checkStartBudget({ estimatedMb: 100, availableRamMb: 1000, totalRamMb: 16000, usedRamMb: 900, reserveMb: obj });
+  assert.match(r2.reason, /cover the 1280 MB Windows reserve/);
+  assert.ok(!r2.reason.includes('[object Object]'), `нет подмены объекта: ${r2.reason}`);
+});
+
 test('blocks when reserve alone is not covered', () => {
   const r = checkStartBudget({ estimatedMb: 100, availableRamMb: 1500, totalRamMb: 16000, usedRamMb: 14500, reserveMb: 2048 });
   assert.equal(r.allowed, false);

@@ -70,18 +70,21 @@ export function checkStartBudget({
   }
 
   const reserve = typeof reserveMb === 'object' && reserveMb !== null ? reserveMb.reserveMb : reserveMb;
+  // В сообщениях всегда число: reserveMb-параметр может быть объектом
+  // {reserveMb, reasons} от dynamicReserveMb — интерполяция объекта даёт
+  // «[object Object]» в ошибке MEMORY_BUDGET (найдено E2E v0.6.4).
   const budget = availableRamMb - reserve;
   if (budget <= 0) {
     return {
       allowed: false, severity: 'block', estimateMb: estimatedMb,
-      reason: `Available RAM ${availableRamMb} MB does not even cover the ${reserveMb} MB Windows reserve.`,
+      reason: `Available RAM ${availableRamMb} MB does not even cover the ${reserve} MB Windows reserve.`,
       availableRamMb
     };
   }
   if (estimatedMb > budget) {
     return {
       allowed: false, severity: 'block', estimateMb: estimatedMb,
-      reason: `Forecast ${estimatedMb} MB exceeds safe budget ${Math.floor(budget)} MB (available ${availableRamMb} MB − reserve ${reserveMb} MB).`,
+      reason: `Forecast ${estimatedMb} MB exceeds safe budget ${Math.floor(budget)} MB (available ${availableRamMb} MB − reserve ${reserve} MB).`,
       availableRamMb
     };
   }
