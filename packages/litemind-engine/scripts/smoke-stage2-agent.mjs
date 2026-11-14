@@ -223,9 +223,15 @@ async function main() {
   // Диалог с историей: агент помнит контекст
   const s3 = await jpost(`/api/agent/sessions/${id1}/messages`, { text: 'Какой файл ты создал в этой задаче? Ответь одним названием.' });
   const fin3 = await driveToState(id1, ['idle', 'done', 'error', 'stopped'], 4 * 60_000, { maxAnswers: 0 });
+  // Память агента доказуема ДВУМЯ путями: текстовым ответом («hello.js») или
+  // DONE-отчётом («создан hello.js…» — отчёт это event, не assistant-сообщение).
+  // Прогон 43603094014: модель на вопрос об истории повторно вызывала terminal
+  // (preamble «ACTION: …» стала последним assistant), а факт памяти был в DONE.
   const lastAssistant = (fin3?.messages ?? []).filter((m) => m.role === 'assistant').pop();
-  const memOk = lastAssistant && /hello\.js/i.test(lastAssistant.text ?? '');
-  check('агент помнит историю диалога', !!memOk, (lastAssistant?.text ?? 'нет ответа').slice(0, 150));
+  const lastReport = (fin3?.messages ?? []).filter((m) => m.type === 'report').pop();
+  const memOk = /hello\.js/i.test(lastAssistant?.text ?? '') || /hello\.js/i.test(lastReport?.text ?? '');
+  const memDetail = (lastAssistant?.text ?? lastReport?.text ?? 'нет ответа').slice(0, 150);
+  check('агент помнит историю диалога', !!memOk, memDetail);
 
   // Результат параллельного чата
   try {
